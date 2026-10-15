@@ -80,8 +80,8 @@ export const App: React.FC = () => {
         .then(async (user) => {
           setCurrentUser(user);
           wsManager.connect(token);
-          const deviceId = localStorage.getItem('nexachat_device_id') || 'dev_' + Date.now();
-          localStorage.setItem('nexachat_device_id', deviceId);
+          const deviceId = localStorage.getItem('senora_device_id') || 'dev_' + Date.now();
+          localStorage.setItem('senora_device_id', deviceId);
 
           // Synchronize remote settings
           syncSettingsFromBackend().then((s) => {
@@ -156,7 +156,7 @@ export const App: React.FC = () => {
           if (rawMsg && rawMsg.sender_id !== currentUser?.id) {
             let isMuted = false;
             try {
-              const muted = JSON.parse(localStorage.getItem('nexachat_muted_convs') || '[]');
+              const muted = JSON.parse(localStorage.getItem('senora_muted_convs') || '[]');
               isMuted = Array.isArray(muted) && muted.includes(rawMsg.conversation_id);
             } catch {}
 
@@ -235,7 +235,7 @@ export const App: React.FC = () => {
   };
 
   const handleAuthSuccess = async (session: AuthSession) => {
-    localStorage.setItem('nexachat_device_id', session.device_id);
+    localStorage.setItem('senora_device_id', session.device_id);
     setCurrentUser(session.user);
     wsManager.connect(session.token);
 
@@ -254,7 +254,7 @@ export const App: React.FC = () => {
     await api.logout();
     wsManager.disconnect();
     cryptoEngine.resetCache();
-    localStorage.removeItem('nexachat_device_id');
+    localStorage.removeItem('senora_device_id');
     resetSettings();
     setAppSettings(loadSettings());
     setIsLocked(false);

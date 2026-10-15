@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Conversation, User, ConversationMemberDetail } from '../app/types';
 import { loadSettings, saveSettings, applySettingsToDOM } from './settings/settingsModel';
 
-describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
+describe('Senora Release Verification Suite (All 11 Defects)', () => {
   let mockStorage: Record<string, string> = {};
   let mockClasses: Set<string>;
   let mockAttributes: Record<string, string>;
@@ -12,7 +12,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
     id: 'user_me',
     username: 'taha',
     display_name: 'Taha',
-    avatar_url: 'https://nexachat.internal/avatars/taha.png',
+    avatar_url: 'https://senora.internal/avatars/taha.png',
     created_at: new Date().toISOString(),
   };
 
@@ -20,7 +20,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
     id: 'user_peer',
     username: 'zahra',
     display_name: 'Zahra Moradi',
-    avatar_url: 'https://nexachat.internal/avatars/zahra.png',
+    avatar_url: 'https://senora.internal/avatars/zahra.png',
     created_at: new Date().toISOString(),
   };
 
@@ -90,7 +90,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
 
       const peer = conv.participants?.find((p) => p.id !== currentUser.id);
       const avatarUrl = conv.avatar_url || peer?.avatar_url;
-      expect(avatarUrl).toBe('https://nexachat.internal/avatars/zahra.png');
+      expect(avatarUrl).toBe('https://senora.internal/avatars/zahra.png');
     });
 
     it('should prioritize conversation avatar over participant for groups and channels', () => {
@@ -98,7 +98,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
         id: 'c_group',
         type: 'group',
         title: 'Engineering Core',
-        avatar_url: 'https://nexachat.internal/avatars/group_eng.png',
+        avatar_url: 'https://senora.internal/avatars/group_eng.png',
         participants: [currentUser, peerUser],
         security_mode: 'normal',
         created_at: new Date().toISOString(),
@@ -106,7 +106,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
       };
 
       const avatarUrl = groupConv.avatar_url || groupConv.participants?.find((p) => p.id !== currentUser.id)?.avatar_url;
-      expect(avatarUrl).toBe('https://nexachat.internal/avatars/group_eng.png');
+      expect(avatarUrl).toBe('https://senora.internal/avatars/group_eng.png');
     });
 
     it('should fall back gracefully to initials when avatar_url is missing', () => {
@@ -186,7 +186,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
           user_id: 'u1',
           username: 'taha',
           display_name: 'Taha',
-          avatar_url: 'https://nexachat.internal/avatars/taha.png',
+          avatar_url: 'https://senora.internal/avatars/taha.png',
           role: 'owner',
           joined_at: new Date().toISOString(),
         },
@@ -194,7 +194,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
           user_id: 'u2',
           username: 'zahra',
           display_name: 'Zahra',
-          avatar_url: 'https://nexachat.internal/avatars/zahra.png',
+          avatar_url: 'https://senora.internal/avatars/zahra.png',
           role: 'admin',
           joined_at: new Date().toISOString(),
         },
@@ -354,7 +354,7 @@ describe('NexaChat Release Verification Suite (All 11 Defects)', () => {
       const isPersianText = (text: string) => /[\u0600-\u06FF]/.test(text);
 
       expect(isPersianText('سلام نکسوچت')).toBe(true);
-      expect(isPersianText('Hello NexaChat')).toBe(false);
+      expect(isPersianText('Hello Senora')).toBe(false);
       expect(isPersianText('کد رهگیری: 12345')).toBe(true);
     });
   });

@@ -67,7 +67,7 @@ func TestProxyAudit_ConfiguredTrustedProxyForwardsClientIP(t *testing.T) {
 
 // Task 2: Required Test 4 — Multiple forwarded IP values are parsed according to a documented, safe trust-chain policy.
 func TestProxyAudit_MultipleForwardedIPTrustChain(t *testing.T) {
-	// Deployment: Public Client (203.0.113.77) -> CDN/Proxy 1 (10.0.1.5) -> Ingress (127.0.0.1) -> NexaChat
+	// Deployment: Public Client (203.0.113.77) -> CDN/Proxy 1 (10.0.1.5) -> Ingress (127.0.0.1) -> Senora
 	// Attacker tries to inject spoofed header "8.8.8.8" into their request before hitting CDN
 	// Resulting X-Forwarded-For received at Ingress: "8.8.8.8, 203.0.113.77, 10.0.1.5"
 	trustedProxies := "127.0.0.1, 10.0.0.0/16"

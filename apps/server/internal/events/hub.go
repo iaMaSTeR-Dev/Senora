@@ -15,8 +15,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"nexachat/server/internal/models"
-	"nexachat/server/internal/storage"
+	"senora/server/internal/models"
+	"senora/server/internal/storage"
 )
 
 var upgrader = websocket.Upgrader{

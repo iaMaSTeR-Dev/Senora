@@ -16,7 +16,7 @@ import (
 	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 type SQLStore struct {
@@ -2352,18 +2352,18 @@ func (s *SQLStore) seedBuiltinStickers() error {
 	}
 
 	now := time.Now().UTC()
-	// Builtin Pack 1: Nexa Classic
+	// Builtin Pack 1: Senora Classic
 	p1Query := `INSERT INTO sticker_packs (id, name, title, thumbnail_url, author, sticker_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
 		p1Query = `INSERT INTO sticker_packs (id, name, title, thumbnail_url, author, sticker_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	}
 
 	thumb1 := "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%2324A1DE'/><text x='50' y='65' font-size='45' text-anchor='middle'>⚡</text></svg>"
-	_, _ = s.db.Exec(p1Query, "pack_nexa_classic", "nexa_classic", "Nexa Classic", thumb1, "NexaChat Team", 6, now)
+	_, _ = s.db.Exec(p1Query, "pack_senora_classic", "senora_classic", "Senora Classic", thumb1, "Senora Team", 6, now)
 
 	// Builtin Pack 2: Crypto Animals
 	thumb2 := "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%2310b981'/><text x='50' y='65' font-size='45' text-anchor='middle'>🦊</text></svg>"
-	_, _ = s.db.Exec(p1Query, "pack_crypto_animals", "crypto_animals", "Crypto Animals", thumb2, "NexaChat Team", 6, now)
+	_, _ = s.db.Exec(p1Query, "pack_crypto_animals", "crypto_animals", "Crypto Animals", thumb2, "Senora Team", 6, now)
 
 	stQuery := `INSERT INTO stickers (id, pack_id, emoji, asset_url, width, height) VALUES (?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
@@ -2382,7 +2382,7 @@ func (s *SQLStore) seedBuiltinStickers() error {
 	}
 	for _, st := range stickersP1 {
 		asset := fmt.Sprintf("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><circle cx='60' cy='60' r='55' fill='none'/><text x='60' y='80' font-size='70' text-anchor='middle'>%s</text></svg>", st.sym)
-		_, _ = s.db.Exec(stQuery, st.id, "pack_nexa_classic", st.emoji, asset, 256, 256)
+		_, _ = s.db.Exec(stQuery, st.id, "pack_senora_classic", st.emoji, asset, 256, 256)
 	}
 
 	stickersP2 := []struct {

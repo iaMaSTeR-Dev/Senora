@@ -1,4 +1,4 @@
--- NexaChat Phase 10-15 Telegram-Class Additive Schema Migration (PostgreSQL)
+-- Senora Phase 10-15 Telegram-Class Additive Schema Migration (PostgreSQL)
 
 CREATE TABLE IF NOT EXISTS polls (
     id VARCHAR(64) PRIMARY KEY,

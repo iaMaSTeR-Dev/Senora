@@ -14,14 +14,14 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"nexachat/server/internal/auth"
-	"nexachat/server/internal/conversations"
-	"nexachat/server/internal/crypto"
-	"nexachat/server/internal/events"
-	"nexachat/server/internal/identity"
-	"nexachat/server/internal/messages"
-	"nexachat/server/internal/models"
-	"nexachat/server/internal/storage"
+	"senora/server/internal/auth"
+	"senora/server/internal/conversations"
+	"senora/server/internal/crypto"
+	"senora/server/internal/events"
+	"senora/server/internal/identity"
+	"senora/server/internal/messages"
+	"senora/server/internal/models"
+	"senora/server/internal/storage"
 )
 
 func setupSecurityTestServer(t *testing.T) (*httptest.Server, *Router, storage.Store, *auth.SessionService) {

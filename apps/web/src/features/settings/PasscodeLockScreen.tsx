@@ -23,7 +23,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
   const getInitialAttempts = (): number => {
     if (typeof window === 'undefined') return 0;
     try {
-      const raw = sessionStorage.getItem('nexachat_lockout_attempts');
+      const raw = sessionStorage.getItem('senora_lockout_attempts');
       return raw ? parseInt(raw, 10) || 0 : 0;
     } catch {
       return 0;
@@ -33,7 +33,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
   const getInitialCooldown = (): number => {
     if (typeof window === 'undefined') return 0;
     try {
-      const until = sessionStorage.getItem('nexachat_lockout_until');
+      const until = sessionStorage.getItem('senora_lockout_until');
       if (until) {
         const remaining = Math.ceil((parseInt(until, 10) - Date.now()) / 1000);
         return remaining > 0 ? remaining : 0;
@@ -54,7 +54,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
     if (cooldownSeconds <= 0) {
       if (typeof window !== 'undefined') {
         try {
-          sessionStorage.removeItem('nexachat_lockout_until');
+          sessionStorage.removeItem('senora_lockout_until');
         } catch {}
       }
       return;
@@ -67,8 +67,8 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
           setError(null);
           if (typeof window !== 'undefined') {
             try {
-              sessionStorage.removeItem('nexachat_lockout_until');
-              sessionStorage.removeItem('nexachat_lockout_attempts');
+              sessionStorage.removeItem('senora_lockout_until');
+              sessionStorage.removeItem('senora_lockout_attempts');
             } catch {}
           }
           return 0;
@@ -92,8 +92,8 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
       if (isValid) {
         if (typeof window !== 'undefined') {
           try {
-            sessionStorage.removeItem('nexachat_lockout_until');
-            sessionStorage.removeItem('nexachat_lockout_attempts');
+            sessionStorage.removeItem('senora_lockout_until');
+            sessionStorage.removeItem('senora_lockout_attempts');
           } catch {}
         }
         onUnlock();
@@ -103,14 +103,14 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
         setPin('');
         if (typeof window !== 'undefined') {
           try {
-            sessionStorage.setItem('nexachat_lockout_attempts', String(nextAttempts));
+            sessionStorage.setItem('senora_lockout_attempts', String(nextAttempts));
           } catch {}
         }
         if (nextAttempts >= 5) {
           const lockoutUntil = Date.now() + 30000;
           if (typeof window !== 'undefined') {
             try {
-              sessionStorage.setItem('nexachat_lockout_until', String(lockoutUntil));
+              sessionStorage.setItem('senora_lockout_until', String(lockoutUntil));
             } catch {}
           }
           setCooldownSeconds(30);
@@ -220,8 +220,8 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
           onClick={() => {
             if (typeof window !== 'undefined') {
               try {
-                sessionStorage.removeItem('nexachat_lockout_until');
-                sessionStorage.removeItem('nexachat_lockout_attempts');
+                sessionStorage.removeItem('senora_lockout_until');
+                sessionStorage.removeItem('senora_lockout_attempts');
               } catch {}
             }
             onLogout();

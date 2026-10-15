@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestPostFixStabilizationVerification(t *testing.T) {

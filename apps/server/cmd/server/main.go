@@ -9,14 +9,14 @@ import (
 	"syscall"
 	"time"
 
-	"nexachat/server/internal/api"
-	"nexachat/server/internal/auth"
-	"nexachat/server/internal/config"
-	"nexachat/server/internal/conversations"
-	"nexachat/server/internal/crypto"
-	"nexachat/server/internal/events"
-	"nexachat/server/internal/identity"
-	"nexachat/server/internal/messages"
+	"senora/server/internal/api"
+	"senora/server/internal/auth"
+	"senora/server/internal/config"
+	"senora/server/internal/conversations"
+	"senora/server/internal/crypto"
+	"senora/server/internal/events"
+	"senora/server/internal/identity"
+	"senora/server/internal/messages"
 )
 
 func main() {

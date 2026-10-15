@@ -20,14 +20,14 @@ import (
 
 	"github.com/google/uuid"
 
-	"nexachat/server/internal/auth"
-	"nexachat/server/internal/conversations"
-	"nexachat/server/internal/crypto"
-	"nexachat/server/internal/events"
-	"nexachat/server/internal/identity"
-	"nexachat/server/internal/messages"
-	"nexachat/server/internal/models"
-	"nexachat/server/internal/storage"
+	"senora/server/internal/auth"
+	"senora/server/internal/conversations"
+	"senora/server/internal/crypto"
+	"senora/server/internal/events"
+	"senora/server/internal/identity"
+	"senora/server/internal/messages"
+	"senora/server/internal/models"
+	"senora/server/internal/storage"
 )
 
 type contextKey string
@@ -1002,7 +1002,7 @@ func (r *Router) handleDownloadAttachment(w http.ResponseWriter, req *http.Reque
 		attBase := filepath.Base(att.StoragePath)
 		candidatePaths := []string{
 			filepath.Join(getUploadsDir(), attBase),
-			filepath.Join("/var/www/nexachat/uploads", attBase),
+			filepath.Join("/var/www/senora/uploads", attBase),
 			filepath.Join("uploads", attBase),
 			filepath.Join("/uploads", attBase),
 		}
@@ -1533,8 +1533,8 @@ func getUploadsDir() string {
 	if custom := os.Getenv("UPLOAD_DIR"); custom != "" {
 		return custom
 	}
-	if info, err := os.Stat("/var/www/nexachat/uploads"); err == nil && info.IsDir() {
-		return "/var/www/nexachat/uploads"
+	if info, err := os.Stat("/var/www/senora/uploads"); err == nil && info.IsDir() {
+		return "/var/www/senora/uploads"
 	}
 	return "uploads"
 }
@@ -1547,7 +1547,7 @@ func (r *Router) handleServeAvatar(w http.ResponseWriter, req *http.Request) {
 	}
 	candidatePaths := []string{
 		filepath.Join(getUploadsDir(), "avatars", filename),
-		filepath.Join("/var/www/nexachat/uploads", "avatars", filename),
+		filepath.Join("/var/www/senora/uploads", "avatars", filename),
 		filepath.Join("uploads", "avatars", filename),
 		filepath.Join("/uploads", "avatars", filename),
 	}
@@ -2329,7 +2329,7 @@ func (r *Router) handleBotSendMessage(w http.ResponseWriter, req *http.Request) 
 		// 2. Fallback to env or default dev token for backwards compatibility
 		expectedToken := os.Getenv("BOT_API_TOKEN")
 		if expectedToken == "" {
-			expectedToken = "nexachat_bot_dev_token"
+			expectedToken = "senora_bot_dev_token"
 		}
 		if botToken != expectedToken {
 			r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or revoked bot token")
@@ -2862,7 +2862,7 @@ func (r *Router) handleSetBotWebhook(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		expectedToken := os.Getenv("BOT_API_TOKEN")
 		if expectedToken == "" {
-			expectedToken = "nexachat_bot_dev_token"
+			expectedToken = "senora_bot_dev_token"
 		}
 		if botToken != expectedToken {
 			r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid or revoked bot token")

@@ -1,6 +1,6 @@
 # Senora
 
-> **Senora** (formerly NexaChat) is a high-performance, self-hosted, Telegram-class messaging platform engineered with Signal Protocol Double Ratchet end-to-end encryption (E2EE), WebRTC calling, and real-time synchronization.
+> **Senora** is a high-performance, self-hosted, Telegram-class messaging platform engineered with Signal Protocol Double Ratchet end-to-end encryption (E2EE), WebRTC calling, and real-time synchronization.
 
 ---
 

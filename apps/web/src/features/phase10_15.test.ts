@@ -39,12 +39,12 @@ describe('Phase 10–15 Telegram-Class Capabilities Frontend Unit Tests', () => 
       const conv1Id = 'conv_abc';
       const conv2Id = 'conv_xyz';
 
-      const draftKey1 = 'nexachat_draft_' + conv1Id;
-      const draftKey2 = 'nexachat_draft_' + conv2Id;
+      const draftKey1 = 'senora_draft_' + conv1Id;
+      const draftKey2 = 'senora_draft_' + conv2Id;
 
       expect(draftKey1).not.toBe(draftKey2);
-      expect(draftKey1).toBe('nexachat_draft_conv_abc');
-      expect(draftKey2).toBe('nexachat_draft_conv_xyz');
+      expect(draftKey1).toBe('senora_draft_conv_abc');
+      expect(draftKey2).toBe('senora_draft_conv_xyz');
     });
 
     it('should categorize shared media items into photos, videos, files, voice, and links', () => {
@@ -87,8 +87,8 @@ describe('Phase 10–15 Telegram-Class Capabilities Frontend Unit Tests', () => 
           id: 'm3',
           conversation_id: 'c1',
           sender_id: 'u1',
-          ciphertext: 'Check this link: https://nexachat.internal/docs',
-          plaintext: 'Check this link: https://nexachat.internal/docs',
+          ciphertext: 'Check this link: https://senora.internal/docs',
+          plaintext: 'Check this link: https://senora.internal/docs',
           nonce: 'normal',
           created_at: new Date().toISOString(),
         },
@@ -143,12 +143,12 @@ describe('Phase 10–15 Telegram-Class Capabilities Frontend Unit Tests', () => 
         id: 'quiz_1',
         conversation_id: 'c1',
         creator_id: 'u1',
-        question: 'What is the standard AES key size for NexaChat E2EE?',
+        question: 'What is the standard AES key size for Senora E2EE?',
         is_anonymous: false,
         allows_multiple: false,
         is_quiz: true,
         correct_option: 1, // '256-bit'
-        explanation: 'NexaChat uses AES-256-GCM authenticated encryption.',
+        explanation: 'Senora uses AES-256-GCM authenticated encryption.',
         is_closed: false,
         total_votes: 1,
         options: [
@@ -175,7 +175,7 @@ describe('Phase 10–15 Telegram-Class Capabilities Frontend Unit Tests', () => 
       const story: Story = {
         id: 'story_1',
         user_id: 'u1',
-        media_url: 'https://nexachat.internal/media/story1.jpg',
+        media_url: 'https://senora.internal/media/story1.jpg',
         media_type: 'photo',
         caption: 'Beautiful sunset!',
         created_at: createdAt,

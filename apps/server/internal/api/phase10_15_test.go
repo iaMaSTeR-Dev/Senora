@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestPollsAPI(t *testing.T) {
@@ -378,7 +378,7 @@ func TestBotSendMessageAPI(t *testing.T) {
 
 	// 3. With valid bot token -> 201 Created
 	req, _ = http.NewRequest("POST", server.URL+"/api/v1/bot/sendMessage", bytes.NewReader(botMsg))
-	req.Header.Set("X-Bot-Token", "nexachat_bot_dev_token")
+	req.Header.Set("X-Bot-Token", "senora_bot_dev_token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusCreated {
@@ -669,8 +669,8 @@ func TestUnicodePersianAttachmentDownload(t *testing.T) {
 	convID := convRes["id"].(string)
 
 	// Create attachment with Persian filename and exact payload bytes
-	persianFilename := "سند محرمانه نکسا چت.pdf"
-	originalContent := []byte("%PDF-1.4 %NexaChat Persian Test Payload 1234567890 🧪 سلام دنیا")
+	persianFilename := "سند محرمانه سنورا.pdf"
+	originalContent := []byte("%PDF-1.4 %Senora Persian Test Payload 1234567890 🧪 سلام دنیا")
 
 	var b bytes.Buffer
 	w := multipart.NewWriter(&b)

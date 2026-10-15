@@ -1,4 +1,4 @@
--- NexaChat Phase 16 Telegram Completion Schema Migration (PostgreSQL & SQLite)
+-- Senora Phase 16 Telegram Completion Schema Migration (PostgreSQL & SQLite)
 
 -- 1. Conversation Read State for authentic unread counting & read receipts
 CREATE TABLE IF NOT EXISTS conversation_read_state (

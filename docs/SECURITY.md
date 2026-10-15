@@ -15,7 +15,7 @@
 ## 2. Cryptographic Standards (Client E2EE)
 
 - **Key Agreement**: ECDH over NIST P-256 (`secp256r1`) via Web Crypto API.
-- **Key Derivation**: HKDF-SHA256 (`HKDF-Expand` and `HKDF-Extract`) with conversation-specific context strings (`"NexaChat-E2EE-v1"`).
+- **Key Derivation**: HKDF-SHA256 (`HKDF-Expand` and `HKDF-Extract`) with conversation-specific context strings (`"Senora-E2EE-v1"`).
 - **Symmetric Encryption**: AES-256-GCM with:
   - 256-bit derived key
   - 96-bit (12 bytes) fresh random initialization vector (IV) per message
@@ -45,4 +45,4 @@
   - Restricts script execution to same origin (`'self'`).
   - Disallows `unsafe-inline` and `unsafe-eval`.
 - **Cross-Site Request Forgery (CSRF)**:
-  - Custom header validation (`X-Requested-With` or `X-NexaChat-Client: true`) for API endpoints.
+  - Custom header validation (`X-Requested-With` or `X-Senora-Client: true`) for API endpoints.

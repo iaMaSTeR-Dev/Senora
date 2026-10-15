@@ -1,5 +1,6 @@
-// Client-Side Cryptographic Engine for NexaChat E2EE
+// Client-Side Cryptographic Engine for Senora E2EE
 // Uses Web Crypto API (SubtleCrypto) with NIST P-256 (ECDH) & AES-256-GCM
+import { getLegacyNamespacePrefix } from '../protocol/storageMigration';
 
 export interface ClientKeyPair {
   publicKeyBase64: string;
@@ -32,7 +33,7 @@ export function base64ToBuffer(base64: string): Uint8Array {
   return bytes;
 }
 
-const DB_NAME = 'nexachat_crypto_store';
+const DB_NAME = 'senora_crypto_store';
 const DB_VERSION = 1;
 const STORE_NAME = 'device_keys';
 const KEY_NAME = 'identity_keypair';
@@ -149,7 +150,7 @@ export async function computeSafetyNumber(keyA: string, keyB: string): Promise<s
 
 // Canonical AAD construction: binds protocol version and conversation ID with unambiguous domain separation.
 export function buildCanonicalAAD(conversationId: string, version: number = 1): Uint8Array {
-  return new TextEncoder().encode(`nexachat:v${version}:conv:${conversationId}`);
+  return new TextEncoder().encode(`senora:v${version}:conv:${conversationId}`);
 }
 
 export class ClientCryptoEngine {
@@ -319,7 +320,12 @@ export class ClientCryptoEngine {
       try {
         return await decryptWithAAD(buildCanonicalAAD(associatedData) as unknown as BufferSource);
       } catch (err1) {
-        // 2. Fall back to raw string AAD for early phase messages
+        // 2. Fall back to legacy namespace AAD for existing stored messages
+        try {
+          const legacyAAD = new TextEncoder().encode(`${getLegacyNamespacePrefix()}:v1:conv:${associatedData}`);
+          return await decryptWithAAD(legacyAAD as unknown as BufferSource);
+        } catch {}
+        // 3. Fall back to raw string AAD for early phase messages
         try {
           return await decryptWithAAD(new TextEncoder().encode(associatedData));
         } catch (err2) {

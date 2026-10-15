@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"nexachat/server/internal/conversations"
-	"nexachat/server/internal/events"
-	"nexachat/server/internal/models"
-	"nexachat/server/internal/storage"
+	"senora/server/internal/conversations"
+	"senora/server/internal/events"
+	"senora/server/internal/models"
+	"senora/server/internal/storage"
 )
 
 var (

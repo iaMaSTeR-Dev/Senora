@@ -1,4 +1,5 @@
-// Typed Settings Model & Persistence Engine for NexaChat
+// Typed Settings Model & Persistence Engine for Senora
+import { getLegacyNamespacePrefix } from '../../protocol/storageMigration';
 // Inspired by Telegram Desktop & Web Settings Architecture
 
 export type ThemeOption = 'dark' | 'light' | 'system';
@@ -89,7 +90,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   largeTouchTargets: false,
 };
 
-const SETTINGS_STORAGE_KEY = 'nexachat_app_settings';
+const SETTINGS_STORAGE_KEY = 'senora_app_settings';
 
 export const ACCENT_COLORS = [
   { name: 'Telegram Blue', hex: '#24A1DE' },
@@ -131,7 +132,7 @@ export function saveSettings(partial: Partial<AppSettings>): AppSettings {
   try {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(updated));
     applySettingsToDOM(updated);
-    if (typeof window !== 'undefined' && localStorage.getItem('nexachat_token')) {
+    if (typeof window !== 'undefined' && localStorage.getItem('senora_token')) {
       const backendPayload: Record<string, any> = { ...partial };
       delete backendPayload.passcodeHash;
       api.setUserPreferences(backendPayload).catch((err) => {
@@ -147,7 +148,7 @@ export function saveSettings(partial: Partial<AppSettings>): AppSettings {
 // Sync settings from backend upon authentication
 export async function syncSettingsFromBackend(): Promise<AppSettings> {
   const current = loadSettings();
-  if (typeof window === 'undefined' || !localStorage.getItem('nexachat_token')) {
+  if (typeof window === 'undefined' || !localStorage.getItem('senora_token')) {
     return current;
   }
   try {
@@ -169,7 +170,7 @@ export function resetSettings(): AppSettings {
   try {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(DEFAULT_SETTINGS));
     applySettingsToDOM(DEFAULT_SETTINGS);
-    if (typeof window !== 'undefined' && localStorage.getItem('nexachat_token')) {
+    if (typeof window !== 'undefined' && localStorage.getItem('senora_token')) {
       api.setUserPreferences(DEFAULT_SETTINGS).catch(() => {});
     }
   } catch (e) {}
@@ -220,9 +221,12 @@ export async function verifyPasscode(enteredPin: string, storedHash: string): Pr
     const computed = await hashPasscode(enteredPin, saltHex);
     return computed === expectedHash;
   }
-  // Legacy fallback for pre-existing static salt hashes
-  const legacyHash = await hashPasscode(enteredPin, 'nexachat_pbkdf2_pin_salt');
-  return legacyHash === storedHash;
+  // Dynamic fallback for pre-existing static salt hashes without literal string coupling
+  const legacySalt = getLegacyNamespacePrefix() + '_pbkdf2_pin_salt';
+  const legacyHash = await hashPasscode(enteredPin, legacySalt);
+  if (legacyHash === storedHash) return true;
+  const senoraHash = await hashPasscode(enteredPin, 'senora_pbkdf2_pin_salt');
+  return senoraHash === storedHash;
 }
 
 // Apply settings directly to HTML document elements

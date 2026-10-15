@@ -97,13 +97,13 @@ describe('Telegram-Level Rich Text Formatting & Security', () => {
   });
 
   it('correctly creates markdown link and plain URL anchor elements', () => {
-    const nodes = renderFormattedText('Visit [NexaChat](https://nexachat.io) or https://github.com');
+    const nodes = renderFormattedText('Visit [Senora](https://senora.io) or https://github.com');
     const elements = flattenElements(nodes);
     const anchorNodes = elements.filter((el) => el.type === 'a');
     expect(anchorNodes.length).toBe(2);
 
-    expect((anchorNodes[0]?.props as any)?.href).toBe('https://nexachat.io');
-    expect((anchorNodes[0]?.props as any)?.children).toBe('NexaChat');
+    expect((anchorNodes[0]?.props as any)?.href).toBe('https://senora.io');
+    expect((anchorNodes[0]?.props as any)?.children).toBe('Senora');
 
     expect((anchorNodes[1]?.props as any)?.href).toBe('https://github.com');
   });

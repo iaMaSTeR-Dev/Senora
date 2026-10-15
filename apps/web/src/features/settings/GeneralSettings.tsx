@@ -29,7 +29,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     try {
       // Clear non-critical temporary session stores
       Object.keys(localStorage).forEach((key) => {
-        if (key.startsWith('nexachat_cache_') || key.startsWith('blob:')) {
+        if (key.startsWith('senora_cache_') || key.startsWith('blob:')) {
           localStorage.removeItem(key);
         }
       });

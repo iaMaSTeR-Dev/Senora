@@ -36,7 +36,7 @@ export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
   const [passcodeConfirm, setPasscodeConfirm] = useState('');
   const [passcodeError, setPasscodeError] = useState<string | null>(null);
 
-  const currentDeviceId = typeof window !== 'undefined' ? localStorage.getItem('nexachat_device_id') : '';
+  const currentDeviceId = typeof window !== 'undefined' ? localStorage.getItem('senora_device_id') : '';
 
   const loadDevices = async () => {
     setLoadingDevices(true);

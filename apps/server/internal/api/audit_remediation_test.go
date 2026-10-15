@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestAuditRemediation(t *testing.T) {

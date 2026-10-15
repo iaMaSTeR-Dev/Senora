@@ -24,7 +24,7 @@ describe('Signal Protocol Manager & Client-Side Media E2EE Pipelines', () => {
   });
 
   it('encrypts and decrypts client-side files via AES-256-GCM without exposing plaintext to server', async () => {
-    const rawContent = 'TOP SECRET ATTACHMENT CONTENT: Sensitive document details for NexaChat.';
+    const rawContent = 'TOP SECRET ATTACHMENT CONTENT: Sensitive document details for Senora.';
     const originalBlob = new Blob([rawContent], { type: 'text/plain' });
 
     // 1. Client-side AES-256-GCM encryption

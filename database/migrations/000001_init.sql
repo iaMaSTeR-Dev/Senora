@@ -1,4 +1,4 @@
--- NexaChat Core Relational Schema v1 (PostgreSQL)
+-- Senora Core Relational Schema v1 (PostgreSQL)
 
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(64) PRIMARY KEY,

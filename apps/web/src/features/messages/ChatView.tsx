@@ -700,7 +700,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Per-conversation draft persistence
   useEffect(() => {
-    const savedDraft = localStorage.getItem('nexachat_draft_' + conversation.id);
+    const savedDraft = localStorage.getItem('senora_draft_' + conversation.id);
     if (savedDraft) {
       setInput(savedDraft);
     } else {
@@ -924,7 +924,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       alert('Message scheduled successfully!');
       setShowScheduleModal(false);
       setInput('');
-      localStorage.removeItem('nexachat_draft_' + conversation.id);
+      localStorage.removeItem('senora_draft_' + conversation.id);
     } catch (err: any) {
       alert(`Failed to schedule message: ${err.message}`);
     }
@@ -948,7 +948,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const t = translations[lang];
 
-  const myDeviceId = localStorage.getItem('nexachat_device_id') || 'dev_current';
+  const myDeviceId = localStorage.getItem('senora_device_id') || 'dev_current';
   const peerUser = conversation.participants?.find((p) => p.id !== currentUser.id);
   const peerPresence = useUserPresence(peerUser?.id, lang);
   const [readByModalMessage, setReadByModalMessage] = useState<Message | null>(null);
@@ -1537,7 +1537,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
 
       setInput('');
-      localStorage.removeItem('nexachat_draft_' + conversation.id);
+      localStorage.removeItem('senora_draft_' + conversation.id);
       const replyId = replyingTo?.id;
       setReplyingTo(null);
 
@@ -4010,9 +4010,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               onApply={(newText) => {
                 setInput(newText);
                 if (newText.trim()) {
-                  localStorage.setItem('nexachat_draft_' + conversation.id, newText);
+                  localStorage.setItem('senora_draft_' + conversation.id, newText);
                 } else {
-                  localStorage.removeItem('nexachat_draft_' + conversation.id);
+                  localStorage.removeItem('senora_draft_' + conversation.id);
                 }
               }}
               onClose={() => setShowFormattingToolbar(false)}
@@ -4292,9 +4292,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     const val = e.target.value;
                     setInput(val);
                     if (val.trim()) {
-                      localStorage.setItem('nexachat_draft_' + conversation.id, val);
+                      localStorage.setItem('senora_draft_' + conversation.id, val);
                     } else {
-                      localStorage.removeItem('nexachat_draft_' + conversation.id);
+                      localStorage.removeItem('senora_draft_' + conversation.id);
                     }
                     clearTimeout(typingDebounceRef.current);
                     wsManager.sendTyping(conversation.id, true);

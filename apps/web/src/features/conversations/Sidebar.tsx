@@ -181,21 +181,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
   // Pin, Mute, Archive state (Phase 10.7)
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem('nexachat_pinned_convs') || '[]');
+      return JSON.parse(localStorage.getItem('senora_pinned_convs') || '[]');
     } catch {
       return [];
     }
   });
   const [mutedIds, setMutedIds] = useState<string[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem('nexachat_muted_convs') || '[]');
+      return JSON.parse(localStorage.getItem('senora_muted_convs') || '[]');
     } catch {
       return [];
     }
   });
   const [archivedIds, setArchivedIds] = useState<string[]>(() => {
     try {
-      return JSON.parse(localStorage.getItem('nexachat_archived_convs') || '[]');
+      return JSON.parse(localStorage.getItem('senora_archived_convs') || '[]');
     } catch {
       return [];
     }
@@ -205,7 +205,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const togglePin = (convId: string) => {
     setPinnedIds((prev) => {
       const next = prev.includes(convId) ? prev.filter((id) => id !== convId) : [...prev, convId];
-      localStorage.setItem('nexachat_pinned_convs', JSON.stringify(next));
+      localStorage.setItem('senora_pinned_convs', JSON.stringify(next));
       return next;
     });
     setContextMenu(null);
@@ -214,7 +214,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const toggleMute = (convId: string) => {
     setMutedIds((prev) => {
       const next = prev.includes(convId) ? prev.filter((id) => id !== convId) : [...prev, convId];
-      localStorage.setItem('nexachat_muted_convs', JSON.stringify(next));
+      localStorage.setItem('senora_muted_convs', JSON.stringify(next));
       return next;
     });
     setContextMenu(null);
@@ -223,7 +223,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const toggleArchive = (convId: string) => {
     setArchivedIds((prev) => {
       const next = prev.includes(convId) ? prev.filter((id) => id !== convId) : [...prev, convId];
-      localStorage.setItem('nexachat_archived_convs', JSON.stringify(next));
+      localStorage.setItem('senora_archived_convs', JSON.stringify(next));
       return next;
     });
     setContextMenu(null);
@@ -618,7 +618,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 title={getConversationTitle(c)}
                 subtitle={getConversationSubtitle(c)}
                 isSaved={Boolean(c.type === 'saved' || (c.type === 'direct' && c.participants?.every((p) => p.id === currentUser.id)))}
-                draft={localStorage.getItem('nexachat_draft_' + c.id)}
+                draft={localStorage.getItem('senora_draft_' + c.id)}
                 lang={lang}
               />
             ))

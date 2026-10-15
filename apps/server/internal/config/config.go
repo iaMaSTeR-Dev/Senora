@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"nexachat/server/internal/storage"
+	"senora/server/internal/storage"
 )
 
 var (
@@ -26,7 +26,7 @@ var (
 )
 
 var knownInsecurePasswords = []string{
-	"nexachat_secure_pass",
+	"senora_secure_pass",
 	"replace_with_a_secure_random_password_min_32_chars",
 	"password",
 	"postgres",
@@ -124,7 +124,7 @@ func LoadFromMap(getEnv func(string) string) (*Config, error) {
 		if rawDB == "" || isSQLiteIndicator(rawDB) {
 			driver = "sqlite"
 			if rawDB == "" {
-				dbURL = "file:nexachat.db?cache=shared&mode=rwc"
+				dbURL = "file:senora.db?cache=shared&mode=rwc"
 			}
 		} else if strings.HasPrefix(rawDB, "postgres://") || strings.HasPrefix(rawDB, "postgresql://") {
 			driver = "postgres"

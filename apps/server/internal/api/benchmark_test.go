@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"nexachat/server/internal/models"
-	"nexachat/server/internal/storage"
+	"senora/server/internal/models"
+	"senora/server/internal/storage"
 )
 
 func BenchmarkRateLimiterAllow(b *testing.B) {

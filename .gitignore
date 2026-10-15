@@ -6,7 +6,6 @@ bin/
 *.so
 *.dylib
 senora-server*
-nexachat-server*
 /server
 
 # Dependencies & Build Artefacts

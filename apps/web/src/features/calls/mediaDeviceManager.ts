@@ -1,4 +1,4 @@
-// Media Device Manager for NexaChat
+// Media Device Manager for Senora
 // Manages real microphone, camera, and speaker enumeration, selection, persistence, and routing
 
 export interface MediaDeviceState {
@@ -13,9 +13,9 @@ export interface MediaDeviceState {
   isSinkIdSupported: boolean;
 }
 
-const STORAGE_KEY_AUDIO_INPUT = 'nexachat_audio_input_id';
-const STORAGE_KEY_AUDIO_OUTPUT = 'nexachat_audio_output_id';
-const STORAGE_KEY_VIDEO_INPUT = 'nexachat_video_input_id';
+const STORAGE_KEY_AUDIO_INPUT = 'senora_audio_input_id';
+const STORAGE_KEY_AUDIO_OUTPUT = 'senora_audio_output_id';
+const STORAGE_KEY_VIDEO_INPUT = 'senora_video_input_id';
 
 class MediaDeviceManager {
   private audioInputs: MediaDeviceInfo[] = [];

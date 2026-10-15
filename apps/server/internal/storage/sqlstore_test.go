@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func newTestStore(t *testing.T) Store {

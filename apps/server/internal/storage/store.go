@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 var (

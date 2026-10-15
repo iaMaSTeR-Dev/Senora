@@ -1,4 +1,4 @@
--- NexaChat Phase 9 Additive Schema Migration (PostgreSQL)
+-- Senora Phase 9 Additive Schema Migration (PostgreSQL)
 
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS security_mode VARCHAR(32) DEFAULT 'normal';
 ALTER TABLE sticker_packs ADD COLUMN IF NOT EXISTS creator_id VARCHAR(64) DEFAULT '';

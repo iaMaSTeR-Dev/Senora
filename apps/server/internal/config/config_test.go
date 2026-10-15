@@ -57,7 +57,7 @@ func TestConfigProductionInvalidScheme(t *testing.T) {
 func TestConfigProductionInsecurePassword(t *testing.T) {
 	env := map[string]string{
 		"ENVIRONMENT":    "production",
-		"DATABASE_URL":   "postgres://nexachat:nexachat_secure_pass@localhost:5432/nexachat_db",
+		"DATABASE_URL":   "postgres://senora:senora_secure_pass@localhost:5432/senora_db",
 		"SESSION_SECRET": "a1b2c3d4e5f67890123456789012345678901234567890123456789012345678",
 	}
 	_, err := LoadFromMap(func(k string) string { return env[k] })
@@ -146,7 +146,7 @@ func TestConfigProductionMissingDBPassword(t *testing.T) {
 	// Missing user / password
 	env1 := map[string]string{
 		"ENVIRONMENT":    "production",
-		"DATABASE_URL":   "postgres://localhost:5432/nexachat_prod",
+		"DATABASE_URL":   "postgres://localhost:5432/senora_prod",
 		"SESSION_SECRET": "4a7b9c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5",
 	}
 	_, err1 := LoadFromMap(func(k string) string { return env1[k] })
@@ -157,7 +157,7 @@ func TestConfigProductionMissingDBPassword(t *testing.T) {
 	// Empty password with username
 	env2 := map[string]string{
 		"ENVIRONMENT":    "production",
-		"DATABASE_URL":   "postgres://user:@localhost:5432/nexachat_prod",
+		"DATABASE_URL":   "postgres://user:@localhost:5432/senora_prod",
 		"SESSION_SECRET": "4a7b9c1d2e3f405162738495a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5",
 	}
 	_, err2 := LoadFromMap(func(k string) string { return env2[k] })
@@ -216,8 +216,8 @@ func TestConfigDevelopmentSQLiteFallback(t *testing.T) {
 	if cfg.Driver != "sqlite" {
 		t.Fatalf("Expected driver 'sqlite', got: %s", cfg.Driver)
 	}
-	if !strings.Contains(cfg.DatabaseURL, "nexachat.db") {
-		t.Fatalf("Expected fallback to nexachat.db, got: %s", cfg.DatabaseURL)
+	if !strings.Contains(cfg.DatabaseURL, "senora.db") {
+		t.Fatalf("Expected fallback to senora.db, got: %s", cfg.DatabaseURL)
 	}
 
 	// Verify InitStorage works cleanly with SQLite in development
@@ -233,7 +233,7 @@ func TestConfigValidPostgreSQLRedaction(t *testing.T) {
 	user := "appuser"
 	pass := "super_secret_dynamic_password_12345"
 	host := "db.internal.net:5432"
-	dbname := "nexachat_prod"
+	dbname := "senora_prod"
 	dsn := "postgres://" + user + ":" + pass + "@" + host + "/" + dbname + "?sslmode=require"
 
 	env := map[string]string{

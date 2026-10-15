@@ -1,4 +1,5 @@
 import { Attachment, AuthSession, CallLog, Conversation, ConversationInvite, ConversationMemberDetail, Device, GIFItem, IceServerConfig, Message, MessageReader, Poll, ScheduledMessage, StickerPack, Story, User, UserKeyPackage, UserPresence, VoiceChatParticipant, VoiceChatRoom } from '../app/types';
+import { migrateBrowserStorage } from './storageMigration';
 
 class ApiClient {
   private token: string | null = null;
@@ -6,15 +7,16 @@ class ApiClient {
   setToken(token: string | null) {
     this.token = token;
     if (token) {
-      localStorage.setItem('nexachat_token', token);
+      localStorage.setItem('senora_token', token);
     } else {
-      localStorage.removeItem('nexachat_token');
+      localStorage.removeItem('senora_token');
     }
   }
 
   getToken(): string | null {
     if (!this.token) {
-      this.token = localStorage.getItem('nexachat_token');
+      migrateBrowserStorage();
+      this.token = localStorage.getItem('senora_token');
     }
     return this.token;
   }

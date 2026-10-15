@@ -19,7 +19,7 @@ export class SignalIndexedDBStore implements StorageType {
   private trustedIdentities = new Map<string, ArrayBuffer>();
 
   constructor(userId: string) {
-    this.dbName = `nexachat_signal_${userId || 'default'}`;
+    this.dbName = `senora_signal_${userId || 'default'}`;
     this.isReadyPromise = this.initDB();
   }
 

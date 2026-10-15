@@ -82,7 +82,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
   // Load recent emojis from storage
   useEffect(() => {
     try {
-      const saved = localStorage.getItem('nexachat_recent_emojis');
+      const saved = localStorage.getItem('senora_recent_emojis');
       if (saved) {
         setRecentEmojis(JSON.parse(saved));
       }
@@ -173,7 +173,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
     const updated = [finalEmoji, ...recentEmojis.filter((e) => e !== finalEmoji)].slice(0, 32);
     setRecentEmojis(updated);
     try {
-      localStorage.setItem('nexachat_recent_emojis', JSON.stringify(updated));
+      localStorage.setItem('senora_recent_emojis', JSON.stringify(updated));
     } catch {}
 
     onSelectEmoji(finalEmoji);

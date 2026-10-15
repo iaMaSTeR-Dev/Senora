@@ -3,17 +3,17 @@
 **Status**: IMPLEMENTED & TESTED (Phase 4 Multi-Device Fan-Out Live, Signal Double Ratchet & X3DH Verified)
 **Date**: 2026-10-11
 **Authors**: Principal Software Architect, Senior Cryptography Integration Engineer, Application Security Architect
-**Audience**: NexaChat Core Engineering & Independent Security Reviewers
+**Audience**: Senora Core Engineering & Independent Security Reviewers
 
 ---
 
 ## 1. Context & Existing Cryptographic Primitives
 
-The baseline implementation of NexaChat provided initial browser-side End-to-End Encryption (E2EE) built on Web Crypto API (`window.crypto.subtle`):
+The baseline implementation of Senora provided initial browser-side End-to-End Encryption (E2EE) built on Web Crypto API (`window.crypto.subtle`):
 - **Asymmetric Key Agreement**: Static-static ECDH over NIST P-256 (`secp256r1`).
 - **Symmetric Encryption**: AES-256-GCM with fresh 96-bit CSPRNG IVs.
-- **Context Binding**: Canonical Authenticated Associated Data (AAD) binding `conversation_id` (`nexachat:v1:conv:<id>`).
-- **Identity Key Storage**: Non-extractable `CryptoKey` objects stored via Structured Cloning in browser IndexedDB (`nexachat_crypto_store`).
+- **Context Binding**: Canonical Authenticated Associated Data (AAD) binding `conversation_id` (`senora:v1:conv:<id>`).
+- **Identity Key Storage**: Non-extractable `CryptoKey` objects stored via Structured Cloning in browser IndexedDB (`senora_crypto_store`).
 - **Identity Verification**: Symmetrical 30-digit Safety Numbers (`SHA-256(min(A,B) || ":" || max(A,B))`) formatted into 6 blocks of 5 digits.
 
 ---

@@ -105,7 +105,7 @@ server {
 
     # Frontend Single-Page Application (Vite Build)
     location / {
-        root /var/www/nexachat/dist;
+        root /var/www/senora/dist;
         index index.html;
         try_files $uri $uri/ /index.html;
     }
@@ -192,7 +192,7 @@ The migration is non-destructive:
 
 ## 8. Self-Hosted Typography & Zero External Font CDN
 
-NexaChat frontend strictly avoids external third-party CDN font dependencies (such as Google Fonts or unpkg) to prevent tracking, latency, and air-gapped deployment failures.
+Senora frontend strictly avoids external third-party CDN font dependencies (such as Google Fonts or unpkg) to prevent tracking, latency, and air-gapped deployment failures.
 
 - **Vazirmatn (Arabic/Persian)**: Included via `@fontsource/vazirmatn` (OFL-1.1 license), bundling WOFF2 and WOFF weights 400, 500, 600, and 700 directly into the frontend assets directory (`dist/assets/`).
 - **Inter (Latin)**: Included via `@fontsource/inter` (OFL-1.1 license) weights 400, 500, 600, and 700.
@@ -202,7 +202,7 @@ NexaChat frontend strictly avoids external third-party CDN font dependencies (su
 
 ## 9. Group Voice Chat Architecture & Signaling
 
-- **Signaling Transport**: Uses NexaChat's existing authenticated WebSocket gateway (`/api/v1/ws`) with `voice_chat.signal` event routing.
+- **Signaling Transport**: Uses Senora's existing authenticated WebSocket gateway (`/api/v1/ws`) with `voice_chat.signal` event routing.
 - **Mesh vs. SFU**:
   - Small group sessions (≤ 6 concurrent speakers) can operate over the built-in authenticated WebSocket signaling mesh.
   - For large auditoriums or high-scale group voice sessions (> 10 participants), configure an external Selective Forwarding Unit (SFU) such as LiveKit or Janus. Token generation endpoints are designed to scope credentials to the authenticated user and conversation ID without exposing administrative secrets to browser clients.

@@ -4,7 +4,7 @@
 Accepted
 
 ## Context
-NexaChat requires an independent, self-hosted messaging platform with high throughput, minimal operational complexity, low memory overhead, and strong automated testability.
+Senora requires an independent, self-hosted messaging platform with high throughput, minimal operational complexity, low memory overhead, and strong automated testability.
 
 ## Decision
 1. **Backend**: Use Go 1.23+ with standard library HTTP routing and `gorilla/websocket` for the WebSocket gateway. Go provides single-binary deployments, fast compilation, low latency, and robust concurrency primitives.

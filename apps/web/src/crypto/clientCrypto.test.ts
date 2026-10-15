@@ -225,9 +225,9 @@ describe('ClientCryptoEngine E2EE Unit & Adversarial Tests', () => {
     const str2 = new TextDecoder().decode(aad2);
     const str3 = new TextDecoder().decode(aad3);
 
-    expect(str1).toBe('nexachat:v1:conv:123');
-    expect(str2).toBe('nexachat:v2:conv:123');
-    expect(str3).toBe('nexachat:v1:conv:1234');
+    expect(str1).toBe('senora:v1:conv:123');
+    expect(str2).toBe('senora:v2:conv:123');
+    expect(str3).toBe('senora:v1:conv:1234');
     expect(str1).not.toBe(str2);
     expect(str1).not.toBe(str3);
   });

@@ -13,7 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestDeduplicationAndIdempotencySuite(t *testing.T) {

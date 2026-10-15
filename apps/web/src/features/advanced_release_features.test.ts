@@ -3,10 +3,10 @@ import { api } from '../protocol/api';
 import { RingtonePlayer } from './calls/webrtcManager';
 import { User } from '../app/types';
 
-describe('NexaChat Advanced Messaging, Media, Calling & Profile Tests (Requirements 12-16)', () => {
+describe('Senora Advanced Messaging, Media, Calling & Profile Tests (Requirements 12-16)', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    const mockStorage: Record<string, string> = { nexachat_token: 'fake_jwt_token' };
+    const mockStorage: Record<string, string> = { senora_token: 'fake_jwt_token' };
     vi.stubGlobal('localStorage', {
       getItem: (k: string) => mockStorage[k] || null,
       setItem: (k: string, v: string) => { mockStorage[k] = v; },

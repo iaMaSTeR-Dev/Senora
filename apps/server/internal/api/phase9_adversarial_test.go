@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestPhase9UserPreferences(t *testing.T) {

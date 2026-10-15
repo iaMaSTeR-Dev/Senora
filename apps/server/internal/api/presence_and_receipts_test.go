@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"nexachat/server/internal/models"
+	"senora/server/internal/models"
 )
 
 func TestPresenceAndReadReceipts(t *testing.T) {

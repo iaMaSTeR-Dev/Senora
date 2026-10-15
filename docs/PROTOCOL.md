@@ -215,8 +215,8 @@ For stickers:
   "text": "🚀",
   "attachment": {
     "isSticker": true,
-    "stickerPackId": "pack_nexa_classic",
-    "stickerId": "stk_nexa_rocket",
+    "stickerPackId": "pack_senora_classic",
+    "stickerId": "stk_senora_rocket",
     "stickerUrl": "data:image/svg+xml;utf8,..."
   }
 }

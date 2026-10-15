@@ -118,7 +118,7 @@ describe('Settings Center & Media Device Manager Unit Tests', () => {
       expect(await verifyPasscode('', hash1)).toBe(false);
 
       // Verify legacy fallback (raw hash without colon)
-      const legacyHash = await hashPasscode('1234', 'nexachat_pbkdf2_pin_salt');
+      const legacyHash = await hashPasscode('1234', 'senora_pbkdf2_pin_salt');
       expect(await verifyPasscode('1234', legacyHash)).toBe(true);
       expect(await verifyPasscode('0000', legacyHash)).toBe(false);
     });

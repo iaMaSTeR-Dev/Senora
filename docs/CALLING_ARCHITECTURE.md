@@ -2,7 +2,7 @@
 
 ## 1. Overview & Topologies
 
-NexaChat implements real-time audio and video communications through WebRTC standards with authenticated signaling mediated by the NexaChat WebSocket gateway.
+Senora implements real-time audio and video communications through WebRTC standards with authenticated signaling mediated by the Senora WebSocket gateway.
 
 ### 1.1 One-to-One Calls (Peer-to-Peer WebRTC)
 - **Topology**: Full peer-to-peer (P2P) direct media connection between caller and callee devices.
