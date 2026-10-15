@@ -1,0 +1,17 @@
+.git/
+.github/
+docs/
+node_modules/
+dist/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+*.zip
+*.tar.gz
+bin/
+uploads/
+**/uploads/
+.vscode/
+.idea/

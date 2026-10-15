@@ -1,0 +1,16 @@
+{$DOMAIN:localhost} {
+    # WebSocket and REST API routes proxy to Go backend
+    handle /api/* {
+        reverse_proxy server:8080 {
+            header_up Host {host}
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-For {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Static frontend assets proxy to Web container
+    handle {
+        reverse_proxy web:80
+    }
+}

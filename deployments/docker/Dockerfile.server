@@ -1,0 +1,28 @@
+# Build stage
+FROM golang:1.23-alpine AS builder
+
+WORKDIR /src
+
+COPY apps/server/go.mod apps/server/go.sum* ./apps/server/
+WORKDIR /src/apps/server
+RUN go mod download || true
+
+COPY apps/server/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /bin/senora-server ./cmd/server
+
+# Final stage
+FROM alpine:3.20
+
+RUN apk --no-cache add ca-certificates tzdata && \
+    addgroup -g 1000 senora && \
+    adduser -D -u 1000 -G senora senora
+
+WORKDIR /app
+COPY --from=builder /bin/senora-server /app/senora-server
+RUN chown -R senora:senora /app
+
+USER senora
+
+EXPOSE 8080
+
+ENTRYPOINT ["/app/senora-server"]

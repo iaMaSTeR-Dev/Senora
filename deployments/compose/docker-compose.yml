@@ -1,0 +1,62 @@
+version: '3.8'
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: senora-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ../docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - server
+      - web
+
+  server:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.server
+    container_name: senora-server
+    restart: unless-stopped
+    environment:
+      - PORT=8080
+      - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      - SESSION_SECRET=${SESSION_SECRET}
+      - ENVIRONMENT=production
+      - TRUST_PROXY=true
+      - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ../../
+      dockerfile: deployments/docker/Dockerfile.web
+    container_name: senora-web
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: senora-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-senora}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-senora_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-senora} -d ${POSTGRES_DB:-senora_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

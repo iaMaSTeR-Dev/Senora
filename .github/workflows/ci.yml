@@ -1,0 +1,86 @@
+name: Senora CI Pipeline
+
+on:
+  push:
+    branches: [ master, main ]
+  pull_request:
+    branches: [ master, main ]
+
+jobs:
+  backend-test:
+    name: Backend Tests & PostgreSQL Runtime Verification
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: nexachat
+          POSTGRES_PASSWORD: nexachat_password
+          POSTGRES_DB: nexachat_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache-dependency-path: apps/server/go.sum
+
+      - name: Verify PostgreSQL Schema Migrations
+        env:
+          PGPASSWORD: nexachat_password
+        run: |
+          psql -h localhost -U nexachat -d nexachat_test -f database/migrations/000001_init.sql
+          psql -h localhost -U nexachat -d nexachat_test -f database/migrations/000002_phase9.sql
+          psql -h localhost -U nexachat -d nexachat_test -f database/migrations/000003_phase10_15.sql
+          psql -h localhost -U nexachat -d nexachat_test -f database/migrations/000004_phase16_telegram_completion.sql
+          psql -h localhost -U nexachat -d nexachat_test -f database/migrations/000005_message_reads.sql
+
+      - name: Run Backend Tests
+        working-directory: apps/server
+        env:
+          TEST_DATABASE_URL: postgres://nexachat:nexachat_password@localhost:5432/nexachat_test?sslmode=disable
+        run: |
+          go vet ./...
+          go test -v -count=1 ./...
+
+  frontend-test:
+    name: Frontend Quality & Build Verification
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install Dependencies
+        working-directory: apps/web
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: apps/web
+        run: npx tsc --noEmit
+
+      - name: Run Vitest Suite
+        working-directory: apps/web
+        run: npm test -- --run
+
+      - name: Build Production Assets
+        working-directory: apps/web
+        run: npm run build

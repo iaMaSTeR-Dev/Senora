@@ -1,0 +1,229 @@
+@import "@fontsource/vazirmatn/400.css";
+@import "@fontsource/vazirmatn/500.css";
+@import "@fontsource/vazirmatn/600.css";
+@import "@fontsource/vazirmatn/700.css";
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --bg-main: #0e1621;
+    --bg-sidebar: #17212b;
+    --bg-header: #17212b;
+    --bg-card: #242f3d;
+    --text-primary: #f5f5f5;
+    --text-muted: #7f91a4;
+    --border-color: #101921;
+    --primary-color: #24A1DE;
+    --bubble-outgoing: #2b5278;
+    --bubble-incoming: #182533;
+    --font-persian: 'Vazirmatn', 'Inter', system-ui, -apple-system, sans-serif;
+    --font-latin: 'Inter', 'Vazirmatn', system-ui, -apple-system, sans-serif;
+    --chat-font-size: 15px;
+  }
+
+  .light {
+    --bg-main: #f0f2f5;
+    --bg-sidebar: #ffffff;
+    --bg-header: #ffffff;
+    --bg-card: #f9fafb;
+    --text-primary: #111827;
+    --text-muted: #6b7280;
+    --border-color: #e5e7eb;
+    --primary-color: #24A1DE;
+    --bubble-outgoing: #effdde;
+    --bubble-incoming: #ffffff;
+  }
+
+  body, button, input, textarea, select {
+    font-family: 'Inter', 'Vazirmatn', system-ui, -apple-system, sans-serif;
+  }
+
+  /* Persian Typography & RTL Rules — Vazirmatn Is Mandatory */
+  [dir="rtl"],
+  [dir="rtl"] body,
+  [dir="rtl"] input,
+  [dir="rtl"] textarea,
+  [dir="rtl"] button,
+  .font-persian,
+  :lang(fa),
+  [dir="auto"],
+  .chat-message-text {
+    font-family: 'Vazirmatn', 'Inter', system-ui, -apple-system, sans-serif !important;
+  }
+
+  [dir="rtl"] {
+    direction: rtl;
+    text-align: right;
+  }
+
+  [dir="ltr"] {
+    direction: ltr;
+    text-align: left;
+  }
+
+  /* Natural bidirectional text rendering */
+  [dir="auto"] {
+    unicode-bidi: plaintext;
+  }
+
+  p[dir="auto"],
+  textarea[dir="auto"],
+  input[dir="auto"],
+  span[dir="auto"],
+  div[dir="auto"] {
+    font-family: 'Vazirmatn', 'Inter', system-ui, sans-serif !important;
+  }
+}
+
+/* Telegram Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(127, 145, 164, 0.25);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(127, 145, 164, 0.45);
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.18s ease-out forwards;
+}
+
+/* Chat Message Font Size Binding */
+.chat-message-text {
+  font-size: var(--chat-font-size, 15px);
+}
+
+/* Reduced Motion Accessibility */
+.reduce-motion *,
+.reduce-motion *::before,
+.reduce-motion *::after {
+  animation-duration: 0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+}
+
+/* High Contrast Mode */
+.high-contrast {
+  --border-color: #374151;
+  filter: contrast(1.15);
+}
+
+/* Complete Light Theme Overrides for Tailwind Arbitrary Values */
+html.light body,
+.light #root,
+.light .bg-\[\#0e1621\] {
+  background-color: var(--bg-main) !important;
+  color: var(--text-primary) !important;
+}
+
+.light .bg-\[\#17212b\] {
+  background-color: var(--bg-sidebar) !important;
+}
+
+.light .bg-\[\#242f3d\] {
+  background-color: var(--bg-card) !important;
+}
+
+.light .bg-\[\#202b36\] {
+  background-color: #e5e7eb !important;
+}
+
+.light .bg-\[\#101921\] {
+  background-color: #e5e7eb !important;
+}
+
+.light .bg-\[\#182533\] {
+  background-color: var(--bubble-incoming) !important;
+  color: #111827 !important;
+  border-color: #e5e7eb !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) !important;
+}
+
+.light .bg-\[\#2b5278\] {
+  background-color: var(--bubble-outgoing) !important;
+  color: #111827 !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06) !important;
+}
+
+.light .border-\[\#101921\] {
+  border-color: var(--border-color) !important;
+}
+
+.light .border-\[\#242f3d\] {
+  border-color: #e5e7eb !important;
+}
+
+.light .border-\[\#17212b\] {
+  border-color: #e5e7eb !important;
+}
+
+.light .border-\[\#2b5278\] {
+  border-color: #d1d5db !important;
+}
+
+.light .text-white {
+  color: var(--text-primary) !important;
+}
+
+.light .text-white\/80 {
+  color: #374151 !important;
+}
+
+.light .text-white\/60 {
+  color: #4b5563 !important;
+}
+
+.light .text-white\/50 {
+  color: #6b7280 !important;
+}
+
+.light .text-\[\#f5f5f5\] {
+  color: var(--text-primary) !important;
+}
+
+.light .text-\[\#7f91a4\] {
+  color: var(--text-muted) !important;
+}
+
+.light .text-slate-300 {
+  color: #374151 !important;
+}
+
+.light .text-slate-400 {
+  color: #6b7280 !important;
+}
+
+.light .hover\:bg-\[\#202b36\]:hover {
+  background-color: #f3f4f6 !important;
+}
+
+.light .hover\:bg-\[\#242f3d\]:hover {
+  background-color: #e5e7eb !important;
+}
+
+.light .hover\:text-white:hover {
+  color: #111827 !important;
+}
