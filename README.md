@@ -303,9 +303,18 @@ Please see [SECURITY.md](SECURITY.md) for details on responsible disclosure and 
 
 ---
 
+
 ## License
 
-License terms for Senora are currently being finalized. Please consult repository maintainers before public commercial distribution or derivative packaging.
+Copyright (C) 2026 iaMaSTeR
+
+Senora is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License v3.0 only**.
+
+This project is distributed in the hope that it will be useful, but **WITHOUT ANY WARRANTY**; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+See the [GNU General Public License v3.0](LICENSE) for the complete license terms.
+
+**SPDX-License-Identifier:** `GPL-3.0-only`
 
 ---
 
