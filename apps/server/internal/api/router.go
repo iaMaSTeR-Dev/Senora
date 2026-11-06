@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -3426,9 +3427,14 @@ func (r *Router) handleBotSendMessage(w http.ResponseWriter, req *http.Request) 
 		if tokenModel != nil && tokenModel.Name != "" {
 			botName = tokenModel.Name
 		}
+		botUsername := senderID
+		if len(botUsername) > 32 {
+			h := sha256.Sum256([]byte(senderID))
+			botUsername = "bot_" + hex.EncodeToString(h[:])[:26]
+		}
 		_ = r.store.CreateUser(req.Context(), &models.User{
 			ID:           senderID,
-			Username:     senderID,
+			Username:     botUsername,
 			DisplayName:  botName,
 			PasswordHash: "*bot_system_locked*",
 			IsApproved:   true,
