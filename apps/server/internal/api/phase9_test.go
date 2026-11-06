@@ -37,6 +37,7 @@ func setupPhase9TestServer(t *testing.T) (*httptest.Server, storage.Store, *even
 	if err != nil {
 		t.Fatalf("Failed to create store: %v", err)
 	}
+	_ = store.ResetForTesting(context.Background())
 
 	sessionSvc := auth.NewSessionService(store, 24*time.Hour)
 	idSvc := identity.NewService(store, sessionSvc)
@@ -72,6 +73,25 @@ func registerAndLoginPhase9User(t *testing.T, server *httptest.Server, username,
 		t.Fatalf("Failed to register %s: %v", username, err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusBadRequest {
+		loginBody, _ := json.Marshal(map[string]string{
+			"username":    username,
+			"password":    password,
+			"device_name": "TestDevice",
+		})
+		loginResp, loginErr := http.Post(server.URL+"/api/v1/auth/login", "application/json", bytes.NewReader(loginBody))
+		if loginErr == nil && loginResp.StatusCode == http.StatusOK {
+			defer loginResp.Body.Close()
+			var loginResult struct {
+				User  models.User `json:"user"`
+				Token string      `json:"token"`
+			}
+			if err := json.NewDecoder(loginResp.Body).Decode(&loginResult); err == nil && loginResult.Token != "" {
+				return loginResult.User.ID, loginResult.Token
+			}
+		}
+	}
 
 	var regResult struct {
 		User  models.User `json:"user"`

@@ -19,6 +19,7 @@ var (
 type Store interface {
 	Close() error
 	Migrate() error
+	ResetForTesting(ctx context.Context) error
 
 	// User repository
 	CreateUser(ctx context.Context, u *models.User) error

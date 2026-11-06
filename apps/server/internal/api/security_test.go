@@ -35,6 +35,7 @@ func setupSecurityTestServer(t *testing.T) (*httptest.Server, *Router, storage.S
 	if err != nil {
 		t.Fatalf("Failed to initialize security test store (%s): %v", driver, err)
 	}
+	_ = store.ResetForTesting(context.Background())
 
 	sessionService := auth.NewSessionService(store, 24*time.Hour)
 	identityService := identity.NewService(store, sessionService)
@@ -66,6 +67,20 @@ func registerTestUser(t *testing.T, server *httptest.Server, username, password 
 		"password":     password,
 	})
 	resp, err := client.Post(server.URL+"/api/v1/auth/register", "application/json", bytes.NewReader(body))
+	if err == nil && resp.StatusCode == http.StatusBadRequest {
+		loginBody, _ := json.Marshal(map[string]string{
+			"username": username,
+			"password": password,
+		})
+		loginResp, loginErr := client.Post(server.URL+"/api/v1/auth/login", "application/json", bytes.NewReader(loginBody))
+		if loginErr == nil && loginResp.StatusCode == http.StatusOK {
+			var res map[string]interface{}
+			_ = json.NewDecoder(loginResp.Body).Decode(&res)
+			token := res["token"].(string)
+			user := res["user"].(map[string]interface{})
+			return user["id"].(string), token
+		}
+	}
 	if err != nil || resp.StatusCode != http.StatusCreated {
 		t.Fatalf("Failed to register %s: %v, status: %d", username, err, resp.StatusCode)
 	}

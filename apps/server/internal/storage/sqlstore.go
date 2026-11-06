@@ -69,6 +69,14 @@ func (s *SQLStore) Close() error {
 	return s.db.Close()
 }
 
+func (s *SQLStore) ResetForTesting(ctx context.Context) error {
+	if s.driverName == "postgres" {
+		_, err := s.db.ExecContext(ctx, `TRUNCATE TABLE users, conversations, bot_tokens, banned_ips CASCADE;`)
+		return err
+	}
+	return nil
+}
+
 func (s *SQLStore) Migrate() error {
 	var schema string
 	if s.driverName == "postgres" {

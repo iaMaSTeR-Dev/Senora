@@ -3419,6 +3419,24 @@ func (r *Router) handleBotSendMessage(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 
+	// Ensure bot sender user exists in users table to satisfy PostgreSQL foreign key constraint (messages_sender_id_fkey)
+	botUser, _ := r.store.GetUserByID(req.Context(), senderID)
+	if botUser == nil {
+		botName := "Bot System"
+		if tokenModel != nil && tokenModel.Name != "" {
+			botName = tokenModel.Name
+		}
+		_ = r.store.CreateUser(req.Context(), &models.User{
+			ID:           senderID,
+			Username:     senderID,
+			DisplayName:  botName,
+			PasswordHash: "*bot_system_locked*",
+			IsApproved:   true,
+			IsOwner:      false,
+			IsBanned:     false,
+		})
+	}
+
 	msg := &models.Message{
 		ID:             "msg_bot_" + uuid.New().String(),
 		ConversationID: body.ConversationID,

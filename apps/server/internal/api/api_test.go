@@ -35,6 +35,7 @@ func setupTestServer(t *testing.T) (*httptest.Server, *Router, storage.Store) {
 	if err != nil {
 		t.Fatalf("Failed to initialize store: %v", err)
 	}
+	_ = store.ResetForTesting(context.Background())
 
 	sessionService := auth.NewSessionService(store, 24*time.Hour)
 	identityService := identity.NewService(store, sessionService)
