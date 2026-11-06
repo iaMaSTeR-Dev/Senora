@@ -6199,6 +6199,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           position={contextMenuPos}
           currentUser={currentUser}
           isOwnerOrAdmin={conversation.type === 'direct' || myRole === 'owner' || myRole === 'admin' || contextMenuPos.message.sender_id === currentUser.id}
+          lang={lang}
           onClose={() => setContextMenuPos(null)}
           onReply={handleReply}
           onForward={(msg) => setForwardingMessages([msg])}

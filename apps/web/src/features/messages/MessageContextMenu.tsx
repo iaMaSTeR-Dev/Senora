@@ -28,6 +28,7 @@ interface MessageContextMenuProps {
   position: ContextMenuPosition;
   currentUser: User;
   isOwnerOrAdmin: boolean;
+  lang?: 'en' | 'fa';
   onClose: () => void;
   onReply: (msg: Message) => void;
   onForward: (msg: Message) => void;
@@ -53,6 +54,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
   position,
   currentUser,
   isOwnerOrAdmin,
+  lang = 'en',
   onClose,
   onReply,
   onForward,
@@ -153,7 +155,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <CornerUpLeft size={14} className="text-[#24A1DE]" />
-          <span>Reply</span>
+          <span>{lang === 'fa' ? 'پاسخ' : 'Reply'}</span>
         </button>
 
         {/* Forward */}
@@ -166,7 +168,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <Share2 size={14} className="text-[#24A1DE]" />
-          <span>Forward</span>
+          <span>{lang === 'fa' ? 'ارسال به دیگران' : 'Forward'}</span>
         </button>
 
         {/* Copy Text */}
@@ -179,7 +181,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <Copy size={14} className="text-[#7f91a4]" />
-          <span>Copy Text</span>
+          <span>{lang === 'fa' ? 'کپی متن' : 'Copy Text'}</span>
         </button>
 
         {/* Copy Message Link */}
@@ -192,7 +194,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <LinkIcon size={14} className="text-[#7f91a4]" />
-          <span>Copy Link</span>
+          <span>{lang === 'fa' ? 'کپی پیوند پیام' : 'Copy Link'}</span>
         </button>
 
         {/* Edit Message (if permitted) */}
@@ -206,7 +208,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
           >
             <Pencil size={14} className="text-[#24A1DE]" />
-            <span>Edit</span>
+            <span>{lang === 'fa' ? 'ویرایش' : 'Edit'}</span>
           </button>
         )}
 
@@ -220,7 +222,11 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <Pin size={14} className={msg.is_pinned ? 'text-amber-400' : 'text-[#7f91a4]'} />
-          <span>{msg.is_pinned ? 'Unpin' : 'Pin to Top'}</span>
+          <span>
+            {msg.is_pinned
+              ? (lang === 'fa' ? 'حذف سنجاق' : 'Unpin')
+              : (lang === 'fa' ? 'سنجاق به بالا' : 'Pin to Top')}
+          </span>
         </button>
 
         {/* Save to Saved Messages */}
@@ -233,7 +239,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <Bookmark size={14} className="text-[#24A1DE]" />
-          <span>Save to Saved Messages</span>
+          <span>{lang === 'fa' ? 'ذخیره در پیام‌های ذخیره‌شده' : 'Save to Saved Messages'}</span>
         </button>
 
         {/* Select Multiple Messages */}
@@ -246,7 +252,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <CheckSquare size={14} className="text-[#7f91a4]" />
-          <span>Select Messages</span>
+          <span>{lang === 'fa' ? 'انتخاب پیام‌ها' : 'Select Messages'}</span>
         </button>
 
         {/* Attachment specific actions */}
@@ -262,12 +268,11 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
               className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
             >
               <Download size={14} className="text-emerald-400" />
-              <span>Download Attachment</span>
+              <span>{lang === 'fa' ? 'دانلود فایل پیوست' : 'Download Attachment'}</span>
             </button>
           </>
         )}
 
-        {/* Open Media Fullscreen */}
         {isMedia && (
           <button
             type="button"
@@ -278,7 +283,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
           >
             <Maximize2 size={14} className="text-[#24A1DE]" />
-            <span>Open Fullscreen</span>
+            <span>{lang === 'fa' ? 'نمایش تمام‌صفحه' : 'Open Fullscreen'}</span>
           </button>
         )}
 
@@ -293,7 +298,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left text-emerald-400 cursor-pointer"
           >
             <Film size={14} />
-            <span>سینما پارتی (تماشای همزمان)</span>
+            <span>{lang === 'fa' ? 'سینما پارتی (تماشای همزمان)' : 'Watch Party (Sync Play)'}</span>
           </button>
         )}
 
@@ -307,7 +312,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left text-indigo-400 cursor-pointer"
           >
             <Share2 size={14} />
-            <span>لینک استریم مستقیم و وب پلیر</span>
+            <span>{lang === 'fa' ? 'لینک استریم مستقیم و وب پلیر' : 'Direct Stream & Web Player'}</span>
           </button>
         )}
 
@@ -323,7 +328,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <UserIcon size={14} className="text-[#7f91a4]" />
-          <span>Sender Profile</span>
+          <span>{lang === 'fa' ? 'پروفایل ارسال‌کننده' : 'Sender Profile'}</span>
         </button>
 
         {/* Message Info */}
@@ -336,7 +341,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
         >
           <Info size={14} className="text-[#7f91a4]" />
-          <span>Message Info</span>
+          <span>{lang === 'fa' ? 'اطلاعات پیام' : 'Message Info'}</span>
         </button>
 
         {/* View Read By (Admins or Author) */}
@@ -350,7 +355,10 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left cursor-pointer"
           >
             <CheckCheck size={14} className="text-[#24A1DE]" />
-            <span>Read by{msg.read_count ? ` (${msg.read_count})` : ''}</span>
+            <span>
+              {lang === 'fa' ? 'خوانده شده توسط' : 'Read by'}
+              {msg.read_count ? ` (${msg.read_count})` : ''}
+            </span>
           </button>
         )}
 
@@ -366,7 +374,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-rose-500/20 text-rose-300 transition text-left cursor-pointer"
         >
           <Trash2 size={14} />
-          <span>Delete for Me</span>
+          <span>{lang === 'fa' ? 'حذف برای من' : 'Delete for Me'}</span>
         </button>
 
         {/* Delete For Everyone */}
@@ -380,7 +388,7 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
             className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-red-600/30 text-red-400 font-semibold transition text-left cursor-pointer"
           >
             <Trash2 size={14} />
-            <span>Delete for Everyone</span>
+            <span>{lang === 'fa' ? 'حذف برای همه' : 'Delete for Everyone'}</span>
           </button>
         )}
       </div>
