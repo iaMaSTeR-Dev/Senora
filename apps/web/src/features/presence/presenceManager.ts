@@ -108,12 +108,11 @@ export function useUserPresence(userId?: string, lang: 'en' | 'fa' = 'en') {
     const cached = presenceManager.getPresence(userId);
     if (cached) {
       setPresence(cached);
+    } else {
+      presenceManager.loadPresence(userId, false).then((p) => {
+        if (p) setPresence(p);
+      });
     }
-
-    // Always revalidate with authoritative server state in background
-    presenceManager.loadPresence(userId, true).then((p) => {
-      if (p) setPresence(p);
-    });
 
     const unsub = presenceManager.subscribe((uid, p) => {
       if (uid === userId) {

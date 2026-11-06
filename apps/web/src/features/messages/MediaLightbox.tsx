@@ -8,7 +8,10 @@ import {
   ZoomOut,
   RotateCcw,
   Copy,
-  Check
+  Check,
+  Tv,
+  Film,
+  Share2
 } from 'lucide-react';
 import { mediaDeviceManager } from '../calls/mediaDeviceManager';
 
@@ -22,6 +25,7 @@ export interface LightboxMediaItem {
   caption?: string;
   currentIndex?: number;
   totalCount?: number;
+  attachmentId?: string;
 }
 
 interface MediaLightboxProps {
@@ -32,6 +36,8 @@ interface MediaLightboxProps {
   hasPrev?: boolean;
   hasNext?: boolean;
   onJumpToMessage?: (msgId: string) => void;
+  onStartWatchParty?: (media: LightboxMediaItem) => void;
+  onShareMedia?: (media: LightboxMediaItem) => void;
 }
 
 export const MediaLightbox: React.FC<MediaLightboxProps> = ({
@@ -42,10 +48,13 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   hasPrev,
   hasNext,
   onJumpToMessage,
+  onStartWatchParty,
+  onShareMedia,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState<number>(1);
+  const [videoSpeed, setVideoSpeed] = useState<number>(1);
   const [copied, setCopied] = useState<boolean>(false);
   const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState<boolean>(false);
@@ -55,6 +64,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   useEffect(() => {
     setZoom(1);
     setPan({ x: 0, y: 0 });
+    setVideoSpeed(1);
   }, [media.id, media.url]);
 
   useEffect(() => {
@@ -62,6 +72,28 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
       mediaDeviceManager.applyAudioOutput(videoRef.current);
     }
   }, [media]);
+
+  const cycleVideoSpeed = () => {
+    const speeds = [1, 1.5, 2];
+    const nextSpeed = speeds[(speeds.indexOf(videoSpeed) + 1) % speeds.length];
+    setVideoSpeed(nextSpeed);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = nextSpeed;
+    }
+  };
+
+  const togglePiP = async () => {
+    try {
+      if (!videoRef.current) return;
+      if (document.pictureInPictureElement) {
+        await document.exitPictureInPicture();
+      } else if (document.pictureInPictureEnabled) {
+        await videoRef.current.requestPictureInPicture();
+      }
+    } catch (e) {
+      console.warn('PiP error:', e);
+    }
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -214,6 +246,51 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
               >
                 <RotateCcw size={18} />
               </button>
+            </>
+          )}
+
+          {media.type === 'video' && (
+            <>
+              <button
+                type="button"
+                onClick={cycleVideoSpeed}
+                className="px-2 py-1 text-xs font-bold text-[#24A1DE] bg-[#24A1DE]/10 hover:bg-[#24A1DE]/20 rounded-lg border border-[#24A1DE]/30 transition cursor-pointer"
+                title="تغییر سرعت ویدیو (1x, 1.5x, 2x)"
+              >
+                {videoSpeed}x
+              </button>
+              {typeof document !== 'undefined' && 'pictureInPictureEnabled' in document && (
+                <button
+                  type="button"
+                  onClick={togglePiP}
+                  className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
+                  title="تصویر در تصویر (Picture-in-Picture)"
+                >
+                  <Tv size={18} />
+                </button>
+              )}
+              {onStartWatchParty && (
+                <button
+                  type="button"
+                  onClick={() => onStartWatchParty(media)}
+                  className="px-2.5 py-1 text-xs font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-lg border border-emerald-500/30 transition flex items-center gap-1 cursor-pointer"
+                  title="سینما پارتی (تماشای همزمان)"
+                >
+                  <Film size={14} />
+                  <span>سینما پارتی</span>
+                </button>
+              )}
+              {onShareMedia && (
+                <button
+                  type="button"
+                  onClick={() => onShareMedia(media)}
+                  className="px-2.5 py-1 text-xs font-semibold text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20 rounded-lg border border-indigo-500/30 transition flex items-center gap-1 cursor-pointer"
+                  title="لینک استریم مستقیم و وب پلیر"
+                >
+                  <Share2 size={14} />
+                  <span>اشتراک استریم</span>
+                </button>
+              )}
             </>
           )}
 

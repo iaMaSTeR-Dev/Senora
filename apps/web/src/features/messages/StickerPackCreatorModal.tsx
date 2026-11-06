@@ -7,7 +7,9 @@ import {
   Check,
   Download,
   X,
-  AlertCircle
+  AlertCircle,
+  Upload,
+  Plus
 } from 'lucide-react';
 
 interface StickerPackCreatorModalProps {
@@ -31,8 +33,10 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
   const [newEmoji, setNewEmoji] = useState('🔥');
   const [newAssetUrl, setNewAssetUrl] = useState('');
   const [saving, setSaving] = useState(false);
+  const [uploadingBatch, setUploadingBatch] = useState(false);
   const [createdPack, setCreatedPack] = useState<StickerPack | null>(null);
   const [copiedShare, setCopiedShare] = useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   // Import state
   const [shareInput, setShareInput] = useState('');
@@ -41,6 +45,51 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
   const [installing, setInstalling] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
+
+  const PRESET_EMOJIS = ['✨', '🔥', '❤️', '😂', '👍', '🚀', '🎉', '😍', '👀', '💯', '👏', '⚡', '🌟', '🦄', '🌈', '🍕'];
+
+  const handleBatchFileUpload = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
+
+    setUploadingBatch(true);
+    setError(null);
+
+    const validMimes = ['image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif', 'image/svg+xml', 'video/webm'];
+    const validExtensions = /\.(png|jpe?g|webp|gif|svg|webm)$/i;
+
+    const loadedStickers: Array<{ emoji: string; asset_url: string }> = [];
+
+    for (let i = 0; i < fileArray.length; i++) {
+      const file = fileArray[i];
+      if (file.size > 100 * 1024 * 1024) continue; // 100MB limit
+      const isMimeValid = validMimes.includes(file.type.toLowerCase()) || validExtensions.test(file.name);
+      if (!isMimeValid) continue;
+
+      const assignedEmoji = PRESET_EMOJIS[(stickers.length + loadedStickers.length) % PRESET_EMOJIS.length];
+
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+
+        loadedStickers.push({
+          emoji: assignedEmoji,
+          asset_url: dataUrl,
+        });
+      } catch (e) {
+        console.warn('Batch upload read error:', file.name, e);
+      }
+    }
+
+    if (loadedStickers.length > 0) {
+      setStickers((prev) => [...prev, ...loadedStickers]);
+    }
+    setUploadingBatch(false);
+  };
 
   const handleAddSticker = () => {
     if (!newEmoji.trim()) return;
@@ -62,11 +111,28 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
     setError(null);
     setSaving(true);
     try {
-      const packName = name.trim() || title.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      const cleanStickers: Array<{ emoji: string; asset_url: string }> = [];
+      for (let i = 0; i < stickers.length; i++) {
+        const s = stickers[i];
+        let assetUrl = s.asset_url;
+        if (assetUrl.startsWith('data:')) {
+          try {
+            const up = await api.uploadStickerAsset(assetUrl);
+            if (up?.url) {
+              assetUrl = up.url;
+            }
+          } catch (upErr) {
+            console.warn('Asset upload error:', upErr);
+          }
+        }
+        cleanStickers.push({ emoji: s.emoji || '✨', asset_url: assetUrl });
+      }
+
+      const packName = (name.trim() || title).toLowerCase().replace(/[^a-z0-9_]/g, '_') || 'pack_' + Date.now();
       const pack = await api.createUserStickerPack({
         title: title.trim(),
         name: packName,
-        stickers,
+        stickers: cleanStickers,
       });
       setCreatedPack(pack);
       onPackCreatedOrInstalled(pack);
@@ -248,19 +314,59 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                     <label className="text-xs font-semibold text-[#7f91a4]">
                       Stickers ({stickers.length})
                     </label>
+                    <button
+                      type="button"
+                      onClick={() => fileInputRef.current?.click()}
+                      className="flex items-center gap-1.5 text-xs font-semibold text-[#24A1DE] hover:underline cursor-pointer"
+                    >
+                      <Plus size={13} />
+                      <span>Batch Upload Photos / WebM / WebP</span>
+                    </button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      multiple
+                      accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml,video/webm,.webm,.webp"
+                      onChange={(e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          handleBatchFileUpload(e.target.files);
+                        }
+                      }}
+                      className="hidden"
+                    />
                   </div>
 
-                  <div className="grid grid-cols-4 gap-2.5 max-h-48 overflow-y-auto p-1 bg-[#101921] rounded-2xl border border-[#242f3d]">
+                  <div
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        handleBatchFileUpload(e.dataTransfer.files);
+                      }
+                    }}
+                    className="grid grid-cols-4 gap-2.5 max-h-48 overflow-y-auto p-1.5 bg-[#101921] rounded-2xl border border-[#242f3d]"
+                  >
                     {stickers.map((stk, idx) => (
                       <div
                         key={idx}
                         className="relative group h-20 rounded-xl bg-[#17212b] border border-[#242f3d] flex flex-col items-center justify-center p-2"
                       >
-                        <img
-                          src={stk.asset_url}
-                          alt={stk.emoji}
-                          className="h-10 w-10 object-contain"
-                        />
+                        {stk.asset_url?.includes('video/webm') || stk.asset_url?.endsWith('.webm') ? (
+                          <video
+                            src={stk.asset_url}
+                            autoPlay
+                            loop
+                            muted
+                            playsInline
+                            className="h-10 w-10 object-contain pointer-events-none"
+                          />
+                        ) : (
+                          <img
+                            src={stk.asset_url}
+                            alt={stk.emoji}
+                            className="h-10 w-10 object-contain"
+                          />
+                        )}
                         <span className="text-xs mt-1">{stk.emoji}</span>
                         <button
                           type="button"
@@ -272,6 +378,12 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                       </div>
                     ))}
                   </div>
+                  {uploadingBatch && (
+                    <div className="text-[11px] text-[#24A1DE] mt-1 flex items-center gap-1">
+                      <Upload size={12} className="animate-bounce" />
+                      <span>Processing uploaded media...</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Add new sticker inline */}
@@ -287,7 +399,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                     type="text"
                     value={newAssetUrl}
                     onChange={(e) => setNewAssetUrl(e.target.value)}
-                    placeholder="Custom Image URL or SVG (leave empty for emoji graphic)"
+                    placeholder="Custom Image URL, WebM URL, or SVG"
                     className="flex-1 bg-[#101921] border border-[#242f3d] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none"
                   />
                   <button
@@ -358,11 +470,22 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                       key={stk.id}
                       className="h-16 rounded-xl bg-[#17212b] border border-[#242f3d] flex flex-col items-center justify-center p-1.5"
                     >
-                      <img
-                        src={stk.asset_url}
-                        alt={stk.emoji}
-                        className="h-8 w-8 object-contain"
-                      />
+                      {stk.asset_url?.includes('video/webm') || stk.asset_url?.endsWith('.webm') ? (
+                        <video
+                          src={stk.asset_url}
+                          autoPlay
+                          loop
+                          muted
+                          playsInline
+                          className="h-8 w-8 object-contain pointer-events-none"
+                        />
+                      ) : (
+                        <img
+                          src={stk.asset_url}
+                          alt={stk.emoji}
+                          className="h-8 w-8 object-contain"
+                        />
+                      )}
                       <span className="text-[11px] mt-1">{stk.emoji}</span>
                     </div>
                   ))}

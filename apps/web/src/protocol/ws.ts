@@ -1,4 +1,5 @@
 import { CallSignal } from '../app/types';
+import { serverManager } from './serverManager';
 
 export type WebSocketEventListener = (event: {
   type: string;
@@ -21,8 +22,15 @@ class WebSocketManager {
       this.disconnect();
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
+    const activeServer = serverManager.getActiveServer();
+    let wsUrl: string;
+    if (activeServer.wsUrl && typeof window !== 'undefined' && window.location && !activeServer.wsUrl.includes(window.location.host)) {
+      const baseWs = activeServer.wsUrl.split('?')[0];
+      wsUrl = `${baseWs}?token=${encodeURIComponent(token)}`;
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${protocol}//${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}`;
+    }
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -84,11 +92,35 @@ class WebSocketManager {
     }
   }
 
-  subscribe(listener: WebSocketEventListener): () => void {
+  subscribe(listener: WebSocketEventListener): () => void;
+  subscribe(eventType: string, callback: (payload: any) => void): () => void;
+  subscribe(
+    listenerOrType: WebSocketEventListener | string,
+    callback?: (payload: any) => void
+  ): () => void {
+    if (typeof listenerOrType === 'string' && callback) {
+      const filteredListener: WebSocketEventListener = (event) => {
+        if (event.type === listenerOrType) {
+          callback(event.payload);
+        }
+      };
+      this.listeners.add(filteredListener);
+      return () => {
+        this.listeners.delete(filteredListener);
+      };
+    }
+
+    const listener = listenerOrType as WebSocketEventListener;
     this.listeners.add(listener);
     return () => {
       this.listeners.delete(listener);
     };
+  }
+
+  emit(type: string, payload: any) {
+    for (const listener of this.listeners) {
+      listener({ type, payload });
+    }
   }
 
   private startHeartbeat() {

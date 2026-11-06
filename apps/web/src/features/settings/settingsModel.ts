@@ -1,5 +1,4 @@
 // Typed Settings Model & Persistence Engine for Senora
-import { getLegacyNamespacePrefix } from '../../protocol/storageMigration';
 // Inspired by Telegram Desktop & Web Settings Architecture
 
 export type ThemeOption = 'dark' | 'light' | 'system';
@@ -221,12 +220,9 @@ export async function verifyPasscode(enteredPin: string, storedHash: string): Pr
     const computed = await hashPasscode(enteredPin, saltHex);
     return computed === expectedHash;
   }
-  // Dynamic fallback for pre-existing static salt hashes without literal string coupling
-  const legacySalt = getLegacyNamespacePrefix() + '_pbkdf2_pin_salt';
-  const legacyHash = await hashPasscode(enteredPin, legacySalt);
-  if (legacyHash === storedHash) return true;
-  const senoraHash = await hashPasscode(enteredPin, 'senora_pbkdf2_pin_salt');
-  return senoraHash === storedHash;
+  // Legacy fallback for pre-existing static salt hashes
+  const legacyHash = await hashPasscode(enteredPin, 'senora_pbkdf2_pin_salt');
+  return legacyHash === storedHash;
 }
 
 // Apply settings directly to HTML document elements

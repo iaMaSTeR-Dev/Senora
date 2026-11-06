@@ -1,5 +1,6 @@
-import { Attachment, AuthSession, CallLog, Conversation, ConversationInvite, ConversationMemberDetail, Device, GIFItem, IceServerConfig, Message, MessageReader, Poll, ScheduledMessage, StickerPack, Story, User, UserKeyPackage, UserPresence, VoiceChatParticipant, VoiceChatRoom } from '../app/types';
+import { Attachment, AuthSession, CallLog, Conversation, ConversationInvite, ConversationMemberDetail, ConversationPin, Device, ForumTopic, GIFItem, IceServerConfig, MediaShare, Message, MessageReader, Poll, ScheduledMessage, ServerStats, Sticker, StickerPack, StorageStatus, Story, User, UserKeyPackage, UserPresence, VoiceChatParticipant, VoiceChatRoom, WatchPartySession } from '../app/types';
 import { migrateBrowserStorage } from './storageMigration';
+import { serverManager } from './serverManager';
 
 class ApiClient {
   private token: string | null = null;
@@ -32,7 +33,19 @@ class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const res = await fetch(endpoint, {
+    const activeServer = serverManager.getActiveServer();
+    let url = endpoint;
+    if (!endpoint.startsWith('http')) {
+      const base = activeServer.url ? activeServer.url.replace(/\/+$/, '') : '';
+      const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+      if (base && typeof window !== 'undefined' && window.location && !base.includes(window.location.host)) {
+        url = `${base}${path}`;
+      } else {
+        url = path;
+      }
+    }
+
+    const res = await fetch(url, {
       ...options,
       headers,
     });
@@ -47,7 +60,9 @@ class ApiClient {
       } catch {
         // Fallback to text
       }
-      throw new Error(errorMsg);
+      const error: any = new Error(errorMsg);
+      error.status = res.status;
+      throw error;
     }
 
     return res.json() as Promise<T>;
@@ -59,7 +74,9 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    this.setToken(res.token);
+    if (res.token) {
+      this.setToken(res.token);
+    }
     return res;
   }
 
@@ -68,7 +85,9 @@ class ApiClient {
       method: 'POST',
       body: JSON.stringify(params),
     });
-    this.setToken(res.token);
+    if (res.token) {
+      this.setToken(res.token);
+    }
     return res;
   }
 
@@ -93,6 +112,11 @@ class ApiClient {
 
   async getUserProfile(userId: string): Promise<User> {
     return this.request<User>(`/api/v1/users/${userId}`);
+  }
+
+  async getUserByUsername(username: string): Promise<User> {
+    const clean = username.replace(/^@/, '').trim();
+    return this.request<User>(`/api/v1/users/by-username/${encodeURIComponent(clean)}`);
   }
 
   async updateProfile(params: { display_name?: string; bio?: string; avatar_url?: string }): Promise<User> {
@@ -198,13 +222,14 @@ class ApiClient {
     });
   }
 
-  async createChannelConversation(title: string, description?: string): Promise<Conversation> {
+  async createChannelConversation(title: string, description?: string, username?: string): Promise<Conversation> {
     return this.request<Conversation>('/api/v1/conversations', {
       method: 'POST',
       body: JSON.stringify({
         type: 'channel',
         title,
         description: description || '',
+        username: username || '',
       }),
     });
   }
@@ -259,7 +284,7 @@ class ApiClient {
 
   async submitMessage(
     conversationId: string,
-    data: { ciphertext: string; nonce: string; idempotency_key?: string; reply_to_id?: string }
+    data: { ciphertext: string; nonce: string; idempotency_key?: string; reply_to_id?: string; topic_id?: string }
   ): Promise<Message> {
     return this.request<Message>(`/api/v1/conversations/${conversationId}/messages`, {
       method: 'POST',
@@ -300,14 +325,18 @@ class ApiClient {
     file: Blob | File,
     filename?: string,
     isEncrypted: boolean = true,
-    onProgress?: (loaded: number, total: number) => void,
-    abortSignal?: AbortSignal
+    onProgress?: (percent: number, loaded: number, total: number) => void,
+    abortSignal?: AbortSignal,
+    isViewOnce?: boolean
   ): Promise<Attachment> {
     return new Promise((resolve, reject) => {
       const formData = new FormData();
       formData.append('conversation_id', conversationId);
       formData.append('file', file, filename || (file instanceof File ? file.name : 'attachment.bin'));
       formData.append('is_encrypted', isEncrypted ? 'true' : 'false');
+      if (isViewOnce) {
+        formData.append('is_view_once', 'true');
+      }
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', '/api/v1/attachments');
@@ -319,8 +348,9 @@ class ApiClient {
 
       if (xhr.upload && onProgress) {
         xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable) {
-            onProgress(event.loaded, event.total);
+          if (event.lengthComputable && event.total > 0) {
+            const percent = Math.min(100, Math.max(0, Math.round((event.loaded / event.total) * 100)));
+            onProgress(percent, event.loaded, event.total);
           }
         };
       }
@@ -361,9 +391,10 @@ class ApiClient {
     conversationId: string,
     file: Blob | File,
     filename?: string,
-    isEncrypted: boolean = true
+    isEncrypted: boolean = true,
+    isViewOnce?: boolean
   ): Promise<Attachment> {
-    return this.uploadAttachmentWithProgress(conversationId, file, filename, isEncrypted);
+    return this.uploadAttachmentWithProgress(conversationId, file, filename, isEncrypted, undefined, undefined, isViewOnce);
   }
 
   async downloadAttachment(attachmentId: string): Promise<Blob> {
@@ -438,6 +469,18 @@ class ApiClient {
     return this.request<{ packs: StickerPack[] }>('/api/v1/stickers/installed');
   }
 
+  async deleteStickerPack(id: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(`/api/v1/stickers/packs/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async deleteSticker(id: string): Promise<{ status: string }> {
+    return this.request<{ status: string }>(`/api/v1/stickers/${id}`, {
+      method: 'DELETE',
+    });
+  }
+
   // Calls
   async getCallLogs(): Promise<{ calls: CallLog[] }> {
     return this.request<{ calls: CallLog[] }>('/api/v1/calls/logs');
@@ -471,6 +514,44 @@ class ApiClient {
 
   async getStickerPackByShareCode(code: string): Promise<StickerPack> {
     return this.request<StickerPack>(`/api/v1/stickers/share/${code}`);
+  }
+
+  async addStickerToPack(
+    packId: string,
+    sticker: { emoji: string; asset_url: string; width?: number; height?: number }
+  ): Promise<Sticker> {
+    return this.request<Sticker>(`/api/v1/stickers/packs/${packId}/stickers`, {
+      method: 'POST',
+      body: JSON.stringify(sticker),
+    });
+  }
+
+  async uploadStickerAsset(dataUrl: string): Promise<{ url: string; id: string }> {
+    return this.request<{ url: string; id: string }>('/api/v1/stickers/upload-asset', {
+      method: 'POST',
+      body: JSON.stringify({ data_url: dataUrl }),
+    });
+  }
+
+  // Link Previews
+  async getLinkPreview(url: string): Promise<{ url: string; title?: string; description?: string; image?: string; site_name?: string }> {
+    return this.request(`/api/v1/links/preview?url=${encodeURIComponent(url)}`);
+  }
+
+  // Group Slow Mode
+  async setConversationSlowMode(convId: string, seconds: number): Promise<{ status: string; slow_mode_seconds: number }> {
+    return this.request(`/api/v1/conversations/${convId}/slow-mode`, {
+      method: 'POST',
+      body: JSON.stringify({ slow_mode_seconds: seconds }),
+    });
+  }
+
+  // Self Destruct
+  async setSelfDestructMonths(months: number): Promise<{ status: string; self_destruct_months: number }> {
+    return this.request(`/api/v1/users/self-destruct`, {
+      method: 'PUT',
+      body: JSON.stringify({ months }),
+    });
   }
 
   // Voice Chat (Track B)
@@ -668,9 +749,27 @@ class ApiClient {
     });
   }
 
-  // Phase 16: Global Search
+  // Join Conversation directly by ID (Channel or Group)
+  async joinConversation(conversationId: string): Promise<Conversation> {
+    return this.request<Conversation>(`/api/v1/conversations/${conversationId}/join`, {
+      method: 'POST',
+    });
+  }
+
+  // Telegram-style Exact ID & Username Resolver (User, Channel, Group)
+  async resolveIdentifier(identifier: string): Promise<{
+    type: 'user' | 'channel' | 'group';
+    user?: User;
+    conversation?: Conversation;
+    invite_code?: string;
+  }> {
+    const clean = identifier.replace(/^@/, '').trim();
+    return this.request(`/api/v1/resolve/${encodeURIComponent(clean)}`);
+  }
+
+  // Phase 16: Global Search (Exact ID Lookup)
   async globalSearch(query: string): Promise<{
-    channels: Array<{ id: string; type: string; title: string; description: string; avatar_url: string }>;
+    channels: Array<{ id: string; type: string; title: string; description: string; avatar_url: string; username?: string }>;
     users: User[];
     conversations: Conversation[];
   }> {
@@ -740,6 +839,167 @@ class ApiClient {
   async purgeExpiredMessages(): Promise<{ ok: boolean; purged_count: number }> {
     return this.request<{ ok: boolean; purged_count: number }>('/api/v1/messages/purge-expired', {
       method: 'POST',
+    });
+  }
+
+  // Master Bot & Server Administration
+  async getAdminStatus(): Promise<{ is_owner: boolean; master_bot_enabled: boolean; registration_approval: boolean }> {
+    return this.request('/api/v1/admin/status');
+  }
+
+  async getAdminStats(): Promise<{ status: string; stats: ServerStats }> {
+    return this.request('/api/v1/admin/stats');
+  }
+
+  async listAdminUsers(): Promise<{ users: User[] }> {
+    return this.request('/api/v1/admin/users');
+  }
+
+  async listPendingRegistrations(): Promise<{ users: User[]; pending_users: User[] }> {
+    return this.request('/api/v1/admin/registrations');
+  }
+
+  async approveUser(userId: string): Promise<{ status: string; user_id: string }> {
+    return this.request(`/api/v1/admin/users/${userId}/approve`, {
+      method: 'POST',
+    });
+  }
+
+  async rejectUser(userId: string): Promise<{ status: string; user_id: string }> {
+    return this.request(`/api/v1/admin/users/${userId}/reject`, {
+      method: 'POST',
+    });
+  }
+
+  async banUser(userId: string): Promise<{ status: string; user_id: string }> {
+    return this.request(`/api/v1/admin/users/${userId}/ban`, {
+      method: 'POST',
+    });
+  }
+
+  async unbanUser(userId: string): Promise<{ status: string; user_id: string }> {
+    return this.request(`/api/v1/admin/users/${userId}/unban`, {
+      method: 'POST',
+    });
+  }
+
+  async deleteAdminUser(userId: string): Promise<{ status: string; user_id: string }> {
+    return this.request(`/api/v1/admin/users/${userId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  async listAdminConversations(): Promise<{ conversations: Conversation[] }> {
+    return this.request('/api/v1/admin/conversations');
+  }
+
+  async executeBotAction(params: {
+    action: string;
+    conversation_id?: string;
+    target_user_id?: string;
+    command?: string;
+  }): Promise<{ status: string; reply: Message }> {
+    return this.request('/api/v1/admin/bot/action', {
+      method: 'POST',
+      body: JSON.stringify(params),
+    });
+  }
+
+  async broadcastAnnouncement(message: string): Promise<{ status: string; reply: Message }> {
+    return this.request('/api/v1/admin/broadcast', {
+      method: 'POST',
+      body: JSON.stringify({ message }),
+    });
+  }
+
+  async updateAdminSettings(settings: {
+    registration_approval?: boolean;
+    maintenance_mode?: boolean;
+  }): Promise<{ status: string; registration_approval: boolean; maintenance_mode: boolean }> {
+    return this.request('/api/v1/admin/settings', {
+      method: 'PUT',
+      body: JSON.stringify(settings),
+    });
+  }
+
+  async getMasterBotConversation(): Promise<{ conversation: Conversation }> {
+    return this.request('/api/v1/admin/bot/conversation');
+  }
+
+  // S3 & Local Dual-Engine Storage Diagnostics
+  async getStorageStatus(): Promise<StorageStatus> {
+    return this.request<StorageStatus>('/api/v1/storage/status');
+  }
+
+  // Supergroup Forum Topics
+  async toggleConversationForum(conversationId: string, isForum: boolean): Promise<{ success: boolean; is_forum: boolean }> {
+    return this.request(`/api/v1/conversations/${conversationId}/forum/toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ is_forum: isForum }),
+    });
+  }
+
+  async getConversationTopics(conversationId: string): Promise<{ topics: ForumTopic[] }> {
+    return this.request(`/api/v1/conversations/${conversationId}/topics`);
+  }
+
+  async createConversationTopic(conversationId: string, title: string, icon: string, color: string): Promise<ForumTopic> {
+    return this.request(`/api/v1/conversations/${conversationId}/topics`, {
+      method: 'POST',
+      body: JSON.stringify({ title, icon, color }),
+    });
+  }
+
+  // Multiple Pinned Messages
+  async getConversationPins(conversationId: string): Promise<{ pins: ConversationPin[] }> {
+    return this.request(`/api/v1/conversations/${conversationId}/pins`);
+  }
+
+  async addConversationPin(conversationId: string, messageId: string): Promise<ConversationPin> {
+    return this.request(`/api/v1/conversations/${conversationId}/pins`, {
+      method: 'POST',
+      body: JSON.stringify({ message_id: messageId }),
+    });
+  }
+
+  async removeConversationPin(conversationId: string, messageId: string): Promise<{ success: boolean }> {
+    return this.request(`/api/v1/conversations/${conversationId}/pins/${messageId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // Media Shares & Standalone Streaming Player
+  async createMediaShare(attachmentId: string, options?: { password?: string; expiresInHours?: number; maxDownloads?: number }): Promise<{ share: MediaShare }> {
+    return this.request<{ share: MediaShare }>('/api/v1/media/share', {
+      method: 'POST',
+      body: JSON.stringify({
+        attachment_id: attachmentId,
+        password: options?.password,
+        expires_in_hours: options?.expiresInHours,
+        max_downloads: options?.maxDownloads,
+      }),
+    });
+  }
+
+  async getMediaShare(shareId: string): Promise<{ share: MediaShare }> {
+    return this.request<{ share: MediaShare }>(`/api/v1/media/share/${shareId}`);
+  }
+
+  async deleteMediaShare(shareId: string): Promise<{ message: string }> {
+    return this.request<{ message: string }>(`/api/v1/media/share/${shareId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // In-Chat Synchronized Watch Party
+  async getWatchParty(conversationId: string): Promise<{ active: boolean; session: WatchPartySession | null }> {
+    return this.request<{ active: boolean; session: WatchPartySession | null }>(`/api/v1/conversations/${conversationId}/watch-party`);
+  }
+
+  async sendWatchPartyAction(conversationId: string, action: { action: 'start' | 'sync' | 'reaction' | 'end'; [key: string]: any }): Promise<any> {
+    return this.request(`/api/v1/conversations/${conversationId}/watch-party/action`, {
+      method: 'POST',
+      body: JSON.stringify(action),
     });
   }
 }

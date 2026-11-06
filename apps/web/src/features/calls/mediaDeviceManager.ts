@@ -17,6 +17,14 @@ const STORAGE_KEY_AUDIO_INPUT = 'senora_audio_input_id';
 const STORAGE_KEY_AUDIO_OUTPUT = 'senora_audio_output_id';
 const STORAGE_KEY_VIDEO_INPUT = 'senora_video_input_id';
 
+export const STUDIO_AUDIO_CONSTRAINTS: MediaTrackConstraints = {
+  echoCancellation: { ideal: true },
+  noiseSuppression: { ideal: true },
+  autoGainControl: { ideal: true },
+  sampleRate: { ideal: 48000 },
+  channelCount: { ideal: 2 },
+};
+
 class MediaDeviceManager {
   private audioInputs: MediaDeviceInfo[] = [];
   private audioOutputs: MediaDeviceInfo[] = [];
@@ -112,7 +120,7 @@ class MediaDeviceManager {
     }
   }
 
-  // Request real audio stream using selected microphone
+  // Request real audio stream using selected microphone with studio-grade constraints
   async getAudioStream(extraConstraints?: MediaTrackConstraints): Promise<MediaStream> {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('MediaDevices API is not supported in this environment');
@@ -120,6 +128,7 @@ class MediaDeviceManager {
 
     const selectedId = this.getSelectedAudioInputId();
     const audioConstraint: MediaTrackConstraints = {
+      ...STUDIO_AUDIO_CONSTRAINTS,
       ...extraConstraints,
     };
 
@@ -130,12 +139,19 @@ class MediaDeviceManager {
     try {
       return await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
     } catch (err: any) {
-      // If exact deviceId fails (e.g. unplugged), fallback to default audio
-      if (selectedId) {
-        console.warn(`[MediaDeviceManager] Failed to acquire specific mic ${selectedId}, falling back to default`, err);
+      // If exact deviceId or studio constraints fail, fallback gracefully
+      console.warn(`[MediaDeviceManager] HD audio stream attempt failed, attempting fallback`, err);
+      try {
+        const fallbackConstraint: MediaTrackConstraints = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        };
+        if (selectedId) fallbackConstraint.deviceId = { exact: selectedId };
+        return await navigator.mediaDevices.getUserMedia({ audio: fallbackConstraint });
+      } catch {
         return await navigator.mediaDevices.getUserMedia({ audio: true });
       }
-      throw err;
     }
   }
 
@@ -184,6 +200,7 @@ class MediaDeviceManager {
     }
 
     const audioReq: MediaTrackConstraints = {
+      ...STUDIO_AUDIO_CONSTRAINTS,
       ...audioConstraints,
     };
     if (selectedAudioId) {

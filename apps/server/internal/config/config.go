@@ -60,8 +60,10 @@ type Config struct {
 	AllowedOrigins string // Comma-separated allowed CORS/WS origins
 }
 
-// LoadFromEnv loads configuration from the actual process environment.
+// LoadFromEnv loads configuration from the actual process environment,
+// automatically falling back to .env or systemd service configurations if unconfigured.
 func LoadFromEnv() (*Config, error) {
+	loadFallbackEnv()
 	return LoadFromMap(func(key string) string {
 		return os.Getenv(key)
 	})
@@ -321,4 +323,97 @@ func sanitizeErrorString(msg, rawURL string) string {
 		}
 	}
 	return msg
+}
+
+func loadFallbackEnv() {
+	// 1. Try local .env and /var/www/senora/.env
+	loadEnvFile(".env")
+	loadEnvFile("/var/www/senora/.env")
+
+	// 2. If DATABASE_URL is not set, try parsing /etc/systemd/system/senora.service
+	if os.Getenv("DATABASE_URL") == "" {
+		loadSystemdServiceEnv("/etc/systemd/system/senora.service")
+	}
+
+	// 3. If UPLOAD_DIR is not set, check if /var/www/senora/uploads exists
+	if os.Getenv("UPLOAD_DIR") == "" {
+		if fi, err := os.Stat("/var/www/senora/uploads"); err == nil && fi.IsDir() {
+			os.Setenv("UPLOAD_DIR", "/var/www/senora/uploads")
+		}
+	}
+}
+
+func loadEnvFile(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		setEnvPair(line)
+	}
+}
+
+func loadSystemdServiceEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Environment=") {
+			parseSystemdEnvLine(line)
+		} else if strings.HasPrefix(line, "EnvironmentFile=") {
+			filePath := strings.TrimPrefix(line, "EnvironmentFile=")
+			filePath = strings.Trim(filePath, `-"'`)
+			loadEnvFile(filePath)
+		}
+	}
+}
+
+func parseSystemdEnvLine(line string) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "Environment=") {
+		return
+	}
+	content := strings.TrimPrefix(line, "Environment=")
+	content = strings.TrimSpace(content)
+
+	// Tokenize quoted or unquoted pairs:
+	inQuotes := false
+	var token strings.Builder
+	for i := 0; i < len(content); i++ {
+		ch := content[i]
+		if ch == '"' {
+			inQuotes = !inQuotes
+			continue
+		}
+		if (ch == ' ' || ch == '\t') && !inQuotes {
+			if token.Len() > 0 {
+				setEnvPair(token.String())
+				token.Reset()
+			}
+			continue
+		}
+		token.WriteByte(ch)
+	}
+	if token.Len() > 0 {
+		setEnvPair(token.String())
+	}
+}
+
+func setEnvPair(pair string) {
+	if idx := strings.Index(pair, "="); idx > 0 {
+		k := strings.TrimSpace(pair[:idx])
+		v := strings.TrimSpace(pair[idx+1:])
+		v = strings.Trim(v, `"'`)
+		if os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
 }

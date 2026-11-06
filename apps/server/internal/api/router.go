@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -23,8 +25,11 @@ import (
 	"senora/server/internal/auth"
 	"senora/server/internal/conversations"
 	"senora/server/internal/crypto"
+	"senora/server/internal/downloader"
 	"senora/server/internal/events"
+	"senora/server/internal/filestore"
 	"senora/server/internal/identity"
+	"senora/server/internal/masterbot"
 	"senora/server/internal/messages"
 	"senora/server/internal/models"
 	"senora/server/internal/storage"
@@ -46,9 +51,13 @@ type Router struct {
 	msgs           *messages.Service
 	crypto         *crypto.Service
 	hub            *events.Hub
+	masterBot      *masterbot.Service
+	downloader     *downloader.Service
+	fileStore      *filestore.StorageManager
 	authLimiter    *RateLimiter
 	apiLimiter     *RateLimiter
 	accountLimiter *RateLimiter
+	autoBanTracker *AutoBanTracker
 }
 
 func NewRouter(
@@ -60,6 +69,14 @@ func NewRouter(
 	cryptoService *crypto.Service,
 	hub *events.Hub,
 ) *Router {
+	fileStore := filestore.NewStorageManager(filestore.DefaultArvanConfig())
+	fileStore.StartBackgroundProbe(context.Background(), 30*time.Second)
+
+	masterBotService := masterbot.NewService(store, convService, hub)
+	masterBotService.SetFileStore(fileStore)
+
+	downloaderService := downloader.NewService(store, fileStore, msgService, convService, hub)
+
 	r := &Router{
 		mux:            http.NewServeMux(),
 		store:          store,
@@ -69,10 +86,20 @@ func NewRouter(
 		msgs:           msgService,
 		crypto:         cryptoService,
 		hub:            hub,
+		masterBot:      masterBotService,
+		downloader:     downloaderService,
+		fileStore:      fileStore,
 		authLimiter:    NewRateLimiter(10, time.Minute),
-		apiLimiter:     NewRateLimiter(120, time.Minute),
+		apiLimiter:     NewRateLimiter(600, time.Minute),
 		accountLimiter: NewRateLimiter(5, time.Minute),
+		autoBanTracker: NewAutoBanTracker(5, time.Minute),
 	}
+
+	// Initialize master bot and owner in background, and start pulse ticker
+	go func() {
+		_, _ = r.masterBot.EnsureBotAndOwner(context.Background())
+		r.masterBot.StartScheduledPulse(context.Background())
+	}()
 
 	r.routes()
 	return r
@@ -88,6 +115,10 @@ func (r *Router) GetAPILimiter() *RateLimiter {
 
 func (r *Router) GetAccountLimiter() *RateLimiter {
 	return r.accountLimiter
+}
+
+func (r *Router) FileStore() *filestore.StorageManager {
+	return r.fileStore
 }
 
 func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
@@ -127,6 +158,7 @@ func (r *Router) routes() {
 
 	// Health check (unlimited)
 	r.mux.HandleFunc("GET /api/v1/health", r.handleHealth)
+	r.mux.HandleFunc("GET /api/v1/discovery", r.handleDiscovery)
 
 	// Auth endpoints (public, brute-force rate limited)
 	r.mux.Handle("POST /api/v1/auth/register", authRateMiddleware(http.HandlerFunc(r.handleRegister)))
@@ -136,6 +168,7 @@ func (r *Router) routes() {
 	r.mux.Handle("GET /api/v1/auth/me", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleMe))))
 	r.mux.Handle("POST /api/v1/auth/logout", r.authMiddleware(http.HandlerFunc(r.handleLogout)))
 	r.mux.Handle("GET /api/v1/users", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleSearchUsers))))
+	r.mux.Handle("GET /api/v1/users/by-username/{username}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetUserByUsername))))
 	r.mux.Handle("GET /api/v1/users/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetUserProfile))))
 	r.mux.Handle("GET /api/v1/conversations", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleListConversations))))
 	r.mux.Handle("GET /api/v1/conversations/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetConversation))))
@@ -176,7 +209,7 @@ func (r *Router) routes() {
 
 	// Attachments pipeline
 	r.mux.Handle("POST /api/v1/attachments", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleUploadAttachment))))
-	r.mux.Handle("GET /api/v1/attachments/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleDownloadAttachment))))
+	r.mux.Handle("GET /api/v1/attachments/{id}", apiRateMiddleware(http.HandlerFunc(r.handleDownloadAttachment)))
 	r.mux.Handle("GET /api/v1/attachments/avatar/{filename}", http.HandlerFunc(r.handleServeAvatar))
 
 	// Crypto key management
@@ -191,9 +224,34 @@ func (r *Router) routes() {
 	r.mux.Handle("POST /api/v1/stickers/installed/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleInstallStickerPack))))
 	r.mux.Handle("DELETE /api/v1/stickers/installed/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleUninstallStickerPack))))
 	r.mux.Handle("GET /api/v1/stickers/installed", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetInstalledStickers))))
+	r.mux.Handle("POST /api/v1/stickers/packs/{id}/stickers", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAddStickerToPack))))
+	r.mux.Handle("GET /api/v1/stickers/asset/{id}", http.HandlerFunc(r.handleServeStickerAsset))
+	r.mux.Handle("POST /api/v1/stickers/upload-asset", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleUploadStickerAsset))))
+	r.mux.Handle("DELETE /api/v1/stickers/packs/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleDeleteStickerPack))))
+	r.mux.Handle("DELETE /api/v1/stickers/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleDeleteSticker))))
 
 	// Animated Media & GIFs
 	r.mux.Handle("GET /api/v1/media/gifs", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleSearchGIFs))))
+
+	// Rich Link Previews
+	r.mux.Handle("GET /api/v1/links/preview", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleLinkPreview))))
+
+	// Group Slow Mode & Self-Destruct
+	r.mux.Handle("POST /api/v1/conversations/{id}/slow-mode", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleSetSlowMode))))
+	r.mux.Handle("PUT /api/v1/users/self-destruct", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleSetSelfDestruct))))
+
+	// ArvanCloud S3 & Storage Status
+	r.mux.Handle("GET /api/v1/storage/status", apiRateMiddleware(http.HandlerFunc(r.handleStorageStatus)))
+
+	// Supergroup Forum Topics
+	r.mux.Handle("POST /api/v1/conversations/{id}/forum/toggle", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleToggleConversationForum))))
+	r.mux.Handle("GET /api/v1/conversations/{id}/topics", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetForumTopics))))
+	r.mux.Handle("POST /api/v1/conversations/{id}/topics", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleCreateForumTopic))))
+
+	// Multiple Conversation Pins
+	r.mux.Handle("GET /api/v1/conversations/{id}/pins", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetConversationPins))))
+	r.mux.Handle("POST /api/v1/conversations/{id}/pins", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAddConversationPin))))
+	r.mux.Handle("DELETE /api/v1/conversations/{id}/pins/{msgId}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleRemoveConversationPin))))
 
 	// Calls routes
 	r.mux.Handle("GET /api/v1/calls/logs", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetCallLogs))))
@@ -247,8 +305,10 @@ func (r *Router) routes() {
 	// Phase 16: Disappearing Messages (TTL)
 	r.mux.Handle("PUT /api/v1/conversations/{id}/ttl", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleSetConversationTTL))))
 
-	// Phase 16: Global Search
+	// Phase 16: Global Search & Exact ID Resolution
 	r.mux.Handle("GET /api/v1/search", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGlobalSearch))))
+	r.mux.Handle("GET /api/v1/resolve/{identifier}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleResolveIdentifier))))
+	r.mux.Handle("POST /api/v1/conversations/{id}/join", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleJoinConversation))))
 
 	// Phase 16: User Presence & Last Seen
 	r.mux.Handle("GET /api/v1/presence/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetUserPresence))))
@@ -257,9 +317,77 @@ func (r *Router) routes() {
 	// Phase 16: WebRTC Dynamic ICE Servers (STUN/TURN)
 	r.mux.Handle("GET /api/v1/webrtc/ice-servers", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetIceServers))))
 
+	// Push Notifications Device Registration
+	r.mux.Handle("POST /api/v1/notifications/devices", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleRegisterPushDevice))))
+	r.mux.Handle("DELETE /api/v1/notifications/devices/{deviceId}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleUnregisterPushDevice))))
+
+	// Master Bot & Server Administration
+	r.mux.Handle("GET /api/v1/admin/status", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminStatus))))
+	r.mux.Handle("GET /api/v1/admin/stats", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminStats))))
+	r.mux.Handle("GET /api/v1/admin/users", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminListUsers))))
+	r.mux.Handle("GET /api/v1/admin/registrations", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminListRegistrations))))
+	r.mux.Handle("POST /api/v1/admin/users/{id}/approve", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminApproveUser))))
+	r.mux.Handle("POST /api/v1/admin/users/{id}/reject", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminRejectUser))))
+	r.mux.Handle("POST /api/v1/admin/users/{id}/ban", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBanUser))))
+	r.mux.Handle("POST /api/v1/admin/users/{id}/unban", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminUnbanUser))))
+	r.mux.Handle("DELETE /api/v1/admin/users/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminDeleteUser))))
+	r.mux.Handle("GET /api/v1/admin/conversations", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminListConversations))))
+	r.mux.Handle("POST /api/v1/admin/conversations/spectate", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminCreateSpectateToken))))
+	r.mux.Handle("GET /api/v1/admin/conversations/{id}/spectate", apiRateMiddleware(http.HandlerFunc(r.handleAdminSpectateConversation)))
+	r.mux.Handle("POST /api/v1/admin/bot/action", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBotAction))))
+	r.mux.Handle("POST /api/v1/admin/broadcast", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBroadcast))))
+	r.mux.Handle("PUT /api/v1/admin/settings", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminUpdateSettings))))
+	r.mux.Handle("GET /api/v1/admin/bot/conversation", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetMasterBotConversation))))
+	r.mux.Handle("GET /api/v1/admin/banned-ips", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminListBannedIPs))))
+	r.mux.Handle("POST /api/v1/admin/banned-ips", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBanIP))))
+	r.mux.Handle("DELETE /api/v1/admin/banned-ips/{ip}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminUnbanIP))))
+	r.mux.Handle("GET /api/v1/admin/backup/download", r.authMiddleware(http.HandlerFunc(r.handleAdminDownloadBackup)))
+	r.mux.Handle("POST /api/v1/admin/storage/migrate", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminMigrateStorage))))
+
+	// Media Shares & Standalone Streaming Player
+	r.mux.Handle("POST /api/v1/media/share", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleCreateMediaShare))))
+	r.mux.Handle("GET /api/v1/media/share/{id}", apiRateMiddleware(http.HandlerFunc(r.handleGetMediaShare)))
+	r.mux.Handle("DELETE /api/v1/media/share/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleDeleteMediaShare))))
+	r.mux.Handle("GET /s/{id}", http.HandlerFunc(r.handlePublicStreamDownload))
+	r.mux.Handle("GET /watch/{id}", http.HandlerFunc(r.handlePublicWatchPlayer))
+	r.mux.Handle("GET /api/v1/s/{id}", http.HandlerFunc(r.handlePublicStreamDownload))
+	r.mux.Handle("GET /api/v1/watch/{id}", http.HandlerFunc(r.handlePublicWatchPlayer))
+	r.mux.Handle("GET /api/v1/media/stream/{id}", http.HandlerFunc(r.handlePublicStreamDownload))
+	r.mux.Handle("GET /api/v1/media/watch/{id}", http.HandlerFunc(r.handlePublicWatchPlayer))
+
+	// In-Chat Synchronized Watch Party
+	r.mux.Handle("GET /api/v1/conversations/{id}/watch-party", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleGetWatchParty))))
+	r.mux.Handle("POST /api/v1/conversations/{id}/watch-party/action", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleWatchPartyAction))))
+
 	// WebSocket gateway
 	r.mux.HandleFunc("GET /api/v1/ws", r.handleWebSocket)
+
+	// Static frontend serving if dist directory exists
+	distDirs := []string{"./dist", "../web/dist", "../../apps/web/dist", "./apps/web/dist", "apps/web/dist"}
+	var staticDir string
+	for _, dir := range distDirs {
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			staticDir = dir
+			break
+		}
+	}
+	if staticDir != "" {
+		fs := http.FileServer(http.Dir(staticDir))
+		r.mux.HandleFunc("GET /", func(w http.ResponseWriter, req *http.Request) {
+			if strings.HasPrefix(req.URL.Path, "/api/") {
+				http.NotFound(w, req)
+				return
+			}
+			filePath := filepath.Join(staticDir, filepath.Clean(req.URL.Path))
+			if info, err := os.Stat(filePath); err == nil && !info.IsDir() {
+				fs.ServeHTTP(w, req)
+				return
+			}
+			http.ServeFile(w, req, filepath.Join(staticDir, "index.html"))
+		})
+	}
 }
+
 
 // ---------------------------------------------------------------------
 // Middleware
@@ -318,6 +446,119 @@ func (r *Router) handleHealth(w http.ResponseWriter, req *http.Request) {
 	})
 }
 
+func (r *Router) handleDiscovery(w http.ResponseWriter, req *http.Request) {
+	r.writeJSON(w, http.StatusOK, models.ServerDiscovery{
+		ServerID:        "senora-primary-v1",
+		Name:            "Senora Secure Messaging",
+		Version:         "1.0.0",
+		APIVersion:      "v1",
+		ProtocolVersion: "1.0.0",
+		Health:          "healthy",
+		Maintenance:     false,
+		Capabilities: models.ServerCapabilities{
+			AuthMethods:       []string{"password"},
+			EncryptionModes:   []string{"e2ee_v1_signal", "standard"},
+			Calling:           []string{"webrtc_p2p", "voice_chat_mesh"},
+			MaxUploadBytes:    104857600, // 100MB
+			PushNotifications: []string{"webpush", "fcm_relay"},
+			Features: []string{
+				"multi_server",
+				"groups",
+				"channels",
+				"stories",
+				"polls",
+				"stickers",
+				"scheduled_messages",
+				"disappearing_messages",
+				"read_receipts",
+			},
+		},
+	})
+}
+
+type registerPushDeviceReq struct {
+	DeviceID string `json:"device_id"`
+	Platform string `json:"platform"`
+	Endpoint string `json:"endpoint"`
+	P256DH   string `json:"p256dh,omitempty"`
+	Auth     string `json:"auth,omitempty"`
+}
+
+func (r *Router) handleRegisterPushDevice(w http.ResponseWriter, req *http.Request) {
+	u := getUserFromContext(req.Context())
+	if u == nil {
+		r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User context missing")
+		return
+	}
+
+	req.Body = http.MaxBytesReader(w, req.Body, 64*1024)
+	var body registerPushDeviceReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+
+	body.DeviceID = strings.TrimSpace(body.DeviceID)
+	body.Platform = strings.ToLower(strings.TrimSpace(body.Platform))
+	body.Endpoint = strings.TrimSpace(body.Endpoint)
+
+	if body.DeviceID == "" || body.Endpoint == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "device_id and endpoint are required")
+		return
+	}
+
+	validPlatforms := map[string]bool{
+		"web": true, "android": true, "windows": true, "linux": true, "ios": true,
+	}
+	if !validPlatforms[body.Platform] {
+		body.Platform = "web"
+	}
+
+	reg := &models.PushDeviceRegistration{
+		ID:       uuid.New().String(),
+		UserID:   u.ID,
+		DeviceID: body.DeviceID,
+		Platform: body.Platform,
+		Endpoint: body.Endpoint,
+		P256DH:   strings.TrimSpace(body.P256DH),
+		Auth:     strings.TrimSpace(body.Auth),
+	}
+
+	if err := r.store.RegisterPushDevice(req.Context(), reg); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to register push device")
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "registered",
+		"device": reg,
+	})
+}
+
+func (r *Router) handleUnregisterPushDevice(w http.ResponseWriter, req *http.Request) {
+	u := getUserFromContext(req.Context())
+	if u == nil {
+		r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "User context missing")
+		return
+	}
+
+	deviceID := req.PathValue("deviceId")
+	if deviceID == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Missing deviceId parameter")
+		return
+	}
+
+	if err := r.store.UnregisterPushDevice(req.Context(), u.ID, deviceID); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to unregister push device")
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "unregistered",
+	})
+}
+
+
 type registerReq struct {
 	Username    string `json:"username"`
 	DisplayName string `json:"display_name"`
@@ -326,6 +567,12 @@ type registerReq struct {
 }
 
 func (r *Router) handleRegister(w http.ResponseWriter, req *http.Request) {
+	clientIP := GetClientIP(req)
+	if isBanned, _ := r.store.IsIPBanned(req.Context(), clientIP); isBanned {
+		r.writeError(w, http.StatusForbidden, "IP_BANNED", "آدرس آی‌پی شما به دلیل ارسال درخواست‌های غیرمجاز یا اسپم مسدود شده است.")
+		return
+	}
+
 	req.Body = http.MaxBytesReader(w, req.Body, 1024*1024)
 	var body registerReq
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -334,19 +581,45 @@ func (r *Router) handleRegister(w http.ResponseWriter, req *http.Request) {
 	}
 
 	result, err := r.identity.Register(req.Context(), identity.RegisterParams{
-		Username:    body.Username,
-		DisplayName: body.DisplayName,
-		Password:    body.Password,
-		DeviceName:  body.DeviceName,
+		Username:       body.Username,
+		DisplayName:    body.DisplayName,
+		Password:       body.Password,
+		DeviceName:     body.DeviceName,
+		RegistrationIP: clientIP,
 	})
 	if err != nil {
+		r.checkAutoBan(req.Context(), clientIP, "ارسال مکرر درخواست‌های نامعتبر ثبت‌نام")
 		r.writeError(w, http.StatusBadRequest, "REGISTRATION_FAILED", err.Error())
 		return
 	}
 
+	fingerprint := GenerateDeviceFingerprint(req, clientIP)
+
+	if result.IsPendingApproval {
+		// Alert the Server Owner via Master Bot conversation
+		go func() {
+			_ = r.masterBot.NotifyNewRegistration(context.Background(), result.User, body.DeviceName, clientIP, fingerprint)
+		}()
+
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"status":    "PENDING_APPROVAL",
+			"message":   "حساب کاربری شما با موفقیت ثبت شد و در انتظار تایید مدیر سرور می‌باشد.",
+			"user":      result.User,
+			"user_id":   result.User.ID,
+			"device_id": result.Device.ID,
+		})
+		return
+	}
+
+
+	tokenStr := ""
+	if result.Session != nil {
+		tokenStr = result.Session.Token
+	}
+
 	r.writeJSON(w, http.StatusCreated, map[string]interface{}{
 		"user":      result.User,
-		"token":     result.Session.Token,
+		"token":     tokenStr,
 		"device_id": result.Device.ID,
 	})
 }
@@ -358,6 +631,12 @@ type loginReq struct {
 }
 
 func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
+	clientIP := GetClientIP(req)
+	if isBanned, _ := r.store.IsIPBanned(req.Context(), clientIP); isBanned {
+		r.writeError(w, http.StatusForbidden, "IP_BANNED", "آدرس آی‌پی شما مسدود شده است.")
+		return
+	}
+
 	req.Body = http.MaxBytesReader(w, req.Body, 1024*1024)
 	var body loginReq
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -381,9 +660,21 @@ func (r *Router) handleLogin(w http.ResponseWriter, req *http.Request) {
 
 	result, err := r.identity.Login(req.Context(), body.Username, body.Password, body.DeviceName)
 	if err != nil {
+		if errors.Is(err, identity.ErrPendingApproval) {
+			r.writeError(w, http.StatusForbidden, "ACCOUNT_PENDING_APPROVAL", "حساب کاربری شما هنوز توسط مدیر سرور تایید نشده است. لطفاً منتظر بمانید.")
+			return
+		}
+		if errors.Is(err, identity.ErrUserBanned) {
+			r.writeError(w, http.StatusForbidden, "ACCOUNT_BANNED", "حساب کاربری شما توسط مدیر سرور مسدود شده است.")
+			return
+		}
+		r.checkAutoBan(req.Context(), clientIP, "تلاش‌های مکرر ناموفق ورود به حساب (Brute-force)")
 		r.writeError(w, http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid username or password")
 		return
 	}
+
+	// Login succeeded: reset failure count
+	r.autoBanTracker.ResetIP(clientIP)
 
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{
 		"user":      result.User,
@@ -464,6 +755,7 @@ type createConvReq struct {
 	Type              string   `json:"type"`
 	Title             string   `json:"title"`
 	Description       string   `json:"description"`
+	Username          string   `json:"username,omitempty"`
 	ParticipantUserID string   `json:"participant_user_id"`
 	PeerID            string   `json:"peer_id"`
 	MemberIDs         []string `json:"member_ids"`
@@ -502,6 +794,13 @@ func (r *Router) handleCreateConversation(w http.ResponseWriter, req *http.Reque
 		if targetPeerID == "" {
 			targetPeerID = body.PeerID
 		}
+		if targetPeerID == masterbot.BotUserID {
+			isOwner, _ := r.store.IsUserOwner(req.Context(), user.ID)
+			if !isOwner {
+				r.writeError(w, http.StatusForbidden, "FORBIDDEN", "ربات مدیریت سرور صرفاً برای مالک سرور در دسترس است.")
+				return
+			}
+		}
 		conv, err := r.convs.CreateDirectConversation(req.Context(), user.ID, targetPeerID)
 		if err != nil {
 			r.writeError(w, http.StatusBadRequest, "CONVERSATION_CREATE_FAILED", err.Error())
@@ -512,17 +811,27 @@ func (r *Router) handleCreateConversation(w http.ResponseWriter, req *http.Reque
 	}
 
 	if body.Type == "group" {
+		for _, mID := range body.MemberIDs {
+			if mID == masterbot.BotUserID {
+				r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "امکان افزودن ربات مدیریت به گروه‌ها وجود ندارد.")
+				return
+			}
+		}
 		conv, err := r.convs.CreateGroupConversation(req.Context(), user.ID, body.Title, body.MemberIDs)
 		if err != nil {
 			r.writeError(w, http.StatusBadRequest, "CONVERSATION_CREATE_FAILED", err.Error())
 			return
+		}
+		if body.Username != "" {
+			conv.Username = strings.TrimPrefix(strings.TrimSpace(body.Username), "@")
+			_ = r.store.UpdateConversation(req.Context(), conv)
 		}
 		r.writeJSON(w, http.StatusCreated, conv)
 		return
 	}
 
 	if body.Type == "channel" {
-		conv, err := r.convs.CreateChannelConversation(req.Context(), user.ID, body.Title, body.Description)
+		conv, err := r.convs.CreateChannelConversation(req.Context(), user.ID, body.Title, body.Description, body.Username)
 		if err != nil {
 			r.writeError(w, http.StatusBadRequest, "CONVERSATION_CREATE_FAILED", err.Error())
 			return
@@ -571,6 +880,7 @@ type submitMsgReq struct {
 	Nonce              string `json:"nonce"`
 	EphemeralPublicKey string `json:"ephemeral_public_key"`
 	ReplyToID          string `json:"reply_to_id"`
+	TopicID            string `json:"topic_id,omitempty"`
 }
 
 func (r *Router) handleSubmitMessage(w http.ResponseWriter, req *http.Request) {
@@ -587,15 +897,45 @@ func (r *Router) handleSubmitMessage(w http.ResponseWriter, req *http.Request) {
 		body.IdempotencyKey = uuid.New().String()
 	}
 
-	// Channel write authorization check: only owner or admin can post
+	// Channel write authorization check & Group Slow Mode check
 	conv, err := r.store.GetConversationByID(req.Context(), convID)
-	if err == nil && conv != nil && conv.Type == "channel" {
-		role, roleErr := r.store.GetMemberRole(req.Context(), convID, user.ID)
-		if roleErr != nil || (role != "owner" && role != "admin") {
-			r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Only channel admins can post messages to channels")
-			return
+	if err == nil && conv != nil {
+		if conv.Type == "channel" {
+			role, roleErr := r.store.GetMemberRole(req.Context(), convID, user.ID)
+			if roleErr != nil || (role != "owner" && role != "admin") {
+				r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Only channel admins can post messages to channels")
+				return
+			}
+		} else if conv.Type == "group" && conv.SlowModeSeconds > 0 {
+			role, _ := r.store.GetMemberRole(req.Context(), convID, user.ID)
+			if role != "owner" && role != "admin" {
+				lastTime, lErr := r.store.GetUserLastMessageTime(req.Context(), convID, user.ID)
+				if lErr == nil && !lastTime.IsZero() {
+					elapsed := time.Since(lastTime)
+					limit := time.Duration(conv.SlowModeSeconds) * time.Second
+					if elapsed < limit {
+						remain := int((limit - elapsed).Seconds()) + 1
+						r.writeError(w, http.StatusTooManyRequests, "SLOW_MODE", fmt.Sprintf("حالت آهسته فعال است. لطفاً %d ثانیه دیگر صبر کنید.", remain))
+						return
+					}
+				}
+			}
+		}
+
+		// Group & Channel Anti-Spam & Link Filtering
+		antiSpamEnabled, _ := r.store.GetServerSetting(req.Context(), "antispam_enabled", "false")
+		if antiSpamEnabled == "true" && (conv.Type == "group" || conv.Type == "channel") {
+			role, _ := r.store.GetMemberRole(req.Context(), convID, user.ID)
+			if role != "owner" && role != "admin" {
+				lowerCipher := strings.ToLower(body.Ciphertext)
+				if strings.Contains(lowerCipher, "http://") || strings.Contains(lowerCipher, "https://") || strings.Contains(lowerCipher, "t.me/") || strings.Contains(lowerCipher, "telegram.me/") {
+					r.writeError(w, http.StatusForbidden, "LINK_SPAM_BLOCKED", "ارسال لینک در این گروه توسط سیستم آنتی‌اسپم مسدود شده است.")
+					return
+				}
+			}
 		}
 	}
+	_ = r.store.UpdateUserLastSeen(req.Context(), user.ID)
 
 	msg, err := r.msgs.SubmitMessage(req.Context(), messages.SubmitMessageParams{
 		ConversationID:     convID,
@@ -605,6 +945,7 @@ func (r *Router) handleSubmitMessage(w http.ResponseWriter, req *http.Request) {
 		EphemeralPublicKey: body.EphemeralPublicKey,
 		IdempotencyKey:     body.IdempotencyKey,
 		ReplyToID:          body.ReplyToID,
+		TopicID:            body.TopicID,
 	})
 	if err != nil {
 		if err == conversations.ErrForbidden {
@@ -617,6 +958,30 @@ func (r *Router) handleSubmitMessage(w http.ResponseWriter, req *http.Request) {
 		}
 		r.writeError(w, http.StatusBadRequest, "SUBMIT_FAILED", err.Error())
 		return
+	}
+
+	isBotMember, _ := r.store.IsMember(req.Context(), convID, masterbot.BotUserID)
+
+	// Proxy test command interception (/proxy [proxy] or /testproxy [proxy])
+	if r.downloader != nil && r.downloader.IsProxyTestCommand(body.Ciphertext) {
+		go func(cID, sID, cipher, rID string) {
+			r.downloader.HandleProxyTest(context.Background(), cID, sID, cipher, rID)
+		}(convID, user.ID, body.Ciphertext, msg.ID)
+	} else if r.downloader != nil && r.downloader.IsSyncS3Command(body.Ciphertext) {
+		// Arvan S3 sync & migration command (/sync_s3 or /migrate_s3)
+		go func(cID, sID, cipher, rID string) {
+			r.downloader.HandleSyncS3(context.Background(), cID, sID, cipher, rID)
+		}(convID, user.ID, body.Ciphertext, msg.ID)
+	} else if r.downloader != nil && r.downloader.IsDownloadCommand(body.Ciphertext) {
+		// Video downloader command interception (/dl [link] [proxy] [quality])
+		go func(cID, sID, cipher, rID string) {
+			r.downloader.HandleDownload(context.Background(), cID, sID, cipher, rID)
+		}(convID, user.ID, body.Ciphertext, msg.ID)
+	} else if isBotMember && user.ID != masterbot.BotUserID {
+		// If message is submitted to a conversation involving Master Bot, trigger bot logic
+		go func() {
+			_, _ = r.masterBot.HandleOwnerMessage(context.Background(), user.ID, convID, body.Ciphertext)
+		}()
 	}
 
 	r.writeJSON(w, http.StatusCreated, msg)
@@ -782,9 +1147,10 @@ func (r *Router) handleGetConversationMembers(w http.ResponseWriter, req *http.R
 }
 
 type updateConvReq struct {
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	AvatarURL   string `json:"avatar_url"`
+	Title           string `json:"title"`
+	Description     string `json:"description"`
+	AvatarURL       string `json:"avatar_url"`
+	SlowModeSeconds int    `json:"slow_mode_seconds"`
 }
 
 func (r *Router) handleUpdateConversation(w http.ResponseWriter, req *http.Request) {
@@ -802,13 +1168,66 @@ func (r *Router) handleUpdateConversation(w http.ResponseWriter, req *http.Reque
 		r.writeError(w, http.StatusBadRequest, "UPDATE_FAILED", err.Error())
 		return
 	}
+	if body.SlowModeSeconds >= 0 {
+		_ = r.store.UpdateConversationSlowMode(req.Context(), convID, body.SlowModeSeconds)
+	}
 	r.writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
 }
 
+type setSlowModeReq struct {
+	SlowModeSeconds int `json:"slow_mode_seconds"`
+}
+
+func (r *Router) handleSetSlowMode(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	role, err := r.store.GetMemberRole(req.Context(), convID, user.ID)
+	if err != nil || (role != "owner" && role != "admin") {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Only group admins can configure slow mode")
+		return
+	}
+	var body setSlowModeReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+	if body.SlowModeSeconds < 0 {
+		body.SlowModeSeconds = 0
+	}
+	if err := r.store.UpdateConversationSlowMode(req.Context(), convID, body.SlowModeSeconds); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "updated", "slow_mode_seconds": body.SlowModeSeconds})
+}
+
+type setSelfDestructReq struct {
+	Months int `json:"months"`
+}
+
+func (r *Router) handleSetSelfDestruct(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	var body setSelfDestructReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+	if body.Months <= 0 {
+		body.Months = 6
+	}
+	if err := r.store.UpdateUserSelfDestruct(req.Context(), user.ID, body.Months); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	user.SelfDestructMonths = body.Months
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"status": "updated", "self_destruct_months": body.Months})
+}
+
 type updateProfileReq struct {
-	DisplayName string `json:"display_name"`
-	Bio         string `json:"bio"`
-	AvatarURL   string `json:"avatar_url"`
+	DisplayName        string `json:"display_name"`
+	Bio                string `json:"bio"`
+	AvatarURL          string `json:"avatar_url"`
+	SelfDestructMonths int    `json:"self_destruct_months"`
 }
 
 func (r *Router) handleUpdateProfile(w http.ResponseWriter, req *http.Request) {
@@ -827,6 +1246,9 @@ func (r *Router) handleUpdateProfile(w http.ResponseWriter, req *http.Request) {
 	user.Bio = body.Bio
 	if body.AvatarURL != "" {
 		user.AvatarURL = body.AvatarURL
+	}
+	if body.SelfDestructMonths > 0 {
+		user.SelfDestructMonths = body.SelfDestructMonths
 	}
 
 	if err := r.store.UpdateUser(req.Context(), user); err != nil {
@@ -901,13 +1323,34 @@ func (r *Router) handleCheckBlock(w http.ResponseWriter, req *http.Request) {
 	r.writeJSON(w, http.StatusOK, map[string]bool{"blocked": blocked})
 }
 
+func getMaxUploadBytes() int64 {
+	val := strings.TrimSpace(os.Getenv("MAX_UPLOAD_BYTES"))
+	if val == "" {
+		return 500 * 1024 * 1024 // Default: 500MB (instead of 25MB)
+	}
+	if val == "0" || val == "-1" || strings.EqualFold(val, "unlimited") || strings.EqualFold(val, "none") {
+		return 0 // Unlimited (no body size limit imposed by Go server)
+	}
+	parsed, err := strconv.ParseInt(val, 10, 64)
+	if err != nil || parsed < 0 {
+		return 500 * 1024 * 1024
+	}
+	return parsed
+}
+
 func (r *Router) handleUploadAttachment(w http.ResponseWriter, req *http.Request) {
-	// 25MB limit for attachments
-	req.Body = http.MaxBytesReader(w, req.Body, 25*1024*1024)
+	maxBytes := getMaxUploadBytes()
+	if maxBytes > 0 {
+		req.Body = http.MaxBytesReader(w, req.Body, maxBytes)
+	}
 	user := getUserFromContext(req.Context())
 
-	if err := req.ParseMultipartForm(25 * 1024 * 1024); err != nil {
-		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse multipart form or file exceeds 25MB limit")
+	if err := req.ParseMultipartForm(32 * 1024 * 1024); err != nil {
+		msg := "Failed to parse multipart form"
+		if maxBytes > 0 {
+			msg = fmt.Sprintf("File exceeds upload limit of %d MB", maxBytes/(1024*1024))
+		}
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", msg)
 		return
 	}
 
@@ -935,24 +1378,6 @@ func (r *Router) handleUploadAttachment(w http.ResponseWriter, req *http.Request
 	}
 	defer file.Close()
 
-	uploadsDir := getUploadsDir()
-	_ = os.MkdirAll(uploadsDir, 0755)
-
-	attID := "att_" + uuid.New().String()
-	storagePath := filepath.Join(uploadsDir, attID)
-	dst, err := os.Create(storagePath)
-	if err != nil {
-		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save attachment file")
-		return
-	}
-	defer dst.Close()
-
-	written, err := io.Copy(dst, file)
-	if err != nil {
-		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to write attachment data")
-		return
-	}
-
 	filename := header.Filename
 	if filename == "" {
 		filename = "attachment"
@@ -962,19 +1387,35 @@ func (r *Router) handleUploadAttachment(w http.ResponseWriter, req *http.Request
 		contentType = "application/octet-stream"
 	}
 
+	attID := "att_" + uuid.New().String()
+	ext := filepath.Ext(header.Filename)
+
+	savedFile, sErr := r.fileStore.SaveFile(req.Context(), "attachments", attID+ext, contentType, file, header.Size)
+	if sErr != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save attachment file")
+		return
+	}
+
+	isViewOnce := req.FormValue("is_view_once") == "true"
+
 	att := &models.Attachment{
 		ID:             attID,
 		ConversationID: convID,
 		UploaderID:     user.ID,
 		Filename:       filename,
 		ContentType:    contentType,
-		SizeBytes:      written,
-		StoragePath:    storagePath,
+		SizeBytes:      savedFile.SizeBytes,
+		StoragePath:    savedFile.StoragePath,
 		IsEncrypted:    req.FormValue("is_encrypted") != "false",
+		IsViewOnce:     isViewOnce,
+		StorageType:    savedFile.StorageType,
+		PublicURL:      savedFile.PublicURL,
 	}
 
 	if err := r.store.CreateAttachment(req.Context(), att); err != nil {
-		_ = os.Remove(storagePath)
+		if savedFile.StorageType == "local" || savedFile.StorageType == "local_fallback" {
+			_ = os.Remove(savedFile.StoragePath)
+		}
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
@@ -983,7 +1424,6 @@ func (r *Router) handleUploadAttachment(w http.ResponseWriter, req *http.Request
 }
 
 func (r *Router) handleDownloadAttachment(w http.ResponseWriter, req *http.Request) {
-	user := getUserFromContext(req.Context())
 	attID := req.PathValue("id")
 
 	att, err := r.store.GetAttachmentByID(req.Context(), attID)
@@ -992,32 +1432,36 @@ func (r *Router) handleDownloadAttachment(w http.ResponseWriter, req *http.Reque
 		return
 	}
 
-	if err := r.convs.ValidateMembership(req.Context(), att.ConversationID, user.ID); err != nil {
+	authorized := false
+
+	// Check user session
+	authHeader := req.Header.Get("Authorization")
+	token := ""
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token = strings.TrimPrefix(authHeader, "Bearer ")
+	} else if cookie, err := req.Cookie("senora_session"); err == nil {
+		token = cookie.Value
+	} else {
+		token = req.URL.Query().Get("auth")
+		if token == "" {
+			token = req.URL.Query().Get("session_token")
+		}
+	}
+
+	if token != "" {
+		sess, user, err := r.sessions.ValidateSession(req.Context(), token)
+		if err == nil && sess != nil && user != nil {
+			// Member of conversation
+			if err := r.convs.ValidateMembership(req.Context(), att.ConversationID, user.ID); err == nil {
+				authorized = true
+			}
+		}
+	}
+
+	if !authorized {
 		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not authorized to access attachments in this conversation")
 		return
 	}
-
-	file, err := os.Open(att.StoragePath)
-	if err != nil {
-		attBase := filepath.Base(att.StoragePath)
-		candidatePaths := []string{
-			filepath.Join(getUploadsDir(), attBase),
-			filepath.Join("/var/www/senora/uploads", attBase),
-			filepath.Join("uploads", attBase),
-			filepath.Join("/uploads", attBase),
-		}
-		for _, p := range candidatePaths {
-			file, err = os.Open(p)
-			if err == nil {
-				break
-			}
-		}
-		if err != nil || file == nil {
-			r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Attachment file on storage is missing")
-			return
-		}
-	}
-	defer file.Close()
 
 	cleanFilename := filepath.Base(att.Filename)
 	if cleanFilename == "" || cleanFilename == "." {
@@ -1041,10 +1485,91 @@ func (r *Router) handleDownloadAttachment(w http.ResponseWriter, req *http.Reque
 		contentType = "application/octet-stream"
 	}
 
+	disposition := "inline"
+	if req.URL.Query().Get("download") == "true" {
+		disposition = "attachment"
+	}
+
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, HEAD, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Range, Content-Type, Authorization")
+	if req.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Type", contentType)
-	w.Header().Set("Content-Length", strconv.FormatInt(att.SizeBytes, 10))
-	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, asciiFallback, escapedFilename))
-	io.Copy(w, file)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, asciiFallback, escapedFilename))
+
+	var file *os.File
+	var openErr error
+	if att.StoragePath != "" && !filestore.IsS3URL(att.StoragePath) {
+		file, openErr = os.Open(att.StoragePath)
+	}
+	if file == nil {
+		attBase := filepath.Base(att.StoragePath)
+		candidatePaths := []string{
+			att.StoragePath,
+			filepath.Join(getUploadsDir(), "attachments", attBase),
+			filepath.Join(getUploadsDir(), attBase),
+			filepath.Join("uploads", "attachments", attBase),
+			filepath.Join("uploads", attBase),
+			filepath.Join("./uploads", "attachments", attBase),
+			filepath.Join("./uploads", attBase),
+			filepath.Join("/var/www/senora/uploads", "attachments", attBase),
+			filepath.Join("/var/www/senora/uploads", attBase),
+		}
+		for _, p := range candidatePaths {
+			if p == "" {
+				continue
+			}
+			file, openErr = os.Open(p)
+			if openErr == nil {
+				break
+			}
+		}
+	}
+
+	if file != nil {
+		defer file.Close()
+		stat, _ := file.Stat()
+		modTime := time.Now()
+		if stat != nil {
+			modTime = stat.ModTime()
+		}
+		// http.ServeContent automatically handles Range headers, 206 Partial Content, Content-Range, and Seeking
+		http.ServeContent(w, req, cleanFilename, modTime, file)
+		return
+	}
+
+	// If local file is missing but stored on S3, stream from S3 directly to client with Range forwarding and SigV4 authentication
+	if (att.StorageType == "arvan_s3" || filestore.IsS3URL(att.PublicURL) || filestore.IsS3URL(att.StoragePath)) && r.fileStore != nil {
+		targetURL := att.PublicURL
+		if targetURL == "" || !filestore.IsS3URL(targetURL) {
+			targetURL = att.StoragePath
+		}
+		if filestore.IsS3URL(targetURL) {
+			s3Resp, s3Err := r.fileStore.StreamS3Object(req.Context(), targetURL, req.Header.Get("Range"))
+			if s3Err == nil && (s3Resp.StatusCode == http.StatusOK || s3Resp.StatusCode == http.StatusPartialContent) {
+				defer s3Resp.Body.Close()
+				if cr := s3Resp.Header.Get("Content-Range"); cr != "" {
+					w.Header().Set("Content-Range", cr)
+				}
+				if cl := s3Resp.Header.Get("Content-Length"); cl != "" {
+					w.Header().Set("Content-Length", cl)
+				}
+				w.WriteHeader(s3Resp.StatusCode)
+				io.Copy(w, s3Resp.Body)
+				return
+			}
+			if s3Resp != nil {
+				s3Resp.Body.Close()
+			}
+		}
+	}
+
+	r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Attachment file on storage is missing")
 }
 
 type registerKeysReq struct {
@@ -1105,6 +1630,12 @@ func (r *Router) handleGetUserKeys(w http.ResponseWriter, req *http.Request) {
 }
 
 func (r *Router) handleWebSocket(w http.ResponseWriter, req *http.Request) {
+	clientIP := GetClientIP(req)
+	if isBanned, _ := r.store.IsIPBanned(req.Context(), clientIP); isBanned {
+		http.Error(w, "Forbidden: IP address is banned", http.StatusForbidden)
+		return
+	}
+
 	token := req.URL.Query().Get("token")
 	if token == "" {
 		http.Error(w, "Unauthorized: missing token", http.StatusUnauthorized)
@@ -1133,15 +1664,39 @@ func (r *Router) handleListStickerPacks(w http.ResponseWriter, req *http.Request
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{"packs": packs})
 }
 
+func normalizeStickerAssetURLs(stickers []*models.Sticker) {
+	for _, st := range stickers {
+		if strings.HasPrefix(st.AssetURL, "data:") {
+			st.AssetURL = "/api/v1/stickers/asset/" + st.ID
+		}
+	}
+}
+
 func (r *Router) handleGetStickerPack(w http.ResponseWriter, req *http.Request) {
 	packID := req.PathValue("id")
 	pack, err := r.store.GetStickerPackByID(req.Context(), packID)
+	if err != nil || pack == nil {
+		// 1. Try finding by Sticker ID (if client clicked directly on a sticker)
+		if stk, sErr := r.store.GetStickerByID(req.Context(), packID); sErr == nil && stk != nil && stk.PackID != "" {
+			packID = stk.PackID
+			pack, err = r.store.GetStickerPackByID(req.Context(), packID)
+		}
+		// 2. Try finding by Share Code
+		if (err != nil || pack == nil) && len(packID) > 0 {
+			if scPack, scErr := r.store.GetStickerPackByShareCode(req.Context(), packID); scErr == nil && scPack != nil {
+				pack = scPack
+				packID = scPack.ID
+				err = nil
+			}
+		}
+	}
 	if err != nil || pack == nil {
 		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Sticker pack not found")
 		return
 	}
 	stickers, err := r.store.GetStickersForPack(req.Context(), packID)
 	if err == nil {
+		normalizeStickerAssetURLs(stickers)
 		pack.Stickers = stickers
 	}
 	r.writeJSON(w, http.StatusOK, pack)
@@ -1150,6 +1705,9 @@ func (r *Router) handleGetStickerPack(w http.ResponseWriter, req *http.Request) 
 func (r *Router) handleInstallStickerPack(w http.ResponseWriter, req *http.Request) {
 	user := getUserFromContext(req.Context())
 	packID := req.PathValue("id")
+	if stk, sErr := r.store.GetStickerByID(req.Context(), packID); sErr == nil && stk != nil && stk.PackID != "" {
+		packID = stk.PackID
+	}
 	if err := r.store.InstallStickerPack(req.Context(), user.ID, packID); err != nil {
 		r.writeError(w, http.StatusBadRequest, "INSTALL_FAILED", err.Error())
 		return
@@ -1174,7 +1732,69 @@ func (r *Router) handleGetInstalledStickers(w http.ResponseWriter, req *http.Req
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to get installed stickers")
 		return
 	}
+	for _, p := range packs {
+		normalizeStickerAssetURLs(p.Stickers)
+	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{"packs": packs})
+}
+
+func cleanStickerFile(assetURL string) {
+	if !strings.HasPrefix(assetURL, "/api/v1/stickers/asset/") {
+		return
+	}
+	filename := strings.TrimPrefix(assetURL, "/api/v1/stickers/asset/")
+	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
+		return
+	}
+	uploadsDir := filepath.Join(getUploadsDir(), "stickers")
+	_ = os.Remove(filepath.Join(uploadsDir, filename))
+}
+
+func (r *Router) handleDeleteStickerPack(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	packID := req.PathValue("id")
+
+	pack, err := r.store.GetStickerPackByID(req.Context(), packID)
+	if err != nil || pack == nil {
+		r.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+		return
+	}
+
+	isOwner, _ := r.store.IsUserOwner(req.Context(), user.ID)
+	isCreator := pack.CreatorID == user.ID || (pack.CreatorID == "" && !pack.IsBuiltin)
+
+	if pack.IsBuiltin || (!isCreator && !isOwner) {
+		if err := r.store.UninstallStickerPack(req.Context(), user.ID, packID); err != nil {
+			r.writeError(w, http.StatusBadRequest, "UNINSTALL_FAILED", err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusOK, map[string]string{"status": "uninstalled"})
+		return
+	}
+
+	for _, s := range pack.Stickers {
+		cleanStickerFile(s.AssetURL)
+	}
+	cleanStickerFile(pack.ThumbnailURL)
+
+	if err := r.store.DeleteStickerPack(req.Context(), packID, user.ID); err != nil {
+		r.writeError(w, http.StatusBadRequest, "DELETE_FAILED", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func (r *Router) handleDeleteSticker(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	stickerID := req.PathValue("id")
+	if stk, err := r.store.GetStickerByID(req.Context(), stickerID); err == nil && stk != nil {
+		cleanStickerFile(stk.AssetURL)
+	}
+	if err := r.store.DeleteSticker(req.Context(), stickerID, user.ID); err != nil {
+		r.writeError(w, http.StatusBadRequest, "DELETE_FAILED", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
 // ---------------------------------------------------------------------
@@ -1276,6 +1896,32 @@ func (r *Router) handleGetUserProfile(w http.ResponseWriter, req *http.Request) 
 		return
 	}
 	targetUser, err := r.store.GetUserByID(req.Context(), targetID)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
+			return
+		}
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve user profile")
+		return
+	}
+	publicProfile := map[string]interface{}{
+		"id":           targetUser.ID,
+		"username":     targetUser.Username,
+		"display_name": targetUser.DisplayName,
+		"bio":          targetUser.Bio,
+		"avatar_url":   targetUser.AvatarURL,
+		"created_at":   targetUser.CreatedAt,
+	}
+	r.writeJSON(w, http.StatusOK, publicProfile)
+}
+
+func (r *Router) handleGetUserByUsername(w http.ResponseWriter, req *http.Request) {
+	username := strings.TrimPrefix(strings.TrimSpace(req.PathValue("username")), "@")
+	if username == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Username is required")
+		return
+	}
+	targetUser, err := r.store.GetUserByUsername(req.Context(), username)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
@@ -1411,29 +2057,19 @@ func (r *Router) handleUploadAvatar(w http.ResponseWriter, req *http.Request) {
 	}
 
 	user := getUserFromContext(req.Context())
-	uploadsDir := filepath.Join(getUploadsDir(), "avatars")
-	_ = os.MkdirAll(uploadsDir, 0755)
-
 	ext := filepath.Ext(header.Filename)
 	if ext == "" {
 		ext = ".png"
 	}
 	filename := fmt.Sprintf("avatar_%s_%d%s", user.ID, time.Now().UnixNano(), ext)
-	filePath := filepath.Join(uploadsDir, filename)
 
-	out, err := os.Create(filePath)
-	if err != nil {
+	savedFile, sErr := r.fileStore.SaveFile(req.Context(), "avatars", filename, detectedType, file, header.Size)
+	if sErr != nil {
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to store avatar")
 		return
 	}
-	defer out.Close()
 
-	if _, err := io.Copy(out, file); err != nil {
-		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to write avatar")
-		return
-	}
-
-	avatarURL := "/api/v1/attachments/avatar/" + filename
+	avatarURL := savedFile.PublicURL
 	if err := r.store.UpdateUserAvatar(req.Context(), user.ID, avatarURL); err != nil {
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
@@ -1504,16 +2140,27 @@ func (r *Router) handleSetUserPreferences(w http.ResponseWriter, req *http.Reque
 		"highContrast":           true,
 		"visibleFocus":           true,
 		"largeTouchTargets":      true,
+		"pinned_convs":           true,
+		"pinnedIds":              true,
+		"archived_convs":         true,
+		"archivedIds":            true,
+		"muted_convs":            true,
+		"mutedIds":               true,
+		"custom_folders":         true,
 	}
 
-	sanitized := make(map[string]interface{})
+	existingJSON, _ := r.store.GetUserPreferences(req.Context(), user.ID)
+	merged := make(map[string]interface{})
+	if existingJSON != "" && existingJSON != "{}" {
+		_ = json.Unmarshal([]byte(existingJSON), &merged)
+	}
 	for k, v := range raw {
 		if allowedKeys[k] {
-			sanitized[k] = v
+			merged[k] = v
 		}
 	}
 
-	sanitizedBytes, err := json.Marshal(sanitized)
+	sanitizedBytes, err := json.Marshal(merged)
 	if err != nil {
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to serialize preferences")
 		return
@@ -1523,6 +2170,14 @@ func (r *Router) handleSetUserPreferences(w http.ResponseWriter, req *http.Reque
 		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to save user preferences")
 		return
 	}
+
+	// Broadcast user preferences update to all active devices of this user
+	r.hub.PublishEvent(&models.EventOutbox{
+		EventType:       "user.preferences_updated",
+		RecipientUserID: user.ID,
+		Payload:         string(sanitizedBytes),
+		CreatedAt:       time.Now().UTC(),
+	})
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -1579,6 +2234,221 @@ func (r *Router) handleServeAvatar(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	io.Copy(w, file)
+}
+
+func saveStickerDataURL(dataURL string, idPrefix string) (string, error) {
+	if !strings.HasPrefix(dataURL, "data:") {
+		return "", fmt.Errorf("not a data url")
+	}
+	parts := strings.SplitN(dataURL, ",", 2)
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid data url")
+	}
+	header := parts[0]
+	encoded := parts[1]
+
+	ext := ".webp"
+	isSVG := false
+	if strings.Contains(header, "image/png") {
+		ext = ".png"
+	} else if strings.Contains(header, "video/webm") {
+		ext = ".webm"
+	} else if strings.Contains(header, "image/gif") {
+		ext = ".gif"
+	} else if strings.Contains(header, "image/svg+xml") {
+		ext = ".svg"
+		isSVG = true
+	} else if strings.Contains(header, "image/jpeg") || strings.Contains(header, "image/jpg") {
+		ext = ".jpg"
+	}
+
+	var decoded []byte
+	var err error
+	if isSVG && !strings.Contains(header, "base64") {
+		// Plain SVG data URL (e.g. data:image/svg+xml;utf8,<svg...> or %3Csvg...)
+		if unescaped, unerr := url.QueryUnescape(encoded); unerr == nil {
+			decoded = []byte(unescaped)
+		} else {
+			decoded = []byte(encoded)
+		}
+	} else {
+		cleanB64 := strings.TrimSpace(encoded)
+		decoded, err = base64.StdEncoding.DecodeString(cleanB64)
+		if err != nil {
+			decoded, err = base64.URLEncoding.DecodeString(cleanB64)
+			if err != nil {
+				decoded, err = base64.RawStdEncoding.DecodeString(cleanB64)
+				if err != nil {
+					decoded, err = base64.RawURLEncoding.DecodeString(cleanB64)
+					if err != nil {
+						if isSVG {
+							if unescaped, unerr := url.QueryUnescape(cleanB64); unerr == nil {
+								decoded = []byte(unescaped)
+							} else {
+								decoded = []byte(cleanB64)
+							}
+						} else {
+							return "", err
+						}
+					}
+				}
+			}
+		}
+	}
+
+	uploadsDir := filepath.Join(getUploadsDir(), "stickers")
+	_ = os.MkdirAll(uploadsDir, 0755)
+
+	filename := idPrefix + ext
+	filePath := filepath.Join(uploadsDir, filename)
+	if err := os.WriteFile(filePath, decoded, 0644); err != nil {
+		return "", err
+	}
+
+	return "/api/v1/stickers/asset/" + filename, nil
+}
+
+func (r *Router) handleServeStickerAsset(w http.ResponseWriter, req *http.Request) {
+	id := req.PathValue("id")
+	if strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, "\\") {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid sticker asset filename")
+		return
+	}
+
+	uploadsDir := filepath.Join(getUploadsDir(), "stickers")
+	candidatePaths := []string{
+		filepath.Join(uploadsDir, id),
+		filepath.Join("/var/www/senora/uploads/stickers", id),
+		filepath.Join("uploads", "stickers", id),
+		filepath.Join("/uploads", "stickers", id),
+		filepath.Join(uploadsDir, id+".webp"),
+		filepath.Join(uploadsDir, id+".webm"),
+		filepath.Join(uploadsDir, id+".png"),
+		filepath.Join(uploadsDir, id+".gif"),
+		filepath.Join(uploadsDir, id+".svg"),
+		filepath.Join(uploadsDir, id+".jpg"),
+	}
+
+	var foundPath string
+	for _, p := range candidatePaths {
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			foundPath = p
+			break
+		}
+	}
+
+	// If not on disk, check database
+	if foundPath == "" {
+		cleanID := strings.TrimSuffix(id, filepath.Ext(id))
+		st, err := r.store.GetStickerByID(req.Context(), cleanID)
+		if err == nil && st != nil {
+			if strings.HasPrefix(st.AssetURL, "data:") {
+				if savedURL, err := saveStickerDataURL(st.AssetURL, cleanID); err == nil {
+					savedFile := strings.TrimPrefix(savedURL, "/api/v1/stickers/asset/")
+					foundPath = filepath.Join(uploadsDir, savedFile)
+				}
+			} else if strings.HasPrefix(st.AssetURL, "/") || strings.HasPrefix(st.AssetURL, "http") {
+				http.Redirect(w, req, st.AssetURL, http.StatusFound)
+				return
+			}
+		}
+	}
+
+	if foundPath == "" {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Sticker asset not found")
+		return
+	}
+
+	file, err := os.Open(foundPath)
+	if err != nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Sticker asset missing")
+		return
+	}
+	defer file.Close()
+
+	ext := strings.ToLower(filepath.Ext(foundPath))
+	contentType := "image/webp"
+	switch ext {
+	case ".webm":
+		contentType = "video/webm"
+	case ".gif":
+		contentType = "image/gif"
+	case ".svg":
+		contentType = "image/svg+xml"
+	case ".png":
+		contentType = "image/png"
+	case ".jpg", ".jpeg":
+		contentType = "image/jpeg"
+	}
+
+	fi, _ := file.Stat()
+	var modTime time.Time
+	if fi != nil {
+		modTime = fi.ModTime()
+	} else {
+		modTime = time.Now()
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	http.ServeContent(w, req, filepath.Base(foundPath), modTime, file)
+}
+
+type uploadStickerAssetReq struct {
+	DataURL string `json:"data_url"`
+}
+
+func (r *Router) handleUploadStickerAsset(w http.ResponseWriter, req *http.Request) {
+	req.Body = http.MaxBytesReader(w, req.Body, 15*1024*1024)
+
+	contentType := req.Header.Get("Content-Type")
+	if strings.Contains(contentType, "application/json") {
+		var body uploadStickerAssetReq
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+			return
+		}
+		if body.DataURL == "" {
+			r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "data_url is required")
+			return
+		}
+		assetID := "stk_asset_" + uuid.New().String()
+		url, err := saveStickerDataURL(body.DataURL, assetID)
+		if err != nil {
+			r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to decode sticker data: "+err.Error())
+			return
+		}
+		r.writeJSON(w, http.StatusCreated, map[string]string{"url": url, "id": assetID})
+		return
+	}
+
+	if err := req.ParseMultipartForm(15 * 1024 * 1024); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to parse multipart form")
+		return
+	}
+
+	file, header, err := req.FormFile("file")
+	if err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "file field is required")
+		return
+	}
+	defer file.Close()
+
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext == "" {
+		ext = ".webp"
+	}
+	assetID := "stk_asset_" + uuid.New().String()
+	filename := assetID + ext
+
+	savedFile, sErr := r.fileStore.SaveFile(req.Context(), "stickers", filename, "image/webp", file, header.Size)
+	if sErr != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to write sticker asset")
+		return
+	}
+
+	url := savedFile.PublicURL
+	r.writeJSON(w, http.StatusCreated, map[string]string{"url": url, "id": assetID})
 }
 
 func (r *Router) handleStartOrJoinVoiceChat(w http.ResponseWriter, req *http.Request) {
@@ -1767,7 +2637,7 @@ type createStickerPackReq struct {
 }
 
 func (r *Router) handleCreateStickerPack(w http.ResponseWriter, req *http.Request) {
-	req.Body = http.MaxBytesReader(w, req.Body, 10*1024*1024)
+	req.Body = http.MaxBytesReader(w, req.Body, 32*1024*1024)
 	user := getUserFromContext(req.Context())
 	var body createStickerPackReq
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
@@ -1777,9 +2647,13 @@ func (r *Router) handleCreateStickerPack(w http.ResponseWriter, req *http.Reques
 	if body.Title == "" {
 		body.Title = "Custom Stickers"
 	}
-	if body.Name == "" {
-		body.Name = "custom_" + uuid.New().String()[:8]
+	cleanSlug := strings.ToLower(regexp.MustCompile(`[^a-zA-Z0-9_]`).ReplaceAllString(body.Name, "_"))
+	cleanSlug = strings.Trim(cleanSlug, "_")
+	if cleanSlug == "" {
+		cleanSlug = "pack"
 	}
+	body.Name = fmt.Sprintf("%s_%s", cleanSlug, strings.ReplaceAll(uuid.New().String()[:8], "-", ""))
+
 	if len(body.Stickers) == 0 {
 		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "At least one sticker is required")
 		return
@@ -1787,6 +2661,11 @@ func (r *Router) handleCreateStickerPack(w http.ResponseWriter, req *http.Reques
 
 	packID := "pack_usr_" + uuid.New().String()
 	thumb := body.Stickers[0].AssetURL
+	if strings.HasPrefix(thumb, "data:") {
+		if savedThumb, err := saveStickerDataURL(thumb, packID+"_thumb"); err == nil {
+			thumb = savedThumb
+		}
+	}
 	shareCode := "stk_" + strings.ReplaceAll(uuid.New().String()[:8], "-", "")
 
 	pack := &models.StickerPack{
@@ -1807,11 +2686,18 @@ func (r *Router) handleCreateStickerPack(w http.ResponseWriter, req *http.Reques
 		if em == "" {
 			em = "✨"
 		}
+		stkID := fmt.Sprintf("%s_stk_%d", packID, i+1)
+		assetURL := s.AssetURL
+		if strings.HasPrefix(assetURL, "data:") {
+			if savedURL, err := saveStickerDataURL(assetURL, stkID); err == nil {
+				assetURL = savedURL
+			}
+		}
 		stickers = append(stickers, &models.Sticker{
-			ID:       fmt.Sprintf("%s_stk_%d", packID, i+1),
+			ID:       stkID,
 			PackID:   packID,
 			Emoji:    em,
-			AssetURL: s.AssetURL,
+			AssetURL: assetURL,
 			Width:    256,
 			Height:   256,
 		})
@@ -1833,6 +2719,185 @@ func (r *Router) handleGetSharedStickerPack(w http.ResponseWriter, req *http.Req
 		return
 	}
 	r.writeJSON(w, http.StatusOK, pack)
+}
+
+type LinkPreviewResp struct {
+	URL         string `json:"url"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Image       string `json:"image,omitempty"`
+	SiteName    string `json:"site_name,omitempty"`
+}
+
+func (r *Router) handleLinkPreview(w http.ResponseWriter, req *http.Request) {
+	rawURL := req.URL.Query().Get("url")
+	if rawURL == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "url parameter is required")
+		return
+	}
+
+	parsed, err := url.Parse(rawURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid URL scheme")
+		return
+	}
+
+	hostname := parsed.Hostname()
+	// Block private/loopback network targets for SSRF defense
+	if hostname == "localhost" || strings.HasPrefix(hostname, "127.") || hostname == "::1" || strings.HasPrefix(hostname, "10.") || strings.HasPrefix(hostname, "192.168.") || strings.HasPrefix(hostname, "172.16.") || strings.HasPrefix(hostname, "0.") {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Private network destinations are not allowed")
+		return
+	}
+
+	client := &http.Client{
+		Timeout: 4 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 3 {
+				return errors.New("stopped after 3 redirects")
+			}
+			return nil
+		},
+	}
+
+	httpReq, err := http.NewRequestWithContext(req.Context(), "GET", rawURL, nil)
+	if err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Failed to build request")
+		return
+	}
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		r.writeError(w, http.StatusBadGateway, "FETCH_FAILED", "Failed to fetch URL")
+		return
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	htmlContent := string(bodyBytes)
+
+	preview := LinkPreviewResp{
+		URL: rawURL,
+	}
+
+	// Extract og:site_name
+	if m := regexp.MustCompile(`(?i)<meta\s+[^>]*property=["']og:site_name["'][^>]*content=["']([^"']+)["']`).FindStringSubmatch(htmlContent); len(m) > 1 {
+		preview.SiteName = m[1]
+	} else if m2 := regexp.MustCompile(`(?i)<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:site_name["']`).FindStringSubmatch(htmlContent); len(m2) > 1 {
+		preview.SiteName = m2[1]
+	} else {
+		preview.SiteName = hostname
+	}
+
+	// Extract og:title or <title>
+	if m := regexp.MustCompile(`(?i)<meta\s+[^>]*property=["']og:title["'][^>]*content=["']([^"']+)["']`).FindStringSubmatch(htmlContent); len(m) > 1 {
+		preview.Title = m[1]
+	} else if m2 := regexp.MustCompile(`(?i)<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:title["']`).FindStringSubmatch(htmlContent); len(m2) > 1 {
+		preview.Title = m2[1]
+	} else if t := regexp.MustCompile(`(?i)<title[^>]*>([^<]+)</title>`).FindStringSubmatch(htmlContent); len(t) > 1 {
+		preview.Title = strings.TrimSpace(t[1])
+	}
+
+	// Extract og:description or meta description
+	if m := regexp.MustCompile(`(?i)<meta\s+[^>]*property=["']og:description["'][^>]*content=["']([^"']+)["']`).FindStringSubmatch(htmlContent); len(m) > 1 {
+		preview.Description = m[1]
+	} else if m2 := regexp.MustCompile(`(?i)<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:description["']`).FindStringSubmatch(htmlContent); len(m2) > 1 {
+		preview.Description = m2[1]
+	} else if d := regexp.MustCompile(`(?i)<meta\s+[^>]*name=["']description["'][^>]*content=["']([^"']+)["']`).FindStringSubmatch(htmlContent); len(d) > 1 {
+		preview.Description = d[1]
+	}
+
+	// Extract og:image
+	if m := regexp.MustCompile(`(?i)<meta\s+[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']`).FindStringSubmatch(htmlContent); len(m) > 1 {
+		imgURL := m[1]
+		if strings.HasPrefix(imgURL, "//") {
+			imgURL = parsed.Scheme + ":" + imgURL
+		} else if strings.HasPrefix(imgURL, "/") {
+			imgURL = parsed.Scheme + "://" + parsed.Host + imgURL
+		}
+		preview.Image = imgURL
+	} else if m2 := regexp.MustCompile(`(?i)<meta\s+[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']`).FindStringSubmatch(htmlContent); len(m2) > 1 {
+		imgURL := m2[1]
+		if strings.HasPrefix(imgURL, "//") {
+			imgURL = parsed.Scheme + ":" + imgURL
+		} else if strings.HasPrefix(imgURL, "/") {
+			imgURL = parsed.Scheme + "://" + parsed.Host + imgURL
+		}
+		preview.Image = imgURL
+	}
+
+	r.writeJSON(w, http.StatusOK, preview)
+}
+
+type addStickerReq struct {
+	Emoji    string `json:"emoji"`
+	AssetURL string `json:"asset_url"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
+func (r *Router) handleAddStickerToPack(w http.ResponseWriter, req *http.Request) {
+	req.Body = http.MaxBytesReader(w, req.Body, 32*1024*1024)
+	user := getUserFromContext(req.Context())
+	packID := req.PathValue("id")
+	if packID == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Missing pack ID")
+		return
+	}
+
+	pack, err := r.store.GetStickerPackByID(req.Context(), packID)
+	if err != nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Sticker pack not found")
+		return
+	}
+	if pack.CreatorID != "" && pack.CreatorID != user.ID {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "You do not have permission to modify this sticker pack")
+		return
+	}
+
+	var body addStickerReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+	if body.AssetURL == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Asset URL is required")
+		return
+	}
+	if body.Emoji == "" {
+		body.Emoji = "✨"
+	}
+	if body.Width <= 0 {
+		body.Width = 256
+	}
+	if body.Height <= 0 {
+		body.Height = 256
+	}
+
+	stkID := fmt.Sprintf("%s_stk_%d", packID, time.Now().UnixNano())
+	assetURL := body.AssetURL
+	if strings.HasPrefix(assetURL, "data:") {
+		if savedURL, err := saveStickerDataURL(assetURL, stkID); err == nil {
+			assetURL = savedURL
+		}
+	}
+
+	st := &models.Sticker{
+		ID:       stkID,
+		PackID:   packID,
+		Emoji:    body.Emoji,
+		AssetURL: assetURL,
+		Width:    body.Width,
+		Height:   body.Height,
+	}
+
+	if err := r.store.AddStickerToPack(req.Context(), packID, st); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusCreated, st)
 }
 
 type GIFItem struct {
@@ -2600,7 +3665,35 @@ func (r *Router) handleGetInvitePreview(w http.ResponseWriter, req *http.Request
 	code := req.PathValue("code")
 	inv, err := r.store.GetConversationInviteByCode(req.Context(), code)
 	if err != nil {
+		// Fallback: Check if code is a conversation ID (e.g. cnv_...) or channel handle
+		conv, cErr := r.store.GetConversationByID(req.Context(), code)
+		if cErr == nil && conv != nil {
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"invite_code":       code,
+				"conversation_id":   conv.ID,
+				"title":             conv.Title,
+				"type":              conv.Type,
+				"avatar_url":        conv.AvatarURL,
+				"description":       conv.Description,
+				"participant_count": len(conv.Participants),
+				"expires_at":        nil,
+			})
+			return
+		}
 		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Invalid or expired invite")
+		return
+	}
+
+	if inv.IsRevoked {
+		r.writeError(w, http.StatusBadRequest, "REVOKED", "Invite link has been revoked")
+		return
+	}
+	if inv.ExpiresAt != nil && !inv.ExpiresAt.IsZero() && inv.ExpiresAt.Year() > 1970 && inv.ExpiresAt.Before(time.Now().UTC()) {
+		r.writeError(w, http.StatusBadRequest, "EXPIRED", "Invite link has expired")
+		return
+	}
+	if inv.MaxUses > 0 && inv.UsesCount >= inv.MaxUses {
+		r.writeError(w, http.StatusBadRequest, "MAX_USES", "Invite link has reached its maximum usage limit")
 		return
 	}
 
@@ -2628,6 +3721,22 @@ func (r *Router) handleJoinInvite(w http.ResponseWriter, req *http.Request) {
 
 	conv, err := r.store.UseConversationInvite(req.Context(), code, user.ID)
 	if err != nil {
+		// Fallback: If code is a conversation ID (e.g. cnv_...) and user is joining a group/channel
+		if directConv, cErr := r.store.GetConversationByID(req.Context(), code); cErr == nil && directConv != nil {
+			if directConv.Type == "channel" || directConv.Type == "group" {
+				if addErr := r.store.AddConversationMember(req.Context(), directConv.ID, user.ID, "member"); addErr != nil {
+					r.writeError(w, http.StatusInternalServerError, "JOIN_FAILED", addErr.Error())
+					return
+				}
+				joinedConv, _ := r.store.GetConversationByID(req.Context(), directConv.ID)
+				if joinedConv == nil {
+					joinedConv = directConv
+				}
+				r.writeJSON(w, http.StatusOK, joinedConv)
+				return
+			}
+		}
+
 		r.writeError(w, http.StatusBadRequest, "JOIN_FAILED", err.Error())
 		return
 	}
@@ -2697,6 +3806,93 @@ func (r *Router) handleGlobalSearch(w http.ResponseWriter, req *http.Request) {
 	r.writeJSON(w, http.StatusOK, res)
 }
 
+func (r *Router) handleResolveIdentifier(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	raw := req.PathValue("identifier")
+	clean := strings.TrimPrefix(strings.TrimSpace(raw), "@")
+	if clean == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Identifier cannot be empty")
+		return
+	}
+
+	// 1. Check if user exists with exact username or ID
+	targetUser, err := r.store.GetUserByUsername(req.Context(), clean)
+	if err == nil && targetUser != nil {
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"type": "user",
+			"user": targetUser,
+		})
+		return
+	}
+	targetUser, err = r.store.GetUserByID(req.Context(), clean)
+	if err == nil && targetUser != nil {
+		r.writeJSON(w, http.StatusOK, map[string]interface{}{
+			"type": "user",
+			"user": targetUser,
+		})
+		return
+	}
+
+	// 2. Check if conversation (channel or group) exists with exact username, ID, or title
+	res, err := r.store.GlobalSearch(req.Context(), user.ID, clean)
+	if err == nil {
+		if channels, ok := res["channels"].([]map[string]interface{}); ok && len(channels) > 0 {
+			ch := channels[0]
+			convID, _ := ch["id"].(string)
+			conv, cErr := r.store.GetConversationByID(req.Context(), convID)
+			if cErr == nil && conv != nil {
+				r.writeJSON(w, http.StatusOK, map[string]interface{}{
+					"type":         conv.Type,
+					"conversation": conv,
+				})
+				return
+			}
+		}
+	}
+
+	// 3. Fallback: Check if invite code matches
+	inv, iErr := r.store.GetConversationInviteByCode(req.Context(), clean)
+	if iErr == nil && inv != nil {
+		conv, cErr := r.store.GetConversationByID(req.Context(), inv.ConversationID)
+		if cErr == nil && conv != nil {
+			r.writeJSON(w, http.StatusOK, map[string]interface{}{
+				"type":         conv.Type,
+				"conversation": conv,
+				"invite_code":  inv.InviteCode,
+			})
+			return
+		}
+	}
+
+	r.writeError(w, http.StatusNotFound, "NOT_FOUND", "No user, channel, or group found with this ID")
+}
+
+func (r *Router) handleJoinConversation(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+
+	conv, err := r.store.GetConversationByID(req.Context(), convID)
+	if err != nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Conversation not found")
+		return
+	}
+
+	// Add member if not already joined
+	isMember, _ := r.store.IsMember(req.Context(), convID, user.ID)
+	if !isMember {
+		if err := r.store.AddConversationMember(req.Context(), convID, user.ID, "member"); err != nil {
+			r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to join conversation")
+			return
+		}
+	}
+
+	updatedConv, err := r.convs.GetConversation(req.Context(), convID, user.ID)
+	if err != nil {
+		updatedConv = conv
+	}
+	r.writeJSON(w, http.StatusOK, updatedConv)
+}
+
 func (r *Router) handleGetUserPresence(w http.ResponseWriter, req *http.Request) {
 	targetID := req.PathValue("id")
 	isOnline := r.hub.IsUserOnline(targetID)
@@ -2757,7 +3953,7 @@ func (r *Router) handleGetBatchPresence(w http.ResponseWriter, req *http.Request
 func (r *Router) handleGetIceServers(w http.ResponseWriter, req *http.Request) {
 	stunServers := os.Getenv("STUN_SERVERS")
 	if stunServers == "" {
-		stunServers = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302"
+		stunServers = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun.cloudflare.com:3478,stun:stun.services.mozilla.com:3478,stun:stun.nextcloud.com:443"
 	}
 	stunList := strings.Split(stunServers, ",")
 	var cleanStuns []string
@@ -3006,4 +4202,667 @@ func (r *Router) handlePurgeExpiredMessages(w http.ResponseWriter, req *http.Req
 		"purged_count": count,
 	})
 }
+
+// ---------------------------------------------------------------------
+// Server Administration & Master Bot Handlers
+// ---------------------------------------------------------------------
+
+func (r *Router) checkOwner(w http.ResponseWriter, req *http.Request, user *models.User) bool {
+	if user == nil {
+		r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return false
+	}
+	isOwner, err := r.store.IsUserOwner(req.Context(), user.ID)
+	if err != nil || !isOwner {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "This action requires Server Owner privileges")
+		return false
+	}
+	return true
+}
+
+func (r *Router) handleAdminStatus(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	isOwner, _ := r.store.IsUserOwner(req.Context(), user.ID)
+	apprStr, _ := r.store.GetServerSetting(req.Context(), "registration_approval", "true")
+	maintStr, _ := r.store.GetServerSetting(req.Context(), "maintenance_mode", "false")
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"is_owner":            isOwner,
+		"master_bot_user_id":  masterbot.BotUserID,
+		"master_bot_username": masterbot.BotUsername,
+		"approval_required":   apprStr == "true",
+		"maintenance_mode":    maintStr == "true",
+	})
+}
+
+func (r *Router) handleAdminStats(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	stats, err := r.store.GetServerStats(req.Context())
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ok",
+		"stats":  stats,
+	})
+}
+
+func (r *Router) handleAdminListUsers(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	users, err := r.store.ListAllUsers(req.Context())
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"users": users})
+}
+
+func (r *Router) handleAdminListRegistrations(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	pending, err := r.store.ListPendingUsers(req.Context())
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"users":         pending,
+		"pending_users": pending,
+	})
+}
+
+func (r *Router) handleAdminApproveUser(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetID := req.PathValue("id")
+	targetUser, err := r.store.GetUserByID(req.Context(), targetID)
+	if err != nil || targetUser == nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
+		return
+	}
+
+	if err := r.store.SetUserApproved(req.Context(), targetID, true); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	// Publish approval event to WebSocket
+	ev := &models.EventOutbox{
+		EventType:       "user.approved",
+		RecipientUserID: targetID,
+		Payload:         fmt.Sprintf(`{"user_id":"%s","username":"%s","is_approved":true}`, targetID, targetUser.Username),
+		CreatedAt:       time.Now().UTC(),
+	}
+	r.hub.PublishEvent(ev)
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "approved",
+		"user_id": targetID,
+	})
+}
+
+func (r *Router) handleAdminRejectUser(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetID := req.PathValue("id")
+	targetUser, err := r.store.GetUserByID(req.Context(), targetID)
+	if err != nil || targetUser == nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
+		return
+	}
+
+	if targetUser.IsOwner {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Cannot reject or delete the server owner")
+		return
+	}
+
+	if err := r.store.DeleteUser(req.Context(), targetID); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "rejected",
+		"user_id": targetID,
+	})
+}
+
+func (r *Router) handleAdminBanUser(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetID := req.PathValue("id")
+	targetUser, err := r.store.GetUserByID(req.Context(), targetID)
+	if err != nil || targetUser == nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
+		return
+	}
+
+	if targetUser.IsOwner {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Cannot ban the server owner")
+		return
+	}
+
+	if err := r.store.SetUserBanned(req.Context(), targetID, true); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	// Disconnect user's active WebSocket sessions
+	r.hub.DisconnectUser(targetID)
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "banned",
+		"user_id": targetID,
+	})
+}
+
+func (r *Router) handleAdminUnbanUser(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetID := req.PathValue("id")
+	if err := r.store.SetUserBanned(req.Context(), targetID, false); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "unbanned",
+		"user_id": targetID,
+	})
+}
+
+func (r *Router) handleAdminDeleteUser(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetID := req.PathValue("id")
+	targetUser, err := r.store.GetUserByID(req.Context(), targetID)
+	if err != nil || targetUser == nil {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "User not found")
+		return
+	}
+
+	if targetUser.IsOwner {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Cannot delete the server owner")
+		return
+	}
+
+	if err := r.store.DeleteUser(req.Context(), targetID); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.hub.DisconnectUser(targetID)
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "deleted",
+		"user_id": targetID,
+	})
+}
+
+func (r *Router) handleAdminListConversations(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	convs, err := r.store.ListAllConversations(req.Context(), 50)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"conversations": convs})
+}
+
+type adminCreateSpectateReq struct {
+	ConversationID string `json:"conversation_id"`
+	User1Username  string `json:"user1_username"`
+	User2Username  string `json:"user2_username"`
+}
+
+func (r *Router) handleAdminCreateSpectateToken(w http.ResponseWriter, req *http.Request) {
+	r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Chat inspection and spectator access is permanently disabled for user privacy")
+}
+
+func (r *Router) handleAdminSpectateConversation(w http.ResponseWriter, req *http.Request) {
+	r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Chat inspection and spectator access is permanently disabled for user privacy")
+}
+
+type adminBotActionReq struct {
+	Command string `json:"command"`
+}
+
+func (r *Router) handleAdminBotAction(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	var body adminBotActionReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+
+	botConv, err := r.masterBot.EnsureBotConversation(req.Context(), user.ID)
+	if err != nil || botConv == nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to resolve master bot conversation")
+		return
+	}
+
+	reply, err := r.masterBot.HandleOwnerMessage(req.Context(), user.ID, botConv.ID, body.Command)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ok",
+		"reply":  reply,
+	})
+}
+
+func (r *Router) handleGetMasterBotConversation(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	conv, err := r.masterBot.EnsureBotConversation(req.Context(), user.ID)
+	if err != nil || conv == nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to retrieve master bot conversation")
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"conversation": conv,
+	})
+}
+
+type adminBroadcastReq struct {
+	Message string `json:"message"`
+}
+
+func (r *Router) handleAdminBroadcast(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	var body adminBroadcastReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+
+	botConv, _ := r.masterBot.EnsureBotConversation(req.Context(), user.ID)
+	convID := ""
+	if botConv != nil {
+		convID = botConv.ID
+	}
+
+	reply, err := r.masterBot.HandleOwnerMessage(req.Context(), user.ID, convID, "/broadcast "+body.Message)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status": "ok",
+		"reply":  reply,
+	})
+}
+
+type adminUpdateSettingsReq struct {
+	RegistrationApproval *bool `json:"registration_approval"`
+	MaintenanceMode      *bool `json:"maintenance_mode"`
+}
+
+func (r *Router) handleAdminUpdateSettings(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	var body adminUpdateSettingsReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+
+	if body.RegistrationApproval != nil {
+		val := "false"
+		if *body.RegistrationApproval {
+			val = "true"
+		}
+		_ = r.store.SetServerSetting(req.Context(), "registration_approval", val)
+	}
+
+	if body.MaintenanceMode != nil {
+		val := "false"
+		if *body.MaintenanceMode {
+			val = "true"
+		}
+		_ = r.store.SetServerSetting(req.Context(), "maintenance_mode", val)
+	}
+
+	apprStr, _ := r.store.GetServerSetting(req.Context(), "registration_approval", "true")
+	maintStr, _ := r.store.GetServerSetting(req.Context(), "maintenance_mode", "false")
+
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":                "ok",
+		"registration_approval": apprStr == "true",
+		"maintenance_mode":      maintStr == "true",
+	})
+}
+
+type adminBanIPReq struct {
+	IP     string `json:"ip"`
+	Reason string `json:"reason"`
+}
+
+func (r *Router) handleAdminListBannedIPs(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	list, err := r.store.ListBannedIPs(req.Context())
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"banned_ips": list})
+}
+
+func (r *Router) handleAdminBanIP(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	var body adminBanIPReq
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Malformed JSON body")
+		return
+	}
+	targetIP := strings.TrimSpace(body.IP)
+	if targetIP == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "IP address is required")
+		return
+	}
+	reason := strings.TrimSpace(body.Reason)
+	if reason == "" {
+		reason = "Blocked by administrator"
+	}
+
+	if err := r.store.BanIP(req.Context(), targetIP, reason, user.Username); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "ok",
+		"message": fmt.Sprintf("IP %s has been banned", targetIP),
+	})
+}
+
+func (r *Router) handleAdminUnbanIP(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	targetIP := strings.TrimSpace(req.PathValue("ip"))
+	if targetIP == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "IP address is required")
+		return
+	}
+
+	if err := r.store.UnbanIP(req.Context(), targetIP); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{
+		"status":  "ok",
+		"message": fmt.Sprintf("IP %s has been unbanned", targetIP),
+	})
+}
+
+// checkAutoBan records a security failure for clientIP and triggers an automatic ban if threshold is exceeded.
+func (r *Router) checkAutoBan(ctx context.Context, clientIP, reason string) {
+	enabledStr, _ := r.store.GetServerSetting(ctx, "autoban_enabled", "true")
+	if enabledStr == "false" {
+		return
+	}
+
+	threshStr, _ := r.store.GetServerSetting(ctx, "autoban_threshold", "5")
+	var thresh int
+	if _, err := fmt.Sscanf(threshStr, "%d", &thresh); err == nil && thresh > 0 {
+		r.autoBanTracker.SetThreshold(thresh)
+	}
+
+	if r.autoBanTracker.RecordFailure(clientIP) {
+		banReason := fmt.Sprintf("مسدودسازی خودکار به دلیل %s (Auto-Ban)", reason)
+		_ = r.store.BanIP(ctx, clientIP, banReason, "AutoBanTracker")
+		go func() {
+			_ = r.masterBot.NotifyAutoBan(context.Background(), clientIP, reason, r.autoBanTracker.GetThreshold())
+		}()
+	}
+}
+
+// handleAdminDownloadBackup allows the Server Owner to safely download database snapshots.
+func (r *Router) handleAdminDownloadBackup(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if !r.checkOwner(w, req, user) {
+		return
+	}
+
+	file := req.URL.Query().Get("file")
+	file = filepath.Base(file)
+	if !strings.HasPrefix(file, "backup_senora_") || (!strings.HasSuffix(file, ".db") && !strings.HasSuffix(file, ".sql")) {
+		r.writeError(w, http.StatusBadRequest, "INVALID_FILENAME", "Invalid or malformed backup filename")
+		return
+	}
+
+	filePath := filepath.Join("backups", file)
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Backup file not found")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", file))
+	http.ServeFile(w, req, filePath)
+}
+
+// ---------------------------------------------------------------------
+// Storage & ArvanCloud S3 Status Handlers
+// ---------------------------------------------------------------------
+
+func (r *Router) handleStorageStatus(w http.ResponseWriter, req *http.Request) {
+	status := r.fileStore.GetStatus()
+	r.writeJSON(w, http.StatusOK, status)
+}
+
+func (r *Router) handleAdminMigrateStorage(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	if user == nil {
+		r.writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication required")
+		return
+	}
+	isOwner, err := r.store.IsUserOwner(req.Context(), user.ID)
+	if err != nil || !isOwner {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Only server owner can trigger storage migration")
+		return
+	}
+
+	report, err := r.fileStore.MigrateLocalFilesToS3(req.Context(), r.store)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "MIGRATION_FAILED", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, report)
+}
+
+// ---------------------------------------------------------------------
+// Supergroup Forum Topics Handlers
+// ---------------------------------------------------------------------
+
+func (r *Router) handleToggleConversationForum(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	role, err := r.store.GetMemberRole(req.Context(), convID, user.ID)
+	if err != nil || (role != "owner" && role != "admin") {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Only group admins can change forum mode")
+		return
+	}
+	var body struct {
+		IsForum bool `json:"is_forum"`
+	}
+	_ = json.NewDecoder(req.Body).Decode(&body)
+	if err := r.store.ToggleConversationForum(req.Context(), convID, body.IsForum); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]bool{"is_forum": body.IsForum})
+}
+
+func (r *Router) handleGetForumTopics(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	if err := r.convs.ValidateMembership(req.Context(), convID, user.ID); err != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
+		return
+	}
+	topics, err := r.store.GetForumTopics(req.Context(), convID)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	if topics == nil {
+		topics = []*models.ForumTopic{}
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"topics": topics})
+}
+
+func (r *Router) handleCreateForumTopic(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	if err := r.convs.ValidateMembership(req.Context(), convID, user.ID); err != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
+		return
+	}
+	var body struct {
+		Title string `json:"title"`
+		Icon  string `json:"icon"`
+		Color string `json:"color"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil || strings.TrimSpace(body.Title) == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Title is required")
+		return
+	}
+	topic := &models.ForumTopic{
+		ConversationID: convID,
+		Title:          strings.TrimSpace(body.Title),
+		Icon:           body.Icon,
+		Color:          body.Color,
+		CreatedBy:      user.ID,
+	}
+	if err := r.store.CreateForumTopic(req.Context(), topic); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusCreated, topic)
+}
+
+// ---------------------------------------------------------------------
+// Multiple Conversation Pins Handlers
+// ---------------------------------------------------------------------
+
+func (r *Router) handleGetConversationPins(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	if err := r.convs.ValidateMembership(req.Context(), convID, user.ID); err != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
+		return
+	}
+	pins, err := r.store.GetConversationPins(req.Context(), convID)
+	if err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	if pins == nil {
+		pins = []*models.ConversationPin{}
+	}
+	r.writeJSON(w, http.StatusOK, map[string]interface{}{"pins": pins})
+}
+
+func (r *Router) handleAddConversationPin(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	if err := r.convs.ValidateMembership(req.Context(), convID, user.ID); err != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
+		return
+	}
+	var body struct {
+		MessageID string `json:"message_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil || body.MessageID == "" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "message_id is required")
+		return
+	}
+	pin := &models.ConversationPin{
+		ConversationID: convID,
+		MessageID:      body.MessageID,
+		PinnedBy:       user.ID,
+	}
+	if err := r.store.AddConversationPin(req.Context(), pin); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusCreated, pin)
+}
+
+func (r *Router) handleRemoveConversationPin(w http.ResponseWriter, req *http.Request) {
+	user := getUserFromContext(req.Context())
+	convID := req.PathValue("id")
+	msgID := req.PathValue("msgId")
+	if err := r.convs.ValidateMembership(req.Context(), convID, user.ID); err != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
+		return
+	}
+	if err := r.store.RemoveConversationPin(req.Context(), convID, msgID); err != nil {
+		r.writeError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	r.writeJSON(w, http.StatusOK, map[string]bool{"unpinned": true})
+}
+
+
 

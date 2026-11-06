@@ -34,8 +34,10 @@ import {
   ChevronRight,
   LogOut,
   Copy,
-  Check
+  Check,
+  Server
 } from 'lucide-react';
+import { ServerSelectionModal } from '../servers/ServerSelectionModal';
 
 export type SettingsTab =
   | 'profile'
@@ -45,6 +47,7 @@ export type SettingsTab =
   | 'privacy'
   | 'chats'
   | 'data'
+  | 'servers'
   | 'language'
   | 'accessibility'
   | 'about';
@@ -203,6 +206,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       icon: HardDrive,
       color: 'text-orange-400',
       desc: 'Auto-download media, local storage cache',
+    },
+    {
+      id: 'servers',
+      label: 'Servers & Network',
+      icon: Server,
+      color: 'text-blue-400',
+      desc: 'Active node, custom self-hosted servers, connectivity',
     },
     {
       id: 'language',
@@ -519,6 +529,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 settings={settings}
                 onChange={handleSettingsChange}
                 lang={lang}
+                currentUser={currentUser}
+                onUpdateUser={onUpdateUser}
+              />
+            )}
+
+            {/* SERVERS & NETWORK TAB */}
+            {activeTab === 'servers' && (
+              <ServerSelectionModal
+                isOpen={true}
+                onClose={() => setActiveTab('profile')}
+                onServerSwitched={() => {
+                  window.location.reload();
+                }}
               />
             )}
 

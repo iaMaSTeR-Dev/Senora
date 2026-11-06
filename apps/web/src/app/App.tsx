@@ -11,8 +11,14 @@ import { SettingsModal, SettingsTab } from '../features/settings/SettingsModal';
 import { loadSettings, applySettingsToDOM, syncSettingsFromBackend, resetSettings } from '../features/settings/settingsModel';
 import { PasscodeLockScreen } from '../features/settings/PasscodeLockScreen';
 import { soundManager } from '../features/calls/soundManager';
+import { webrtcManager, CallSession } from '../features/calls/webrtcManager';
+import { CallModal } from '../features/calls/CallModal';
+import { buildNotificationData } from '../features/messages/notificationHelper';
+import { InAppNotificationBanner, InAppNotification } from '../components/InAppNotificationBanner';
+import { StickerPackModal } from '../features/messages/StickerPackModal';
 import { Language, translations } from './i18n';
 import { Shield } from 'lucide-react';
+import { StandaloneWebPlayer } from '../features/messages/StandaloneWebPlayer';
 
 export const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -26,6 +32,24 @@ export const App: React.FC = () => {
   const [isLocked, setIsLocked] = useState(() => {
     const s = loadSettings();
     return !!(s.passcodeLockEnabled && s.passcodeHash);
+  });
+  const [callSession, setCallSession] = useState<CallSession | null>(null);
+  const [inAppNotif, setInAppNotif] = useState<InAppNotification | null>(null);
+
+  // Standalone Web Player (/watch/:id) & Direct Stream Redirect (/s/:id)
+  const [standaloneWatchId] = useState<string | null>(() => {
+    if (typeof window !== 'undefined') {
+      if (window.location.pathname.startsWith('/s/')) {
+        const sid = window.location.pathname.replace(/^\/s\//, '');
+        window.location.replace('/api/v1/s/' + sid + window.location.search);
+        return null;
+      }
+      if (window.location.pathname.startsWith('/watch/')) {
+        const wid = window.location.pathname.replace(/^\/watch\//, '').split('/')[0].trim();
+        return wid || null;
+      }
+    }
+    return null;
   });
 
   // Dynamic Invite Join Handling (/join/:code)
@@ -50,12 +74,28 @@ export const App: React.FC = () => {
   const [joiningInvite, setJoiningInvite] = useState(false);
   const [inviteError, setInviteError] = useState<string | null>(null);
 
-  // Initialize settings from model on mount
+  // Shared Sticker Pack Link Handling (?pack=:codeOrId)
+  const [pendingStickerPackCode, setPendingStickerPackCode] = useState<string | null>(() => {
+    if (typeof window !== 'undefined' && window.location.search) {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('pack') || null;
+    }
+    return null;
+  });
+
+  // Initialize settings and Service Worker from model on mount
   useEffect(() => {
     const s = loadSettings();
     applySettingsToDOM(s);
     if (s.theme === 'light') setTheme('light');
     if (s.language === 'fa') setLang('fa');
+
+    // Register Service Worker for PWA & push notifications
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
+      navigator.serviceWorker.register('/sw.js').catch((err) => {
+        console.warn('Service worker registration failed:', err);
+      });
+    }
   }, []);
 
   // Set document direction and theme classes
@@ -72,6 +112,55 @@ export const App: React.FC = () => {
     }
   }, [theme]);
 
+  // Synchronize App Badge & Document Title with unread messages count
+  useEffect(() => {
+    const totalUnread = conversations.reduce((sum, c) => sum + (c.unread_count || 0), 0);
+    if (typeof navigator !== 'undefined' && 'setAppBadge' in navigator) {
+      if (totalUnread > 0) {
+        (navigator as any).setAppBadge(totalUnread).catch(() => {});
+      } else {
+        (navigator as any).clearAppBadge().catch(() => {});
+      }
+    }
+    document.title = totalUnread > 0 ? `(${totalUnread}) Senora` : 'Senora — Secure Self-Hosted Messaging';
+  }, [conversations]);
+
+  // Global Desktop Keyboard Shortcuts (Alt+Up/Down for chat switching, Ctrl+F for search, Esc)
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      // Escape: Close modals
+      if (e.key === 'Escape') {
+        if (settingsModalTab) setSettingsModalTab(null);
+        if (pendingStickerPackCode) setPendingStickerPackCode(null);
+      }
+      // Alt + ArrowUp / ArrowDown: Switch active conversation
+      if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+        e.preventDefault();
+        if (conversations.length > 0) {
+          const currentIdx = activeConversation ? conversations.findIndex((c) => c.id === activeConversation.id) : -1;
+          let nextIdx = 0;
+          if (e.key === 'ArrowDown') {
+            nextIdx = currentIdx < conversations.length - 1 ? currentIdx + 1 : 0;
+          } else {
+            nextIdx = currentIdx > 0 ? currentIdx - 1 : conversations.length - 1;
+          }
+          setActiveConversation(conversations[nextIdx]);
+        }
+      }
+      // Ctrl + F or Cmd + F: Focus search input
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        const searchInput = document.querySelector<HTMLInputElement>('input[placeholder*="Search"], input[placeholder*="جستجو"]');
+        if (searchInput) {
+          e.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [conversations, activeConversation, settingsModalTab, pendingStickerPackCode]);
+
   // Attempt session restoration on mount
   useEffect(() => {
     const token = api.getToken();
@@ -80,6 +169,8 @@ export const App: React.FC = () => {
         .then(async (user) => {
           setCurrentUser(user);
           wsManager.connect(token);
+          webrtcManager.init();
+          webrtcManager.setUserId(user.id);
           const deviceId = localStorage.getItem('senora_device_id') || 'dev_' + Date.now();
           localStorage.setItem('senora_device_id', deviceId);
 
@@ -105,8 +196,12 @@ export const App: React.FC = () => {
             console.warn('Auto key registration on restore:', err);
           }
         })
-        .catch(() => {
-          api.setToken(null);
+        .catch((err) => {
+          if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized') || err?.message?.includes('INVALID_TOKEN')) {
+            api.setToken(null);
+          } else {
+            console.warn('getMe non-fatal network or rate-limit error on restore:', err);
+          }
         })
         .finally(() => setLoading(false));
     } else {
@@ -133,10 +228,22 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (currentUser) {
       loadConversations();
-      const interval = setInterval(loadConversations, 5000);
+      // WebSocket handles instant updates; background polling is kept gentle (25s) and pauses when hidden
+      const interval = setInterval(() => {
+        if (typeof document !== 'undefined' && document.hidden) return;
+        loadConversations();
+      }, 25000);
       return () => clearInterval(interval);
     }
   }, [currentUser]);
+
+  // Global WebRTC call listener
+  useEffect(() => {
+    const unsub = webrtcManager.subscribe((session) => {
+      setCallSession(session);
+    });
+    return () => unsub();
+  }, []);
 
   // Subscribe to real-time events over WebSocket
   useEffect(() => {
@@ -154,45 +261,59 @@ export const App: React.FC = () => {
         if (event.type === 'message.created') {
           const rawMsg = event.payload;
           if (rawMsg && rawMsg.sender_id !== currentUser?.id) {
-            let isMuted = false;
-            try {
-              const muted = JSON.parse(localStorage.getItem('senora_muted_convs') || '[]');
-              isMuted = Array.isArray(muted) && muted.includes(rawMsg.conversation_id);
-            } catch {}
+            buildNotificationData(rawMsg, conversations, currentUser, appSettings, lang).then((notifData) => {
+              if (!notifData) return;
 
-            // Play notification chime if sound enabled and not muted
-            if (!isMuted && appSettings.notificationSound !== false) {
-              soundManager.playMessageNotification();
-            }
-
-            // Desktop browser notification if backgrounded
-            if (
-              !isMuted &&
-              appSettings.desktopNotifications !== false &&
-              typeof window !== 'undefined' &&
-              'Notification' in window &&
-              Notification.permission === 'granted' &&
-              (document.hidden || activeConversation?.id !== rawMsg.conversation_id)
-            ) {
-              try {
-                const notif = new Notification('Senora', {
-                  body: 'New message received',
-                  icon: '/favicon.ico',
-                  tag: `msg-${rawMsg.id || rawMsg.conversation_id}`,
-                });
-                notif.onclick = () => {
-                  window.focus();
-                };
-              } catch (e) {
-                console.warn('Browser notification error:', e);
+              // Play notification chime if sound enabled and not muted
+              if (appSettings.notificationSound !== false) {
+                soundManager.playMessageNotification();
               }
-            }
+
+              const isViewingThisChat = !document.hidden && activeConversation?.id === rawMsg.conversation_id;
+
+              // Foreground in-app notification banner if user is viewing another chat
+              if (!isViewingThisChat) {
+                setInAppNotif({
+                  id: rawMsg.id || String(Date.now()),
+                  title: notifData.title,
+                  body: notifData.body,
+                  senderName: notifData.senderName,
+                  senderAvatarUrl: notifData.senderAvatarUrl,
+                  conversation: notifData.conversation,
+                });
+              }
+
+              // Desktop browser notification if backgrounded or viewing another chat
+              if (
+                !isViewingThisChat &&
+                appSettings.desktopNotifications !== false &&
+                typeof window !== 'undefined' &&
+                'Notification' in window &&
+                Notification.permission === 'granted'
+              ) {
+                try {
+                  const notif = new Notification(notifData.title, {
+                    body: notifData.body,
+                    icon: notifData.icon || '/favicon.ico',
+                    tag: `msg-${rawMsg.id || rawMsg.conversation_id}`,
+                  });
+                  notif.onclick = () => {
+                    window.focus();
+                    if (notifData.conversation) {
+                      setActiveConversation(notifData.conversation);
+                    }
+                  };
+                } catch (e) {
+                  console.warn('Browser notification error:', e);
+                }
+              }
+            });
           }
         }
       }
     });
     return unsubscribe;
-  }, [currentUser, activeConversation?.id, appSettings]);
+  }, [currentUser, activeConversation?.id, conversations, appSettings, lang]);
 
   // Load Invite Preview if URL has /join/:code
   useEffect(() => {
@@ -235,16 +356,24 @@ export const App: React.FC = () => {
   };
 
   const handleAuthSuccess = async (session: AuthSession) => {
-    localStorage.setItem('senora_device_id', session.device_id);
+    if (session.device_id) {
+      localStorage.setItem('senora_device_id', session.device_id);
+    }
     setCurrentUser(session.user);
-    wsManager.connect(session.token);
+    if (session.token) {
+      wsManager.connect(session.token);
+    }
+    webrtcManager.init();
+    webrtcManager.setUserId(session.user.id);
 
-    try {
-      await signalManager.initialize(session.user.id, session.device_id, session.token);
-      const kp = await cryptoEngine.getOrCreateDeviceKeyPair(session.user.id, session.device_id);
-      await api.registerKeys(session.device_id, kp.publicKeyBase64);
-    } catch (e) {
-      console.warn('Signal manager init error on login:', e);
+    if (session.device_id && session.token) {
+      try {
+        await signalManager.initialize(session.user.id, session.device_id, session.token);
+        const kp = await cryptoEngine.getOrCreateDeviceKeyPair(session.user.id, session.device_id);
+        await api.registerKeys(session.device_id, kp.publicKeyBase64);
+      } catch (e) {
+        console.warn('Signal manager init error on login:', e);
+      }
     }
 
     loadConversations();
@@ -253,6 +382,7 @@ export const App: React.FC = () => {
   const handleLogout = async () => {
     await api.logout();
     wsManager.disconnect();
+    webrtcManager.setUserId('');
     cryptoEngine.resetCache();
     localStorage.removeItem('senora_device_id');
     resetSettings();
@@ -262,6 +392,10 @@ export const App: React.FC = () => {
     setActiveConversation(null);
     setConversations([]);
   };
+
+  if (standaloneWatchId) {
+    return <StandaloneWebPlayer shareId={standaloneWatchId} />;
+  }
 
   if (loading) {
     return (
@@ -292,9 +426,9 @@ export const App: React.FC = () => {
   const t = translations[lang];
 
   return (
-    <div className="flex h-screen w-screen overflow-hidden bg-[#0e1621] text-white">
+    <div className="flex h-full h-[100dvh] w-full max-w-full overflow-hidden bg-[#0e1621] text-white">
       {/* Sidebar (Always visible on desktop, hidden when chat active on mobile) */}
-      <div className={`${activeConversation ? 'hidden md:flex' : 'flex'} w-full md:w-auto h-full`}>
+      <div className={`${activeConversation ? 'hidden md:flex' : 'flex'} w-full md:w-auto h-full flex-shrink-0 overflow-hidden`}>
         <Sidebar
           currentUser={currentUser}
           conversations={conversations}
@@ -318,7 +452,7 @@ export const App: React.FC = () => {
       </div>
 
       {/* Main Chat Panel */}
-      <main className={`flex-1 h-full min-w-0 ${!activeConversation ? 'hidden md:flex' : 'flex'} flex-col`}>
+      <main className={`flex-1 h-full min-w-0 ${!activeConversation ? 'hidden md:flex' : 'flex'} flex-col overflow-hidden`}>
         {activeConversation ? (
           <ChatView
             conversation={activeConversation}
@@ -408,6 +542,31 @@ export const App: React.FC = () => {
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           initialTab={settingsModalTab}
+        />
+      )}
+      {/* Floating In-App Notification Toast Banner */}
+      <InAppNotificationBanner
+        notification={inAppNotif}
+        onSelect={(conv) => setActiveConversation(conv)}
+        onDismiss={() => setInAppNotif(null)}
+      />
+
+      {/* Global WebRTC Incoming / Active Call Modal Overlay */}
+      {callSession && <CallModal session={callSession} lang={lang} />}
+
+      {/* Shared Sticker Pack Preview Modal (?pack=...) */}
+      {pendingStickerPackCode && (
+        <StickerPackModal
+          isOpen={!!pendingStickerPackCode}
+          onClose={() => {
+            setPendingStickerPackCode(null);
+            if (typeof window !== 'undefined' && window.history?.replaceState) {
+              const url = new URL(window.location.href);
+              url.searchParams.delete('pack');
+              window.history.replaceState({}, document.title, url.toString());
+            }
+          }}
+          packIdOrCode={pendingStickerPackCode}
         />
       )}
     </div>

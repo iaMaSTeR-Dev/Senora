@@ -115,10 +115,41 @@ func (s *Service) CreateGroupConversation(ctx context.Context, creatorID, title 
 }
 
 func (s *Service) ListConversations(ctx context.Context, userID string) ([]*models.Conversation, error) {
-	return s.store.ListConversationsForUser(ctx, userID)
+	convs, err := s.store.ListConversationsForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	isOwner, _ := s.store.IsUserOwner(ctx, userID)
+	if isOwner {
+		return convs, nil
+	}
+	// For non-owners: completely strip out any conversation involving the master bot
+	filtered := make([]*models.Conversation, 0, len(convs))
+	for _, c := range convs {
+		if strings.Contains(c.ID, "masterbot") {
+			continue
+		}
+		hasBot := false
+		for _, p := range c.Participants {
+			if p.ID == "usr_senoramasterbot" {
+				hasBot = true
+				break
+			}
+		}
+		if !hasBot {
+			filtered = append(filtered, c)
+		}
+	}
+	return filtered, nil
 }
 
 func (s *Service) GetConversation(ctx context.Context, convID, userID string) (*models.Conversation, error) {
+	if strings.Contains(convID, "masterbot") {
+		isOwner, _ := s.store.IsUserOwner(ctx, userID)
+		if !isOwner {
+			return nil, ErrForbidden
+		}
+	}
 	isMember, err := s.store.IsMember(ctx, convID, userID)
 	if err != nil {
 		return nil, err
@@ -175,9 +206,14 @@ func (s *Service) GetConversationMemberDetails(ctx context.Context, convID, requ
 	return details, nil
 }
 
-func (s *Service) CreateChannelConversation(ctx context.Context, creatorID, title, description string) (*models.Conversation, error) {
+func (s *Service) CreateChannelConversation(ctx context.Context, creatorID, title, description string, username ...string) (*models.Conversation, error) {
 	if title == "" {
 		title = "New Channel"
+	}
+
+	u := ""
+	if len(username) > 0 {
+		u = strings.TrimPrefix(strings.TrimSpace(username[0]), "@")
 	}
 
 	conv := &models.Conversation{
@@ -185,6 +221,7 @@ func (s *Service) CreateChannelConversation(ctx context.Context, creatorID, titl
 		Type:        "channel",
 		Title:       title,
 		Description: description,
+		Username:    u,
 	}
 
 	if err := s.store.CreateConversation(ctx, conv, []string{creatorID}); err != nil {

@@ -1,7 +1,7 @@
 # COMPREHENSIVE THREAT MODEL — SENORA
 
 **Status**: ACTIVE  
-**Last Updated**: 2026-10-15  
+**Last Updated**: 2026-10-11  
 **Target Architecture**: Senora Monolith, Web Crypto E2EE Client, SQLite / PostgreSQL 16  
 **Audience**: Security Auditors, Cryptographers, and Core Engineering  
 

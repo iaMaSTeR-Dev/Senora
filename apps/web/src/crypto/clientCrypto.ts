@@ -1,6 +1,5 @@
 // Client-Side Cryptographic Engine for Senora E2EE
 // Uses Web Crypto API (SubtleCrypto) with NIST P-256 (ECDH) & AES-256-GCM
-import { getLegacyNamespacePrefix } from '../protocol/storageMigration';
 
 export interface ClientKeyPair {
   publicKeyBase64: string;
@@ -320,12 +319,7 @@ export class ClientCryptoEngine {
       try {
         return await decryptWithAAD(buildCanonicalAAD(associatedData) as unknown as BufferSource);
       } catch (err1) {
-        // 2. Fall back to legacy namespace AAD for existing stored messages
-        try {
-          const legacyAAD = new TextEncoder().encode(`${getLegacyNamespacePrefix()}:v1:conv:${associatedData}`);
-          return await decryptWithAAD(legacyAAD as unknown as BufferSource);
-        } catch {}
-        // 3. Fall back to raw string AAD for early phase messages
+        // 2. Fall back to raw string AAD for early phase messages
         try {
           return await decryptWithAAD(new TextEncoder().encode(associatedData));
         } catch (err2) {

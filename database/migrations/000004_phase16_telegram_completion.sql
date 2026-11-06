@@ -50,4 +50,7 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 
 -- 5. Additive Columns to Conversations and Messages
 ALTER TABLE conversations ADD COLUMN IF NOT EXISTS disappearing_ttl INTEGER DEFAULT 0;
+ALTER TABLE conversations ADD COLUMN IF NOT EXISTS username VARCHAR(64) DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_conversations_username ON conversations(username);
 ALTER TABLE messages ADD COLUMN IF NOT EXISTS expires_at TIMESTAMP WITH TIME ZONE;
+

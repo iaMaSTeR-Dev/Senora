@@ -19,6 +19,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
 }) => {
   const [type, setType] = useState<'group' | 'channel'>('group');
   const [title, setTitle] = useState('');
+  const [channelUsername, setChannelUsername] = useState('');
   const [description, setDescription] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<User[]>([]);
@@ -29,14 +30,19 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
   const t = translations[lang];
 
   useEffect(() => {
-    if (!searchQuery.trim()) {
+    const clean = searchQuery.replace(/^@/, '').trim().toLowerCase();
+    if (!clean || (clean.length < 3 && !clean.startsWith('usr_'))) {
       setSearchResults([]);
       return;
     }
     const timeout = setTimeout(async () => {
       try {
-        const res = await api.searchUsers(searchQuery.trim());
-        setSearchResults(res.users.filter((u) => u.id !== currentUser.id));
+        const res = await api.searchUsers(clean);
+        setSearchResults(
+          (res.users || []).filter(
+            (u) => u.id !== currentUser.id && (u.username.toLowerCase() === clean || u.id.toLowerCase() === clean)
+          )
+        );
       } catch (e) {
         console.error('Search error:', e);
       }
@@ -65,7 +71,11 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
         const memberIds = selectedMembers.map((m) => m.id);
         conv = await api.createGroupConversation(title.trim(), memberIds);
       } else {
-        conv = await api.createChannelConversation(title.trim(), description.trim());
+        conv = await api.createChannelConversation(
+          title.trim(),
+          description.trim(),
+          channelUsername.trim() ? channelUsername.trim() : undefined
+        );
       }
       onConversationCreated(conv);
       onClose();
@@ -144,6 +154,27 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
             />
           </div>
 
+          {type === 'channel' && (
+            <div>
+              <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">
+                Channel Username / آیدی عمومی کانال (اختیاری)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-2.5 text-xs text-[#7f91a4]">@</span>
+                <input
+                  type="text"
+                  value={channelUsername}
+                  onChange={(e) => setChannelUsername(e.target.value.replace(/^@/, ''))}
+                  placeholder="channel_handle"
+                  className="w-full rounded-xl bg-[#242f3d] pl-8 pr-3.5 py-2.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
+                />
+              </div>
+              <p className="text-[10px] text-[#7f91a4] mt-1">
+                تنها با وارد کردن دقیق این آیدی، دیگران می‌توانند کانال شما را باز و عضو شوند.
+              </p>
+            </div>
+          )}
+
           <div>
             <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">Description (Optional)</label>
             <textarea
@@ -189,7 +220,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search users to add..."
+                  placeholder="Enter exact username (e.g. @alice)..."
                   className="w-full rounded-xl bg-[#242f3d] py-2 pl-8 pr-3 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
                 />
               </div>

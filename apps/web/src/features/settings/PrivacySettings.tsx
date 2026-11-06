@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AppSettings, hashPasscode, PrivacyVisibility } from './settingsModel';
-import { Device } from '../../app/types';
+import { Device, User } from '../../app/types';
 import { api } from '../../protocol/api';
 import { Language, translations } from '../../app/i18n';
 import {
@@ -10,19 +10,28 @@ import {
   Smartphone,
   Trash2,
   AlertCircle,
-  RefreshCw
+  RefreshCw,
+  Download,
+  Upload,
+  CheckCircle2,
+  FileKey
 } from 'lucide-react';
+import { exportEncryptedKeystore, restoreEncryptedKeystore } from '../../crypto/keystoreBackup';
 
 interface PrivacySettingsProps {
   settings: AppSettings;
   onChange: (partial: Partial<AppSettings>) => void;
   lang: Language;
+  currentUser?: User;
+  onUpdateUser?: (updated: User) => void;
 }
 
 export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
   settings,
   onChange,
   lang,
+  currentUser,
+  onUpdateUser,
 }) => {
   const t = translations[lang];
   const [devices, setDevices] = useState<Device[]>([]);
@@ -30,11 +39,41 @@ export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [deviceError, setDeviceError] = useState<string | null>(null);
 
+  // Account Self-Destruct state
+  const [selfDestructMonths, setSelfDestructMonths] = useState<number>(() => {
+    return currentUser?.self_destruct_months || 6;
+  });
+  const [savingSelfDestruct, setSavingSelfDestruct] = useState(false);
+
+  const handleSetSelfDestruct = async (months: number) => {
+    setSelfDestructMonths(months);
+    setSavingSelfDestruct(true);
+    try {
+      await api.setSelfDestructMonths(months);
+      if (currentUser && onUpdateUser) {
+        onUpdateUser({ ...currentUser, self_destruct_months: months });
+      }
+    } catch (e: any) {
+      alert(`خطا در تنظیم دوره حذف حساب: ${e.message || 'Unknown error'}`);
+    } finally {
+      setSavingSelfDestruct(false);
+    }
+  };
+
   // Passcode modal state
   const [showPasscodeModal, setShowPasscodeModal] = useState(false);
   const [passcodeVal, setPasscodeVal] = useState('');
   const [passcodeConfirm, setPasscodeConfirm] = useState('');
   const [passcodeError, setPasscodeError] = useState<string | null>(null);
+
+  // Keystore Backup & Restore state
+  const [showBackupModal, setShowBackupModal] = useState(false);
+  const [backupMode, setBackupMode] = useState<'export' | 'restore'>('export');
+  const [backupPassword, setBackupPassword] = useState('');
+  const [backupFileContent, setBackupFileContent] = useState('');
+  const [backupFileName, setBackupFileName] = useState('');
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [backupStatusMsg, setBackupStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const currentDeviceId = typeof window !== 'undefined' ? localStorage.getItem('senora_device_id') : '';
 
@@ -150,6 +189,32 @@ export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
         </div>
       </div>
 
+      {/* Account Self-Destruct on Inactivity */}
+      <div className="p-4 rounded-xl bg-[#242f3d]/40 border border-[#242f3d] space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <Trash2 className="h-4 w-4 text-rose-400 flex-shrink-0" />
+            <div>
+              <span className="font-semibold text-white block">{t.self_destruct}</span>
+              <span className="text-[11px] text-[#7f91a4]">{t.self_destruct_desc}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {savingSelfDestruct && <span className="text-[10px] text-emerald-400 animate-pulse">ذخیره...</span>}
+            <select
+              value={selfDestructMonths}
+              onChange={(e) => handleSetSelfDestruct(Number(e.target.value))}
+              className="rounded-lg bg-[#17212b] border border-[#242f3d] px-2.5 py-1.5 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#24A1DE] cursor-pointer"
+            >
+              <option value={1}>{t.one_month}</option>
+              <option value={3}>{t.three_months}</option>
+              <option value={6}>{t.six_months}</option>
+              <option value={12}>{t.one_year}</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
       {/* 2. Local Passcode Lock */}
       <div className="p-4 rounded-xl bg-[#242f3d]/40 border border-[#242f3d] space-y-3">
         <div className="flex items-center justify-between">
@@ -256,7 +321,57 @@ export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
         </div>
       </div>
 
-      {/* 4. Signal E2EE Architecture Info */}
+      {/* 4. Encrypted Keystore Backup & Restore */}
+      <div className="p-4 rounded-xl bg-[#17212b] border border-[#242f3d] space-y-3 text-left">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-[#24A1DE] font-bold text-xs uppercase tracking-wider">
+            <FileKey className="h-4 w-4" />
+            <span>{lang === 'fa' ? 'پشتیبان‌گیری رمزنگاری‌شده کلیدها' : 'Encrypted Keystore Backup'}</span>
+          </div>
+          <span className="text-[10px] font-mono text-[#7f91a4] bg-[#242f3d] px-2 py-0.5 rounded-full">
+            AES-256-GCM + PBKDF2
+          </span>
+        </div>
+        <p className="text-[11px] text-[#7f91a4] leading-relaxed">
+          {lang === 'fa'
+            ? 'می‌توانید کلیدهای احراز هویت Signal Protocol، کلیدهای پیش‌فرض (PreKeys) و نشست‌های رمزنگاری دوطرفه خود را با رمز عبور قوی به فایل .senorakeys صادر کرده یا در دستگاه دیگر بازیابی کنید.'
+            : 'Export or restore your Signal Double Ratchet identity keys, prekeys, and sessions protected with PBKDF2 (100,000 rounds) and AES-256-GCM (.senorakeys).'}
+        </p>
+
+        <div className="flex flex-wrap gap-2 pt-1">
+          <button
+            type="button"
+            onClick={() => {
+              setBackupMode('export');
+              setBackupPassword('');
+              setBackupStatusMsg(null);
+              setShowBackupModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-white text-xs font-semibold shadow transition cursor-pointer"
+          >
+            <Download className="h-3.5 w-3.5" />
+            <span>{lang === 'fa' ? 'استخراج نسخه پشتیبان (.senorakeys)' : 'Export Backup (.senorakeys)'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setBackupMode('restore');
+              setBackupPassword('');
+              setBackupFileContent('');
+              setBackupFileName('');
+              setBackupStatusMsg(null);
+              setShowBackupModal(true);
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-[#242f3d] hover:bg-[#2b3a4a] text-white text-xs font-semibold border border-[#324252] transition cursor-pointer"
+          >
+            <Upload className="h-3.5 w-3.5 text-emerald-400" />
+            <span>{lang === 'fa' ? 'بازیابی از فایل پشتیبان' : 'Restore from Backup'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* 5. Signal E2EE Architecture Info */}
       <div className="p-4 rounded-xl bg-[#17212b] border border-[#242f3d] space-y-2.5 text-left">
         <div className="flex items-center gap-2 text-emerald-400 font-bold text-xs uppercase tracking-wider">
           <Shield className="h-4 w-4" />
@@ -327,6 +442,168 @@ export const PrivacySettings: React.FC<PrivacySettingsProps> = ({
               </button>
             </div>
           </form>
+        </div>
+      )}
+      {/* Keystore Backup & Restore Modal */}
+      {showBackupModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md p-4 animate-fadeIn">
+          <div className="w-full max-w-sm rounded-3xl bg-[#17212b] border border-[#242f3d] p-6 space-y-4 shadow-2xl text-left">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-white font-bold text-sm">
+                <FileKey className="h-5 w-5 text-[#24A1DE]" />
+                <span>
+                  {backupMode === 'export'
+                    ? (lang === 'fa' ? 'استخراج کلیدهای رمزنگاری' : 'Export Keystore Backup')
+                    : (lang === 'fa' ? 'بازیابی کلیدهای رمزنگاری' : 'Restore Keystore Backup')}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowBackupModal(false)}
+                className="text-[#7f91a4] hover:text-white p-1 rounded-full"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-[#7f91a4] leading-relaxed">
+              {backupMode === 'export'
+                ? (lang === 'fa'
+                  ? 'یک رمز عبور قوی برای محافظت از کلیدهای استخراج‌شده وارد کنید. بدون این رمز، بازگردانی نسخه پشتیبان امکان‌پذیر نخواهد بود.'
+                  : 'Enter a strong password to encrypt your exported keys. You will need this password to restore your keystore on another device.')
+                : (lang === 'fa'
+                  ? 'فایل .senorakeys را انتخاب کرده و رمزی که هنگام استخراج تعیین کرده بودید را وارد کنید.'
+                  : 'Select your .senorakeys file and enter the password you created when exporting the backup.')}
+            </p>
+
+            {backupStatusMsg && (
+              <div
+                className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                  backupStatusMsg.type === 'success'
+                    ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
+                    : 'bg-rose-500/10 border border-rose-500/30 text-rose-400'
+                }`}
+              >
+                {backupStatusMsg.type === 'success' ? (
+                  <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 flex-shrink-0" />
+                )}
+                <span>{backupStatusMsg.text}</span>
+              </div>
+            )}
+
+            {backupMode === 'restore' && (
+              <div className="space-y-1.5">
+                <label className="text-[11px] font-semibold text-[#7f91a4]">
+                  {lang === 'fa' ? 'انتخاب فایل پشتیبان (.senorakeys)' : 'Backup File (.senorakeys)'}
+                </label>
+                <input
+                  type="file"
+                  accept=".senorakeys,.json"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (file) {
+                      setBackupFileName(file.name);
+                      const reader = new FileReader();
+                      reader.onload = (event) => {
+                        setBackupFileContent((event.target?.result as string) || '');
+                      };
+                      reader.readAsText(file);
+                    }
+                  }}
+                  className="w-full text-xs text-[#7f91a4] file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-[#242f3d] file:text-white hover:file:bg-[#2b3a4a] cursor-pointer"
+                />
+                {backupFileName && (
+                  <span className="text-[10px] text-emerald-400 font-mono">✓ {backupFileName}</span>
+                )}
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-[11px] font-semibold text-[#7f91a4]">
+                {lang === 'fa' ? 'رمز عبور پشتیبان' : 'Backup Password'}
+              </label>
+              <input
+                type="password"
+                value={backupPassword}
+                onChange={(e) => setBackupPassword(e.target.value)}
+                placeholder={lang === 'fa' ? 'حداقل ۸ نویسه...' : 'Min 8 characters...'}
+                className="w-full px-3 py-2 bg-[#242f3d] border border-[#324252] rounded-xl text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowBackupModal(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-[#7f91a4] hover:text-white hover:bg-[#242f3d] transition cursor-pointer"
+              >
+                {lang === 'fa' ? 'انصراف' : 'Cancel'}
+              </button>
+
+              <button
+                type="button"
+                disabled={
+                  backupLoading ||
+                  !backupPassword ||
+                  backupPassword.length < 6 ||
+                  (backupMode === 'restore' && !backupFileContent)
+                }
+                onClick={async () => {
+                  setBackupLoading(true);
+                  setBackupStatusMsg(null);
+                  try {
+                    const uId = currentUser?.id || 'default_user';
+                    if (backupMode === 'export') {
+                      const backupStr = await exportEncryptedKeystore(uId, backupPassword);
+                      const blob = new Blob([backupStr], { type: 'application/json' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `senora-backup-${currentUser?.username || 'user'}-${new Date().toISOString().slice(0, 10)}.senorakeys`;
+                      document.body.appendChild(a);
+                      a.click();
+                      document.body.removeChild(a);
+                      URL.revokeObjectURL(url);
+                      setBackupStatusMsg({
+                        type: 'success',
+                        text: lang === 'fa' ? 'فایل پشتیبان رمزنگاری‌شده با موفقیت دانلود شد' : 'Encrypted backup downloaded successfully',
+                      });
+                    } else {
+                      const res = await restoreEncryptedKeystore(uId, backupFileContent, backupPassword);
+                      setBackupStatusMsg({
+                        type: 'success',
+                        text: lang === 'fa' ? `بازیابی با موفقیت انجام شد (${res.itemsRestored} کلید/نشست بازگردانده شد)` : `Restored successfully (${res.itemsRestored} items restored)`,
+                      });
+                    }
+                  } catch (err: any) {
+                    setBackupStatusMsg({
+                      type: 'error',
+                      text: err.message || 'Operation failed',
+                    });
+                  } finally {
+                    setBackupLoading(false);
+                  }
+                }}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] disabled:opacity-50 text-white text-xs font-bold shadow transition cursor-pointer"
+              >
+                {backupLoading ? (
+                  <span>{lang === 'fa' ? 'در حال پردازش...' : 'Processing...'}</span>
+                ) : backupMode === 'export' ? (
+                  <>
+                    <Download className="h-3.5 w-3.5" />
+                    <span>{lang === 'fa' ? 'استخراج و دانلود' : 'Export & Download'}</span>
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-3.5 w-3.5" />
+                    <span>{lang === 'fa' ? 'رمزگشایی و بازیابی' : 'Decrypt & Restore'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

@@ -58,6 +58,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
         });
       }
     }
+
   };
 
   const handleExportDiagnostics = () => {
@@ -90,6 +91,7 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
     a.href = url;
     a.download = `senora_diagnostics_${Date.now()}.json`;
     a.click();
+
     URL.revokeObjectURL(url);
   };
 
@@ -519,9 +521,10 @@ export const GeneralSettings: React.FC<GeneralSettingsProps> = ({
             <div className="flex items-center justify-between">
               <span className="font-bold text-white text-sm">Senora Desktop / Web</span>
               <span className="px-2 py-0.5 rounded bg-[#24A1DE]/20 text-[#24A1DE] font-mono text-[10px] font-bold">
-                v1.0.0 (Release Edition)
+                v1.0.0
               </span>
             </div>
+
             <p className="text-[11px] text-[#7f91a4] leading-relaxed">
               High-fidelity secure self-hosted messaging platform with Signal Protocol Double Ratchet, peer-to-peer WebRTC calls, group voice chat, and self-hosted Vazirmatn typography.
             </p>

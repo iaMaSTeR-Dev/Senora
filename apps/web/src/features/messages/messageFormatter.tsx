@@ -97,8 +97,12 @@ export function isRTLText(text: string): boolean {
   return rtlRegex.test(text);
 }
 
+export interface FormattedTextOptions {
+  onMentionClick?: (username: string) => void;
+}
+
 // Parses Markdown / Telegram formatted text into rich React elements
-export function renderFormattedText(text: string): React.ReactNode {
+export function renderFormattedText(text: string, options?: FormattedTextOptions): React.ReactNode {
   if (!text) return null;
 
   // Split lines to detect code blocks and block quotes first
@@ -110,7 +114,7 @@ export function renderFormattedText(text: string): React.ReactNode {
 
   while ((match = codeBlockRegex.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      parts.push(...renderInlineSegments(text.slice(lastIndex, match.index)));
+      parts.push(...renderInlineSegments(text.slice(lastIndex, match.index), options));
     }
     const lang = match[1] || '';
     const codeContent = match[2];
@@ -121,14 +125,14 @@ export function renderFormattedText(text: string): React.ReactNode {
   }
 
   if (lastIndex < text.length) {
-    parts.push(...renderInlineSegments(text.slice(lastIndex)));
+    parts.push(...renderInlineSegments(text.slice(lastIndex), options));
   }
 
   return parts;
 }
 
 // Renders block quotes and inline formatting
-function renderInlineSegments(text: string): React.ReactNode[] {
+function renderInlineSegments(text: string, options?: FormattedTextOptions): React.ReactNode[] {
   // Split by line to handle blockquotes (> quote)
   const lines = text.split('\n');
   const result: React.ReactNode[] = [];
@@ -143,7 +147,7 @@ function renderInlineSegments(text: string): React.ReactNode[] {
           className="border-l-3 border-[#24A1DE] bg-black/25 pl-3 py-1 my-1 rounded-r-lg text-slate-300 italic text-sm"
         >
           {currentQuoteLines.map((line, li) => (
-            <div key={`ql-${li}`}>{parseInlineTokens(line)}</div>
+            <div key={`ql-${li}`}>{parseInlineTokens(line, options)}</div>
           ))}
         </blockquote>
       );
@@ -163,7 +167,7 @@ function renderInlineSegments(text: string): React.ReactNode[] {
       }
       result.push(
         <React.Fragment key={`line-${i}`}>
-          {parseInlineTokens(line)}
+          {parseInlineTokens(line, options)}
           {i < lines.length - 1 && <br />}
         </React.Fragment>
       );
@@ -177,22 +181,12 @@ function renderInlineSegments(text: string): React.ReactNode[] {
   return result;
 }
 
-// Parses inline tokens: spoiler, bold, italic, underline, strike, inline code, links
-function parseInlineTokens(line: string): React.ReactNode[] {
+// Parses inline tokens: spoiler, bold, italic, underline, strike, inline code, links, mentions
+function parseInlineTokens(line: string, options?: FormattedTextOptions): React.ReactNode[] {
   if (!line) return [];
 
-  // Patterns in priority:
-  // 1. Spoilers: ||text||
-  // 2. Links: [label](url)
-  // 3. URLs: https?://...
-  // 4. Inline code: `code`
-  // 5. Bold: **text** or <b>text</b>
-  // 6. Italic: *text* or _text_ or <i>text</i>
-  // 7. Underline: <u>text</u> or __text__
-  // 8. Strikethrough: ~text~ or <s>text</s>
-
-  // Combined token matcher
-  const tokenRegex = /(\|\|[\s\S]+?\|\||\[([^\]]+)\]\(([^)]+)\)|https?:\/\/[^\s<]+|`[^`]+`|\*\*[^*]+\*\*|<b>[\s\S]+?<\/b>|__[^_]+__|<u>[\s\S]+?<\/u>|~[^~]+~|<s>[\s\S]+?<\/s>|\*[^*]+\*|_[^_]+_|<i>[\s\S]+?<\/i>)/g;
+  // Combined token matcher including Telegram @username mentions and cnv_/usr_ IDs
+  const tokenRegex = /(\|\|[\s\S]+?\|\||\[([^\]]+)\]\(([^)]+)\)|https?:\/\/[^\s<]+|`[^`]+`|\*\*[^*]+\*\*|<b>[\s\S]+?<\/b>|__[^_]+__|<u>[\s\S]+?<\/u>|~[^~]+~|<s>[\s\S]+?<\/s>|\*[^*]+\*|_[^_]+_|<i>[\s\S]+?<\/i>|@[a-zA-Z0-9_]{3,32}|\b(?:cnv|usr)_[a-zA-Z0-9_-]{6,}\b)/g;
 
   const parts: React.ReactNode[] = [];
   let lastIndex = 0;
@@ -210,7 +204,7 @@ function parseInlineTokens(line: string): React.ReactNode[] {
     if (token.startsWith('||') && token.endsWith('||')) {
       // Spoiler
       const inner = token.slice(2, -2);
-      parts.push(<SpoilerView key={key}>{parseInlineTokens(inner)}</SpoilerView>);
+      parts.push(<SpoilerView key={key}>{parseInlineTokens(inner, options)}</SpoilerView>);
     } else if (token.startsWith('[') && token.includes('](')) {
       // Markdown link [text](url)
       const linkMatch = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(token);
@@ -248,6 +242,25 @@ function parseInlineTokens(line: string): React.ReactNode[] {
           {token}
         </a>
       );
+    } else if ((token.startsWith('@') && /^@[a-zA-Z0-9_]{3,32}$/.test(token)) || /^(?:cnv|usr)_[a-zA-Z0-9_-]{6,}$/.test(token)) {
+      // Telegram @username mention or exact ID
+      const identifier = token.startsWith('@') ? token.slice(1) : token;
+      parts.push(
+        <button
+          key={key}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (options?.onMentionClick) {
+              options.onMentionClick(identifier);
+            }
+          }}
+          className="inline font-semibold text-[#24A1DE] hover:text-[#52bcf5] hover:underline cursor-pointer select-text transition bg-transparent p-0 m-0 border-none outline-none align-baseline"
+          title={token.startsWith('@') ? `View @${identifier}'s profile` : `Open ${token}`}
+        >
+          {token}
+        </button>
+      );
     } else if (token.startsWith('`') && token.endsWith('`')) {
       // Inline Code
       const inner = token.slice(1, -1);
@@ -262,19 +275,19 @@ function parseInlineTokens(line: string): React.ReactNode[] {
     } else if ((token.startsWith('**') && token.endsWith('**')) || (token.startsWith('<b>') && token.endsWith('</b>'))) {
       // Bold
       const inner = token.startsWith('**') ? token.slice(2, -2) : token.slice(3, -4);
-      parts.push(<strong key={key} className="font-bold text-white">{parseInlineTokens(inner)}</strong>);
+      parts.push(<strong key={key} className="font-bold text-white">{parseInlineTokens(inner, options)}</strong>);
     } else if ((token.startsWith('__') && token.endsWith('__')) || (token.startsWith('<u>') && token.endsWith('</u>'))) {
       // Underline
       const inner = token.startsWith('__') ? token.slice(2, -2) : token.slice(3, -4);
-      parts.push(<u key={key} className="underline underline-offset-2">{parseInlineTokens(inner)}</u>);
+      parts.push(<u key={key} className="underline underline-offset-2">{parseInlineTokens(inner, options)}</u>);
     } else if ((token.startsWith('~') && token.endsWith('~')) || (token.startsWith('<s>') && token.endsWith('</s>'))) {
       // Strikethrough
       const inner = token.startsWith('~') ? token.slice(1, -1) : token.slice(3, -4);
-      parts.push(<s key={key} className="line-through opacity-75">{parseInlineTokens(inner)}</s>);
+      parts.push(<s key={key} className="line-through opacity-75">{parseInlineTokens(inner, options)}</s>);
     } else if ((token.startsWith('*') && token.endsWith('*')) || (token.startsWith('_') && token.endsWith('_')) || (token.startsWith('<i>') && token.endsWith('</i>'))) {
       // Italic
       const inner = token.startsWith('*') || token.startsWith('_') ? token.slice(1, -1) : token.slice(3, -4);
-      parts.push(<em key={key} className="italic">{parseInlineTokens(inner)}</em>);
+      parts.push(<em key={key} className="italic">{parseInlineTokens(inner, options)}</em>);
     } else {
       parts.push(token);
     }

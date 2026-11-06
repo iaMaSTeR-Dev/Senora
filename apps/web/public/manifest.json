@@ -1,0 +1,18 @@
+{
+  "name": "Senora",
+  "short_name": "Senora",
+  "description": "Secure Self-Hosted Messaging with Signal Protocol E2EE",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0e1621",
+  "theme_color": "#17212b",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

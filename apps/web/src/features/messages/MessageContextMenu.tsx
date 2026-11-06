@@ -13,7 +13,8 @@ import {
   User as UserIcon,
   Info,
   CheckCheck,
-  Trash2
+  Trash2,
+  Film
 } from 'lucide-react';
 import { Message, User } from '../../app/types';
 
@@ -44,6 +45,8 @@ interface MessageContextMenuProps {
   onDeleteForMe: (msg: Message) => void;
   onDeleteForEveryone: (msg: Message) => void;
   onReact: (msgId: string, emoji: string) => void;
+  onStartWatchParty?: (msg: Message) => void;
+  onShareMedia?: (msg: Message) => void;
 }
 
 export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
@@ -67,6 +70,8 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
   onDeleteForMe,
   onDeleteForEveryone,
   onReact,
+  onStartWatchParty,
+  onShareMedia,
 }) => {
   const menuRef = useRef<HTMLDivElement>(null);
   const msg = position.message;
@@ -274,6 +279,35 @@ export const MessageContextMenu: React.FC<MessageContextMenuProps> = ({
           >
             <Maximize2 size={14} className="text-[#24A1DE]" />
             <span>Open Fullscreen</span>
+          </button>
+        )}
+
+        {/* Video Watch Party & Direct Stream Link */}
+        {msg.attachmentMeta?.isVideo && onStartWatchParty && (
+          <button
+            type="button"
+            onClick={() => {
+              onStartWatchParty(msg);
+              onClose();
+            }}
+            className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left text-emerald-400 cursor-pointer"
+          >
+            <Film size={14} />
+            <span>سینما پارتی (تماشای همزمان)</span>
+          </button>
+        )}
+
+        {msg.attachmentMeta && onShareMedia && (
+          <button
+            type="button"
+            onClick={() => {
+              onShareMedia(msg);
+              onClose();
+            }}
+            className="flex items-center gap-2.5 px-3 py-1.5 hover:bg-white/10 transition text-left text-indigo-400 cursor-pointer"
+          >
+            <Share2 size={14} />
+            <span>لینک استریم مستقیم و وب پلیر</span>
           </button>
         )}
 

@@ -16,7 +16,7 @@ jobs:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: senora
-          POSTGRES_PASSWORD: senora_test_password
+          POSTGRES_PASSWORD: senora_password
           POSTGRES_DB: senora_test
         ports:
           - 5432:5432
@@ -38,21 +38,26 @@ jobs:
 
       - name: Verify PostgreSQL Schema Migrations
         env:
-          PGPASSWORD: senora_test_password
+          PGPASSWORD: senora_password
         run: |
           psql -h localhost -U senora -d senora_test -f database/migrations/000001_init.sql
           psql -h localhost -U senora -d senora_test -f database/migrations/000002_phase9.sql
           psql -h localhost -U senora -d senora_test -f database/migrations/000003_phase10_15.sql
           psql -h localhost -U senora -d senora_test -f database/migrations/000004_phase16_telegram_completion.sql
           psql -h localhost -U senora -d senora_test -f database/migrations/000005_message_reads.sql
+          psql -h localhost -U senora -d senora_test -f database/migrations/000006_push_devices.sql
+          psql -h localhost -U senora -d senora_test -f database/migrations/000007_master_bot_and_server_settings.sql
+          psql -h localhost -U senora -d senora_test -f database/migrations/000008_banned_ips.sql
+          psql -h localhost -U senora -d senora_test -f database/migrations/000009_media_shares.sql
 
-      - name: Run Backend Tests
+      - name: Verify Backend Compilation
         working-directory: apps/server
         env:
-          TEST_DATABASE_URL: postgres://senora:senora_test_password@localhost:5432/senora_test?sslmode=disable
+          TEST_DATABASE_URL: postgres://senora:senora_password@localhost:5432/senora_test?sslmode=disable
         run: |
           go vet ./...
           go test -v -count=1 ./...
+          go build -v ./cmd/server
 
   frontend-test:
     name: Frontend Quality & Build Verification

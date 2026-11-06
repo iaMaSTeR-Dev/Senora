@@ -85,6 +85,7 @@ type SubmitMessageParams struct {
 	EphemeralPublicKey string
 	IdempotencyKey     string
 	ReplyToID          string
+	TopicID            string
 }
 
 func (s *Service) SubmitMessage(ctx context.Context, p SubmitMessageParams) (*models.Message, error) {
@@ -127,6 +128,7 @@ func (s *Service) SubmitMessage(ctx context.Context, p SubmitMessageParams) (*mo
 		EphemeralPublicKey: p.EphemeralPublicKey,
 		IdempotencyKey:     p.IdempotencyKey,
 		ReplyToID:          p.ReplyToID,
+		TopicID:            p.TopicID,
 	}
 
 	savedMsg, outboxEvents, err := s.store.CreateMessageWithOutbox(ctx, msg, memberIDs)

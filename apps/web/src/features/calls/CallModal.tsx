@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { CallSession, webrtcManager } from './webrtcManager';
+import { CallSession, webrtcManager, ScreenQualityPreset } from './webrtcManager';
 import { mediaDeviceManager } from './mediaDeviceManager';
 import {
   Phone,
@@ -13,7 +13,15 @@ import {
   Settings,
   ShieldCheck,
   Volume2,
-  X
+  X,
+  Maximize2,
+  Minimize2,
+  Maximize,
+  Minimize,
+  Sparkles,
+  Check,
+  ChevronDown,
+  Scaling,
 } from 'lucide-react';
 
 interface CallModalProps {
@@ -24,8 +32,16 @@ interface CallModalProps {
 export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const screenVideoRef = useRef<HTMLVideoElement>(null);
   const remoteAudioRef = useRef<HTMLAudioElement>(null);
+  const videoStageRef = useRef<HTMLDivElement>(null);
+
   const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const [isTheaterMode, setIsTheaterMode] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [fitMode, setFitMode] = useState<'contain' | 'cover'>('contain');
+  const [showQualityMenu, setShowQualityMenu] = useState(false);
+
   const [audioDevices, setAudioDevices] = useState<{
     audioInputs: MediaDeviceInfo[];
     audioOutputs: MediaDeviceInfo[];
@@ -35,6 +51,78 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
   const [selectedAudioIn, setSelectedAudioIn] = useState('');
   const [selectedAudioOut, setSelectedAudioOut] = useState('');
   const [selectedVideoIn, setSelectedVideoIn] = useState('');
+
+  // Sync fullscreen state via standard browser event
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement);
+    };
+    document.addEventListener('fullscreenchange', handleFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+    };
+  }, []);
+
+  const toggleFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        const el = videoStageRef.current;
+        if (el?.requestFullscreen) {
+          await el.requestFullscreen();
+        } else if ((el as any)?.webkitRequestFullscreen) {
+          await (el as any).webkitRequestFullscreen();
+        }
+      } else {
+        if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        } else if ((document as any)?.webkitExitFullscreen) {
+          await (document as any).webkitExitFullscreen();
+        }
+      }
+    } catch (err) {
+      console.warn('[CallModal] Fullscreen toggle failed:', err);
+    }
+  };
+
+  const currentQuality: ScreenQualityPreset = session.screenQuality || 'auto';
+
+  const handleSelectQuality = (preset: ScreenQualityPreset) => {
+    setShowQualityMenu(false);
+    if (session.isScreenSharing) {
+      webrtcManager.setScreenShareQuality(preset);
+    } else {
+      webrtcManager.requestRemoteScreenQuality(preset);
+    }
+  };
+
+  const qualityOptions: { id: ScreenQualityPreset; label: string; desc: string; badge: string }[] = [
+    {
+      id: 'auto',
+      label: lang === 'fa' ? 'خودکار (هوشمند)' : 'Auto (Adaptive)',
+      desc: lang === 'fa' ? 'تطبیق خودکار با سرعت شبکه' : 'Dynamically adapts to network',
+      badge: 'AUTO',
+    },
+    {
+      id: '1080p',
+      label: '1080p 60fps',
+      desc: lang === 'fa' ? 'کیفیت فوق‌العاده شفاف و روان' : 'FHD Ultra-smooth, crystal clear',
+      badge: 'FHD',
+    },
+    {
+      id: '720p',
+      label: '720p 30fps',
+      desc: lang === 'fa' ? 'کیفیت استاندارد اچ‌دی' : 'HD Balanced performance & clarity',
+      badge: 'HD',
+    },
+    {
+      id: '480p',
+      label: '480p 30fps',
+      desc: lang === 'fa' ? 'صرفه‌جویی در مصرف اینترنت' : 'Data saver, lightweight bandwidth',
+      badge: 'SD',
+    },
+  ];
 
   // Load available devices
   useEffect(() => {
@@ -46,24 +134,73 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
     });
   }, []);
 
+  // Stable ref attachment callbacks to immediately bind MediaStream when DOM elements mount
+  const attachRemoteVideo = (el: HTMLVideoElement | null) => {
+    (remoteVideoRef as any).current = el;
+    if (el && session.remoteStream) {
+      if (el.srcObject !== session.remoteStream) {
+        el.srcObject = session.remoteStream;
+      }
+      el.play().catch((err) => console.warn('[CallModal] remoteVideo.play error:', err));
+    }
+  };
+
+  const attachScreenVideo = (el: HTMLVideoElement | null) => {
+    (screenVideoRef as any).current = el;
+    if (el && session.screenStream) {
+      if (el.srcObject !== session.screenStream) {
+        el.srcObject = session.screenStream;
+      }
+      el.play().catch((err) => console.warn('[CallModal] screenVideo.play error:', err));
+    }
+  };
+
+  const attachLocalVideo = (el: HTMLVideoElement | null) => {
+    (localVideoRef as any).current = el;
+    if (el && session.localStream) {
+      if (el.srcObject !== session.localStream) {
+        el.srcObject = session.localStream;
+      }
+      el.play().catch((err) => console.warn('[CallModal] localVideo.play error:', err));
+    }
+  };
+
   // Attach local stream
   useEffect(() => {
     if (localVideoRef.current && session.localStream) {
-      localVideoRef.current.srcObject = session.localStream;
+      if (localVideoRef.current.srcObject !== session.localStream) {
+        localVideoRef.current.srcObject = session.localStream;
+      }
+      localVideoRef.current.play().catch(() => {});
     }
-  }, [session.localStream]);
+  }, [session.localStream, session.state, session.callType, session.isVideoOff]);
+
+  // Attach screen stream
+  useEffect(() => {
+    if (screenVideoRef.current && session.screenStream) {
+      if (screenVideoRef.current.srcObject !== session.screenStream) {
+        screenVideoRef.current.srcObject = session.screenStream;
+      }
+      screenVideoRef.current.play().catch((err) => console.warn('[CallModal] screenVideo.play error:', err));
+    }
+  }, [session.screenStream, session.isScreenSharing, session.peerScreenSharing, session.hasRemoteVideo, session.state]);
 
   // Attach remote stream (audio and video)
   useEffect(() => {
     if (remoteVideoRef.current && session.remoteStream) {
-      remoteVideoRef.current.srcObject = session.remoteStream;
-      mediaDeviceManager.applyAudioOutput(remoteVideoRef.current);
+      if (remoteVideoRef.current.srcObject !== session.remoteStream) {
+        remoteVideoRef.current.srcObject = session.remoteStream;
+      }
+      remoteVideoRef.current.play().catch((err) => console.warn('[CallModal] remoteVideo.play error:', err));
     }
     if (remoteAudioRef.current && session.remoteStream) {
-      remoteAudioRef.current.srcObject = session.remoteStream;
+      if (remoteAudioRef.current.srcObject !== session.remoteStream) {
+        remoteAudioRef.current.srcObject = session.remoteStream;
+      }
+      remoteAudioRef.current.play().catch((err) => console.warn('[CallModal] remoteAudio.play error:', err));
       mediaDeviceManager.applyAudioOutput(remoteAudioRef.current);
     }
-  }, [session.remoteStream]);
+  }, [session.remoteStream, session.state, session.hasRemoteVideo, session.peerScreenSharing]);
 
   const formatDuration = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -124,7 +261,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       {/* Hidden audio element for audio calls to guarantee playback through selected sink */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
-      <div className="relative w-full max-w-xl bg-[#17212b]/95 border border-[#242f3d] rounded-3xl overflow-hidden shadow-2xl flex flex-col items-center">
+      <div className={`relative transition-all duration-300 w-full ${isTheaterMode ? 'max-w-6xl w-[96vw]' : 'max-w-xl'} bg-[#17212b]/95 border border-[#242f3d] rounded-3xl overflow-hidden shadow-2xl flex flex-col items-center`}>
         {/* Top Header Banner */}
         <div className="w-full flex items-center justify-between px-6 pt-5 pb-2 text-xs text-slate-400">
           <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
@@ -141,33 +278,253 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
           </button>
         </div>
 
-        {/* Video Area (When Video Call is Connected) */}
-        {session.callType === 'video' && session.state === 'connected' ? (
-          <div className="relative w-full h-84 sm:h-96 bg-black flex items-center justify-center overflow-hidden">
-            {/* Remote Video (Full Size) */}
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="w-full h-full object-cover"
-            />
-
-            {/* Local Video PiP (Corner) */}
-            <div className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 bg-slate-900 rounded-2xl overflow-hidden border-2 border-[#24A1DE] shadow-2xl">
+        {/* Video / Screen Share Area (When Connected) */}
+        {((session.callType === 'video' || session.isScreenSharing || session.peerScreenSharing || session.hasRemoteVideo) && session.state === 'connected') ? (
+          <div
+            ref={videoStageRef}
+            className={`relative w-full ${
+              isFullscreen
+                ? 'fixed inset-0 z-50 w-screen h-screen bg-black flex items-center justify-center'
+                : isTheaterMode
+                ? 'h-[68vh] sm:h-[75vh] bg-black flex items-center justify-center overflow-hidden transition-all duration-300'
+                : 'h-84 sm:h-96 bg-black flex items-center justify-center overflow-hidden transition-all duration-300'
+            }`}
+          >
+            {/* 1. Main Stage */}
+            {session.peerScreenSharing || (session.remoteStream && session.hasRemoteVideo) ? (
+              /* Remote Video or Remote Screen Share (Full Size) */
               <video
-                ref={localVideoRef}
+                ref={attachRemoteVideo}
                 autoPlay
                 playsInline
                 muted
-                className="w-full h-full object-cover transform -scale-x-100"
+                className={`w-full h-full ${
+                  session.peerScreenSharing
+                    ? (fitMode === 'contain' ? 'object-contain' : 'object-cover')
+                    : 'object-cover'
+                } bg-black`}
               />
+            ) : session.isScreenSharing && session.screenStream ? (
+              /* Local Screen Preview (Full Size when remote has no video) */
+              <video
+                ref={attachScreenVideo}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'} bg-slate-950`}
+              />
+            ) : session.callType === 'video' ? (
+              /* Video call waiting for remote camera, show remote avatar */
+              <div className="flex flex-col items-center justify-center space-y-3">
+                <div className="w-24 h-24 rounded-full bg-slate-800 flex items-center justify-center text-white text-3xl font-bold border border-white/10">
+                  {session.peerName ? session.peerName.charAt(0) : <User size={48} />}
+                </div>
+                <p className="text-sm text-slate-400">
+                  {lang === 'fa' ? 'در انتظار دریافت تصویر...' : 'Connecting video...'}
+                </p>
+              </div>
+            ) : null}
+
+            {/* 2. PiP Corner Window */}
+            {(session.isScreenSharing && (session.peerScreenSharing || session.hasRemoteVideo)) ? (
+              /* Local Screen Preview in PiP when viewing remote video/screen */
+              <div className="absolute bottom-4 right-4 w-36 h-24 sm:w-48 sm:h-32 bg-slate-950 rounded-2xl overflow-hidden border-2 border-blue-500 shadow-2xl z-20">
+                <video
+                  ref={attachScreenVideo}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-contain bg-black"
+                />
+                <div className="absolute bottom-1 left-2 px-1.5 py-0.5 rounded bg-blue-600/90 text-[10px] text-white font-medium">
+                  {lang === 'fa' ? 'صفحه شما' : 'Your Screen'}
+                </div>
+              </div>
+            ) : (session.callType === 'video' && !session.isVideoOff && session.localStream) ? (
+              /* Local Camera PiP */
+              <div className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 bg-slate-900 rounded-2xl overflow-hidden border-2 border-[#24A1DE] shadow-2xl z-20">
+                <video
+                  ref={attachLocalVideo}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform -scale-x-100"
+                />
+              </div>
+            ) : null}
+
+            {/* Top Left Status & Indicators Overlay */}
+            <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
+              {session.isScreenSharing && (
+                <div className="px-3 py-1.5 rounded-xl bg-blue-600/90 backdrop-blur-md text-white text-xs font-semibold shadow-lg flex items-center gap-2">
+                  <Monitor size={15} className="animate-pulse" />
+                  <span>{lang === 'fa' ? 'در حال اشتراک صفحه' : 'Sharing Screen'}</span>
+                </div>
+              )}
+
+              {session.peerScreenSharing && (
+                <div className="px-3 py-1.5 rounded-xl bg-emerald-600/90 backdrop-blur-md text-white text-xs font-semibold shadow-lg flex items-center gap-2">
+                  <Monitor size={15} />
+                  <span>{session.peerName} {lang === 'fa' ? '(صفحه اشتراکی)' : '(Screen)'}</span>
+                </div>
+              )}
+
+              <div className="px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md text-white text-xs flex items-center gap-2 border border-white/5">
+                <span className="font-semibold">{session.peerName}</span>
+                <span className="font-mono text-[#24A1DE]">{formatDuration(session.durationSeconds)}</span>
+              </div>
             </div>
 
-            {/* Remote Info Overlay */}
-            <div className="absolute top-4 left-4 px-3 py-1.5 rounded-xl bg-black/60 backdrop-blur-md text-white text-xs flex items-center gap-2">
-              <span className="font-semibold">{session.peerName}</span>
-              <span className="font-mono text-[#24A1DE]">{formatDuration(session.durationSeconds)}</span>
+            {/* Top Right Controls Overlay: Quality Preset, Fit Mode, Theater Mode, Fullscreen */}
+            <div className="absolute top-4 right-4 z-30 flex items-center gap-1.5 bg-black/60 backdrop-blur-md p-1.5 rounded-2xl border border-white/10 shadow-2xl">
+              {/* Quality Dropdown Toggle */}
+              {(session.isScreenSharing || session.peerScreenSharing) && (
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setShowQualityMenu(!showQualityMenu)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
+                      showQualityMenu ? 'bg-[#24A1DE] text-white shadow-md' : 'text-slate-200 hover:bg-white/15'
+                    }`}
+                    title={lang === 'fa' ? 'کیفیت اشتراک صفحه' : 'Screen Share Quality'}
+                  >
+                    <Sparkles size={13} className="text-amber-400" />
+                    <span className="font-mono text-[11px] uppercase font-bold">{currentQuality}</span>
+                    <ChevronDown size={13} />
+                  </button>
+
+                  {/* Quality Menu Popover */}
+                  {showQualityMenu && (
+                    <div className="absolute right-0 mt-2 w-56 bg-[#17212b] border border-[#242f3d] rounded-2xl shadow-2xl p-1.5 z-40 animate-fadeIn text-xs">
+                      <div className="px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 mb-1">
+                        {lang === 'fa' ? 'انتخاب کیفیت نمایش' : 'Stream Quality'}
+                      </div>
+                      {qualityOptions.map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => handleSelectQuality(opt.id)}
+                          className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl transition cursor-pointer text-left ${
+                            currentQuality === opt.id
+                              ? 'bg-[#24A1DE]/20 text-[#24A1DE] font-semibold'
+                              : 'text-slate-300 hover:bg-white/5'
+                          }`}
+                        >
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span>{opt.label}</span>
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-white/10 text-slate-300">
+                                {opt.badge}
+                              </span>
+                            </div>
+                            <div className="text-[10px] text-slate-400 font-normal">{opt.desc}</div>
+                          </div>
+                          {currentQuality === opt.id && <Check size={14} className="text-[#24A1DE]" />}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Fit / Fill Aspect Toggle */}
+              <button
+                type="button"
+                onClick={() => setFitMode(fitMode === 'contain' ? 'cover' : 'contain')}
+                className={`p-1.5 rounded-xl text-xs transition cursor-pointer ${
+                  fitMode === 'cover' ? 'bg-[#24A1DE] text-white' : 'text-slate-300 hover:bg-white/15'
+                }`}
+                title={
+                  fitMode === 'contain'
+                    ? (lang === 'fa' ? 'تغییر اندازه: تمام کادر (Fill)' : 'Fill Frame (Crop)')
+                    : (lang === 'fa' ? 'تغییر اندازه: اندازه اصلی (Fit)' : 'Fit Frame (Original Aspect)')
+                }
+              >
+                <Scaling size={16} />
+              </button>
+
+              {/* Theater Mode Toggle (hidden in fullscreen) */}
+              {!isFullscreen && (
+                <button
+                  type="button"
+                  onClick={() => setIsTheaterMode(!isTheaterMode)}
+                  className={`p-1.5 rounded-xl text-xs transition cursor-pointer ${
+                    isTheaterMode ? 'bg-[#24A1DE] text-white' : 'text-slate-300 hover:bg-white/15'
+                  }`}
+                  title={
+                    isTheaterMode
+                      ? (lang === 'fa' ? 'خروج از حالت بزرگ‌تر (سینمایی)' : 'Exit Theater Mode')
+                      : (lang === 'fa' ? 'بزرگ‌تر کردن کادر (حالت سینمایی)' : 'Enlarge (Theater Mode)')
+                  }
+                >
+                  {isTheaterMode ? <Minimize size={16} /> : <Maximize size={16} />}
+                </button>
+              )}
+
+              {/* Native Fullscreen Toggle */}
+              <button
+                type="button"
+                onClick={toggleFullscreen}
+                className={`p-1.5 rounded-xl text-xs transition cursor-pointer ${
+                  isFullscreen ? 'bg-[#24A1DE] text-white' : 'text-slate-300 hover:bg-white/15'
+                }`}
+                title={
+                  isFullscreen
+                    ? (lang === 'fa' ? 'خروج از تمام‌صفحه' : 'Exit Fullscreen')
+                    : (lang === 'fa' ? 'تمام‌صفحه' : 'Enter Fullscreen')
+                }
+              >
+                {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+              </button>
+
+              {/* Stop Sharing Quick Button (when local user shares) */}
+              {session.isScreenSharing && (
+                <button
+                  type="button"
+                  onClick={() => webrtcManager.toggleScreenShare()}
+                  className="px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-md transition flex items-center gap-1 cursor-pointer"
+                  title={lang === 'fa' ? 'توقف اشتراک صفحه' : 'Stop Sharing'}
+                >
+                  <X size={13} />
+                  <span className="hidden sm:inline">{lang === 'fa' ? 'توقف' : 'Stop'}</span>
+                </button>
+              )}
             </div>
+
+            {/* Fullscreen Floating Bottom Bar */}
+            {isFullscreen && (
+              <div className="absolute bottom-6 z-30 flex items-center gap-3 px-5 py-2.5 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 shadow-2xl animate-fadeIn">
+                <span className="text-white text-xs font-semibold">{session.peerName}</span>
+                <span className="text-xs font-mono text-[#24A1DE]">{formatDuration(session.durationSeconds)}</span>
+                <div className="w-px h-5 bg-white/20" />
+                <button
+                  type="button"
+                  onClick={() => webrtcManager.toggleMute()}
+                  className={`p-2 rounded-full cursor-pointer transition ${
+                    session.isMuted ? 'bg-red-600 text-white' : 'bg-white/15 text-white hover:bg-white/25'
+                  }`}
+                  title={session.isMuted ? 'Unmute Mic' : 'Mute Mic'}
+                >
+                  {session.isMuted ? <MicOff size={16} /> : <Mic size={16} />}
+                </button>
+                <button
+                  type="button"
+                  onClick={toggleFullscreen}
+                  className="p-2 rounded-full bg-white/15 text-white hover:bg-white/25 cursor-pointer transition"
+                  title={lang === 'fa' ? 'خروج از تمام‌صفحه' : 'Exit Fullscreen'}
+                >
+                  <Minimize2 size={16} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => webrtcManager.hangupCall()}
+                  className="p-2 rounded-full bg-red-600 hover:bg-red-700 text-white cursor-pointer transition shadow-lg"
+                  title={lang === 'fa' ? 'پایان تماس' : 'End Call'}
+                >
+                  <PhoneOff size={16} />
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           /* Voice Call or Ringing State View */
@@ -373,10 +730,14 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   onClick={() => webrtcManager.toggleScreenShare()}
                   className={`p-3.5 sm:p-4 rounded-full transition-all shadow-md cursor-pointer ${
                     session.isScreenSharing
-                      ? 'bg-blue-600 text-white shadow-blue-500/30'
+                      ? 'bg-blue-600 text-white shadow-blue-500/30 ring-2 ring-blue-400'
                       : 'bg-[#242f3d] text-slate-200 hover:bg-[#2c3949] border border-white/5'
                   }`}
-                  title={session.isScreenSharing ? 'Stop Screen Share' : 'Share Screen'}
+                  title={
+                    session.isScreenSharing
+                      ? (lang === 'fa' ? 'توقف اشتراک صفحه' : 'Stop Screen Share')
+                      : (lang === 'fa' ? 'اشتراک صفحه نمایش' : 'Share Screen')
+                  }
                 >
                   <Monitor size={20} />
                 </button>

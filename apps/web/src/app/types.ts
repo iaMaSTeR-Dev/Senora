@@ -5,18 +5,26 @@ export interface User {
   bio?: string;
   avatar_url?: string;
   created_at?: string;
+  is_approved?: boolean;
+  is_owner?: boolean;
+  is_banned?: boolean;
+  self_destruct_months?: number;
+  last_seen_at?: string;
 }
 
 export interface Conversation {
   id: string;
   type: 'direct' | 'group' | 'channel' | 'saved';
   title?: string;
+  username?: string;
   description?: string;
   avatar_url?: string;
   pinned_message_id?: string;
   security_mode?: 'normal' | 'e2ee_initializing' | 'e2ee_active' | 'e2ee_failed';
   unread_count?: number;
   disappearing_ttl?: number;
+  slow_mode_seconds?: number;
+  is_forum?: boolean;
   created_at: string;
   updated_at: string;
   participants?: User[];
@@ -73,6 +81,9 @@ export interface Attachment {
   content_type: string;
   size_bytes: number;
   is_encrypted: boolean;
+  is_view_once?: boolean;
+  storage_type?: string;
+  public_url?: string;
   created_at: string;
   // Local decrypted file metadata
   localUrl?: string;
@@ -85,6 +96,7 @@ export interface Message {
   conversation_id: string;
   sender_id: string;
   sender_username?: string;
+  topic_id?: string;
   ciphertext: string;
   nonce: string;
   ephemeral_public_key?: string;
@@ -121,6 +133,10 @@ export interface Message {
     isPhoto?: boolean;
     isVideo?: boolean;
     isSticker?: boolean;
+    isViewOnce?: boolean;
+    viewOnceBurned?: boolean;
+    storageType?: string;
+    publicUrl?: string;
     stickerPackId?: string;
     stickerId?: string;
     stickerUrl?: string;
@@ -139,12 +155,53 @@ export interface Message {
     caller_name?: string;
     receiver_id?: string;
   };
+  whisper?: {
+    target_username: string;
+    target_id?: string;
+    secret_text: string;
+    sender_username?: string;
+    sender_id?: string;
+  };
+  watchPartyInvite?: {
+    session_id: string;
+    media_title: string;
+    media_url: string;
+    leader_name: string;
+  };
+  bot_actions?: BotActionButton[][];
+}
+
+export interface BotActionButton {
+  text: string;
+  command?: string;
+  action?: string;
+  conversation_id?: string;
+  user_id?: string;
+  token?: string;
 }
 
 export interface AuthSession {
   user: User;
-  token: string;
-  device_id: string;
+  token?: string;
+  device_id?: string;
+  status?: string;
+  message?: string;
+}
+
+export interface ServerStats {
+  users_count: number;
+  approved_users_count: number;
+  pending_users_count: number;
+  banned_users_count: number;
+  conversations_count: number;
+  messages_count: number;
+  active_sessions_count: number;
+  active_ws_connections: number;
+  server_uptime_seconds: number;
+  goroutines_count: number;
+  memory_alloc_mb: number;
+  memory_sys_mb: number;
+  db_dialect: string;
 }
 
 export interface Device {
@@ -211,7 +268,7 @@ export interface CallSignal {
   caller_id: string;
   receiver_id: string;
   call_type: 'audio' | 'video';
-  signal_type: 'invite' | 'ringing' | 'accept' | 'reject' | 'hangup' | 'cancel' | 'sdp_offer' | 'sdp_answer' | 'ice_candidate';
+  signal_type: 'invite' | 'ringing' | 'accept' | 'reject' | 'hangup' | 'cancel' | 'sdp_offer' | 'sdp_answer' | 'ice_candidate' | 'screen_share_start' | 'screen_share_stop' | 'screen_quality_change' | 'screen_quality_request';
   data?: any;
 }
 
@@ -295,4 +352,68 @@ export interface ScheduledMessage {
   created_at: string;
 }
 
+export interface ForumTopic {
+  id: string;
+  conversation_id: string;
+  title: string;
+  icon: string;
+  color: string;
+  created_at: string;
+  message_count?: number;
+}
+
+export interface ConversationPin {
+  id: string;
+  conversation_id: string;
+  message_id: string;
+  pinned_by: string;
+  pinned_at: string;
+  message?: Message;
+}
+
+export interface StorageStatus {
+  active_engine: string;
+  arvan_s3_online: boolean;
+  arvan_endpoint: string;
+  bucket: string;
+  region: string;
+  local_dir: string;
+  s3_uploads: number;
+  local_uploads: number;
+  failover_count: number;
+  last_probe_at: string;
+  last_error?: string;
+  ping_latency_ms?: number;
+}
+
+export interface MediaShare {
+  id: string;
+  message_id?: string;
+  file_name: string;
+  file_size: number;
+  mime_type: string;
+  creator_id: string;
+  creator_name?: string;
+  has_password: boolean;
+  expires_at?: string;
+  max_downloads: number;
+  download_count: number;
+  views_count: number;
+  created_at: string;
+  share_url: string;
+  stream_url: string;
+  watch_url: string;
+}
+
+export interface WatchPartySession {
+  conversation_id: string;
+  media_url: string;
+  media_title: string;
+  leader_id: string;
+  leader_name: string;
+  state: 'playing' | 'paused' | 'buffering';
+  current_time: number;
+  playback_rate: number;
+  last_synced_at: string;
+}
 

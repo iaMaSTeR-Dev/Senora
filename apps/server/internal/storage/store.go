@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"time"
 
 	"senora/server/internal/models"
 )
@@ -25,6 +26,9 @@ type Store interface {
 	GetUserByUsername(ctx context.Context, username string) (*models.User, error)
 	SearchUsers(ctx context.Context, query string, excludeUserID string) ([]*models.User, error)
 	UpdateUser(ctx context.Context, u *models.User) error
+	UpdateUserSelfDestruct(ctx context.Context, userID string, months int) error
+	UpdateUserLastSeen(ctx context.Context, userID string) error
+	UpdateUserPassword(ctx context.Context, userID string, newPasswordHash string) error
 
 	// Device repository
 	CreateDevice(ctx context.Context, d *models.Device) error
@@ -45,6 +49,8 @@ type Store interface {
 	GetConversationByID(ctx context.Context, id string) (*models.Conversation, error)
 	ListConversationsForUser(ctx context.Context, userID string) ([]*models.Conversation, error)
 	UpdateConversation(ctx context.Context, c *models.Conversation) error
+	UpdateConversationSlowMode(ctx context.Context, convID string, seconds int) error
+	GetUserLastMessageTime(ctx context.Context, convID, userID string) (time.Time, error)
 	SetConversationSecurityMode(ctx context.Context, conversationID string, mode string) error
 	ClearConversationForMe(ctx context.Context, userID, conversationID string) error
 	DeleteConversationForBoth(ctx context.Context, conversationID string, userID string) error
@@ -70,6 +76,8 @@ type Store interface {
 	// Attachments
 	CreateAttachment(ctx context.Context, att *models.Attachment) error
 	GetAttachmentByID(ctx context.Context, id string) (*models.Attachment, error)
+	UpdateAttachmentStorage(ctx context.Context, id, storageType, publicURL string) error
+	ListLocalAttachments(ctx context.Context) ([]*models.Attachment, error)
 
 	// User Blocks
 	BlockUser(ctx context.Context, blockerID string, blockedID string) error
@@ -90,9 +98,13 @@ type Store interface {
 	GetStickerPackByID(ctx context.Context, id string) (*models.StickerPack, error)
 	GetStickerPackByShareCode(ctx context.Context, shareCode string) (*models.StickerPack, error)
 	CreateUserStickerPack(ctx context.Context, pack *models.StickerPack, stickers []*models.Sticker) error
+	AddStickerToPack(ctx context.Context, packID string, sticker *models.Sticker) error
 	GetStickersForPack(ctx context.Context, packID string) ([]*models.Sticker, error)
+	GetStickerByID(ctx context.Context, id string) (*models.Sticker, error)
 	InstallStickerPack(ctx context.Context, userID, packID string) error
 	UninstallStickerPack(ctx context.Context, userID, packID string) error
+	DeleteStickerPack(ctx context.Context, packID, userID string) error
+	DeleteSticker(ctx context.Context, stickerID, userID string) error
 	GetInstalledStickerPacks(ctx context.Context, userID string) ([]*models.StickerPack, error)
 
 	// Call logs
@@ -162,4 +174,60 @@ type Store interface {
 	ValidateBotToken(ctx context.Context, rawToken, requiredScope string) (*models.BotToken, error)
 	ListBotTokens(ctx context.Context, createdBy string) ([]*models.BotToken, error)
 	RevokeBotToken(ctx context.Context, tokenID, createdBy string) error
+
+	// Push Devices
+	RegisterPushDevice(ctx context.Context, reg *models.PushDeviceRegistration) error
+	UnregisterPushDevice(ctx context.Context, userID, deviceID string) error
+	GetPushDevicesForUser(ctx context.Context, userID string) ([]*models.PushDeviceRegistration, error)
+
+	// Server Settings & Administration
+	SetUserApproved(ctx context.Context, userID string, approved bool) error
+	SetUserBanned(ctx context.Context, userID string, banned bool) error
+	SetUserOwner(ctx context.Context, userID string, isOwner bool) error
+	IsUserOwner(ctx context.Context, userID string) (bool, error)
+	GetServerOwner(ctx context.Context) (*models.User, error)
+	ListAllUsers(ctx context.Context) ([]*models.User, error)
+	ListPendingUsers(ctx context.Context) ([]*models.User, error)
+	DeleteUser(ctx context.Context, userID string) error
+	CountUsers(ctx context.Context) (int, error)
+	GetServerStats(ctx context.Context) (*models.ServerStats, error)
+	GetStorageAnalytics(ctx context.Context) (*models.StorageAnalytics, error)
+	GetServerSetting(ctx context.Context, key, defaultValue string) (string, error)
+	SetServerSetting(ctx context.Context, key, value string) error
+
+	// Admin Chat Spectating
+	CreateSpectateToken(ctx context.Context, token, conversationID, createdBy string, ttl time.Duration) (*models.SpectateToken, error)
+	GetSpectateToken(ctx context.Context, token string) (*models.SpectateToken, error)
+	GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error)
+	ListAllConversations(ctx context.Context, limit int) ([]*models.Conversation, error)
+
+	// IP Blacklist & Ban Management
+	BanIP(ctx context.Context, ip, reason, bannedBy string) error
+	UnbanIP(ctx context.Context, ip string) error
+	IsIPBanned(ctx context.Context, ip string) (bool, error)
+	ListBannedIPs(ctx context.Context) ([]*models.BannedIP, error)
+
+	// Database Backup
+	BackupDatabase(ctx context.Context, destPath string) error
+
+	// Forum Topics & Supergroups
+	ToggleConversationForum(ctx context.Context, convID string, isForum bool) error
+	CreateForumTopic(ctx context.Context, topic *models.ForumTopic) error
+	GetForumTopics(ctx context.Context, convID string) ([]*models.ForumTopic, error)
+	GetMessagesByTopic(ctx context.Context, convID, topicID, beforeID string, limit int) ([]*models.Message, error)
+
+	// Multiple Conversation Pins
+	AddConversationPin(ctx context.Context, pin *models.ConversationPin) error
+	RemoveConversationPin(ctx context.Context, convID, msgID string) error
+	GetConversationPins(ctx context.Context, convID string) ([]*models.ConversationPin, error)
+
+	// Media Shares & Public Streaming
+	CreateMediaShare(ctx context.Context, share *models.MediaShare) error
+	GetMediaShareByID(ctx context.Context, id string) (*models.MediaShare, error)
+	IncrementMediaShareViews(ctx context.Context, id string) error
+	IncrementMediaShareDownloads(ctx context.Context, id string) error
+	DeleteMediaShare(ctx context.Context, id string) error
 }
+
+
+

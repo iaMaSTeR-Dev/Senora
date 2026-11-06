@@ -44,6 +44,14 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Ensure default master bot and registration approval settings
+	if _, err := store.GetServerSetting(ctx, "registration_approval", ""); err != nil {
+		_ = store.SetServerSetting(ctx, "registration_approval", "true")
+	}
+	if _, err := store.GetServerSetting(ctx, "master_bot_enabled", ""); err != nil {
+		_ = store.SetServerSetting(ctx, "master_bot_enabled", "true")
+	}
+
 	// Start WebSocket hub
 	go hub.Run(ctx)
 
@@ -57,6 +65,24 @@ func main() {
 		cryptoService,
 		hub,
 	)
+
+	// Command-line flag: migration of local storage to ArvanCloud S3
+	for _, arg := range os.Args[1:] {
+		if arg == "--migrate-to-s3" || arg == "-migrate-to-s3" || arg == "--sync-s3" || arg == "-sync-s3" {
+			log.Printf("[Senora Server] Starting local storage to ArvanCloud S3 migration...")
+			report, mErr := router.FileStore().MigrateLocalFilesToS3(ctx, store)
+			if mErr != nil {
+				log.Fatalf("[Senora Server] Migration to ArvanCloud S3 failed: %v", mErr)
+			}
+			log.Printf("[Senora Server] S3 Migration Finished Successfully in %s!", report.Duration)
+			log.Printf("[Senora Server] Summary: Scanned=%d, Migrated=%d, Skipped=%d, Failed=%d, Bytes Freed=%.2f MB",
+				report.TotalScanned, report.MigratedCount, report.SkippedCount, report.FailedCount, float64(report.BytesFreed)/(1024*1024))
+			if len(report.Errors) > 0 {
+				log.Printf("[Senora Server] Warnings: %v", report.Errors)
+			}
+			return
+		}
+	}
 
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"net/http"
@@ -254,3 +255,137 @@ func (rl *RateLimiter) Middleware(rtr *Router) func(http.Handler) http.Handler {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------
+// Auto-Ban Spam & Brute-Force Tracker
+// ---------------------------------------------------------------------
+
+type AutoBanTracker struct {
+	mu        sync.Mutex
+	failures  map[string][]time.Time
+	threshold int
+	window    time.Duration
+	enabled   bool
+}
+
+func NewAutoBanTracker(threshold int, window time.Duration) *AutoBanTracker {
+	if threshold <= 0 {
+		threshold = 5
+	}
+	if window <= 0 {
+		window = 1 * time.Minute
+	}
+	return &AutoBanTracker{
+		failures:  make(map[string][]time.Time),
+		threshold: threshold,
+		window:    window,
+		enabled:   true,
+	}
+}
+
+func (a *AutoBanTracker) SetEnabled(enabled bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.enabled = enabled
+}
+
+func (a *AutoBanTracker) IsEnabled() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.enabled
+}
+
+func (a *AutoBanTracker) SetThreshold(t int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if t > 0 {
+		a.threshold = t
+	}
+}
+
+func (a *AutoBanTracker) GetThreshold() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.threshold
+}
+
+// RecordFailure tracks a failure for rawIP. Returns true if threshold is breached (auto-ban triggered).
+// Loopback IP addresses (127.0.0.1, ::1) are strictly exempt to avoid locking out developer environments.
+func (a *AutoBanTracker) RecordFailure(rawIP string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if !a.enabled {
+		return false
+	}
+
+	normIP := NormalizeIP(rawIP)
+	parsed := net.ParseIP(normIP)
+	if parsed != nil && parsed.IsLoopback() {
+		return false
+	}
+
+	now := time.Now()
+	cutoff := now.Add(-a.window)
+
+	var valid []time.Time
+	for _, t := range a.failures[normIP] {
+		if t.After(cutoff) {
+			valid = append(valid, t)
+		}
+	}
+	valid = append(valid, now)
+	a.failures[normIP] = valid
+
+	if len(valid) >= a.threshold {
+		// Reset tracking after threshold breach
+		delete(a.failures, normIP)
+		return true
+	}
+	return false
+}
+
+func (a *AutoBanTracker) ResetIP(rawIP string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	delete(a.failures, NormalizeIP(rawIP))
+}
+
+// ---------------------------------------------------------------------
+// IP Classification & Device Fingerprinting
+// ---------------------------------------------------------------------
+
+// ClassifyIP analyzes an IP address and returns a human-friendly Persian classification and an icon.
+func ClassifyIP(rawIP string) (label string, emoji string) {
+	norm := NormalizeIP(rawIP)
+	parsed := net.ParseIP(norm)
+	if parsed == nil {
+		return "آدرس نامعتبر", "❓"
+	}
+
+	if parsed.IsLoopback() {
+		return "لوکال و لوپ‌بک سرور (Localhost / Loopback)", "💻"
+	}
+
+	if parsed.IsPrivate() {
+		return "شبکه محلی یا VPN خصوصی (Private LAN / VPN)", "🔒"
+	}
+
+	if parsed.IsLinkLocalUnicast() || parsed.IsLinkLocalMulticast() {
+		return "شبکه محلی پیوندی (Link-Local)", "🔗"
+	}
+
+	return "اینترنت عمومی (Public WAN / Internet)", "🌍"
+}
+
+// GenerateDeviceFingerprint generates a persistent 12-char SHA-256 hash representing the client's browser/device profile.
+func GenerateDeviceFingerprint(r *http.Request, clientIP string) string {
+	ua := r.Header.Get("User-Agent")
+	lang := r.Header.Get("Accept-Language")
+	secCH := r.Header.Get("Sec-CH-UA")
+
+	raw := fmt.Sprintf("%s|%s|%s|%s", NormalizeIP(clientIP), ua, lang, secCH)
+	hash := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("fp_%x", hash[:6])
+}
+

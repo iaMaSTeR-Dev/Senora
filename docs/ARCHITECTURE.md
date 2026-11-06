@@ -74,7 +74,7 @@ Senora is designed as a secure, high-throughput, self-hosted messaging platform 
 
 2. **Identity & Devices (`internal/identity`)**:
    - Handles user profiles, usernames, and display names.
-   - Tracks client devices (device ID, user agent, push token if any, status).
+   - Tracks client devices (device ID, User-Agent, push token if any, status).
    - Manages device revocation.
 
 3. **Conversations (`internal/conversations`)**:

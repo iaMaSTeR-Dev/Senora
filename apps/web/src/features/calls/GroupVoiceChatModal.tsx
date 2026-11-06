@@ -11,6 +11,7 @@ import {
   Radio,
   AlertCircle
 } from 'lucide-react';
+import { STUDIO_AUDIO_CONSTRAINTS } from './mediaDeviceManager';
 
 interface GroupVoiceChatModalProps {
   conversation: Conversation;
@@ -116,8 +117,13 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
     setError(null);
     setLoading(true);
     try {
-      // Get microphone access
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Get microphone access with studio-grade audio constraints
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: STUDIO_AUDIO_CONSTRAINTS });
+      } catch {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
       localStreamRef.current = stream;
 
       // Setup audio analysis for real speaking level

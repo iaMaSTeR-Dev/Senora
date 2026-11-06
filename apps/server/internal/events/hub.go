@@ -409,28 +409,87 @@ func (c *ClientConnection) readPump() {
 		case "call.signal":
 			var signalReq models.CallSignalPayload
 			if err := json.Unmarshal(env.Payload, &signalReq); err == nil {
-				// Security check: caller or receiver must match authenticated client
-				if signalReq.CallerID != c.userID && signalReq.ReceiverID != c.userID {
-					log.Printf("Security: user %s attempted to forge call signal for %s -> %s", c.userID, signalReq.CallerID, signalReq.ReceiverID)
+				if signalReq.ConversationID == "" {
 					continue
 				}
-				// Security check: must be a member of the conversation
+
+				// Security check: authenticated sender must be a member of the conversation
 				isMember, err := c.hub.store.IsMember(context.Background(), signalReq.ConversationID, c.userID)
 				if err != nil || !isMember {
 					log.Printf("Security: user %s attempted call signal in unjoined conversation %s", c.userID, signalReq.ConversationID)
 					continue
 				}
 
-				targetUserID := signalReq.ReceiverID
-				if c.userID == signalReq.ReceiverID {
-					targetUserID = signalReq.CallerID
+				var targetUserID string
+
+				if signalReq.SignalType == "invite" {
+					// On call initiation, sender is strictly the caller (prevent spoofing)
+					signalReq.CallerID = c.userID
+					targetUserID = signalReq.ReceiverID
+					if targetUserID == "" || targetUserID == c.userID {
+						log.Printf("Invalid call invite: target is empty or self")
+						continue
+					}
+
+					// Enrich caller profile in Data if caller user details exist
+					callerUser, err := c.hub.store.GetUserByID(context.Background(), c.userID)
+					if err == nil && callerUser != nil {
+						dataMap, ok := signalReq.Data.(map[string]interface{})
+						if !ok || dataMap == nil {
+							dataMap = make(map[string]interface{})
+						}
+						callerName := callerUser.DisplayName
+						if callerName == "" {
+							callerName = callerUser.Username
+						}
+						dataMap["caller_name"] = callerName
+						dataMap["caller_avatar_url"] = callerUser.AvatarURL
+						signalReq.Data = dataMap
+					}
+				} else {
+					// For subsequent signals (ringing, accept, reject, hangup, cancel, sdp_offer, sdp_answer, ice_candidate)
+					if signalReq.ReceiverID == "" && signalReq.CallerID != "" {
+						signalReq.ReceiverID = c.userID
+						targetUserID = signalReq.CallerID
+					} else if signalReq.CallerID == "" && signalReq.ReceiverID != "" {
+						signalReq.CallerID = c.userID
+						targetUserID = signalReq.ReceiverID
+					} else {
+						// Both are set: sender must be either caller or receiver
+						if signalReq.CallerID != c.userID && signalReq.ReceiverID != c.userID {
+							log.Printf("Security: user %s attempted to forge call signal for %s -> %s", c.userID, signalReq.CallerID, signalReq.ReceiverID)
+							continue
+						}
+						if c.userID == signalReq.CallerID {
+							targetUserID = signalReq.ReceiverID
+						} else {
+							targetUserID = signalReq.CallerID
+						}
+					}
+				}
+
+				if targetUserID == "" || targetUserID == c.userID {
+					log.Printf("Invalid call signal: target user %q is invalid", targetUserID)
+					continue
+				}
+
+				// Target must also be a member of the conversation
+				targetIsMember, err := c.hub.store.IsMember(context.Background(), signalReq.ConversationID, targetUserID)
+				if err != nil || !targetIsMember {
+					log.Printf("Security: target user %s is not a member of conversation %s", targetUserID, signalReq.ConversationID)
+					continue
+				}
+
+				sanitizedPayload, err := json.Marshal(signalReq)
+				if err != nil {
+					continue
 				}
 
 				c.hub.SendToUser(targetUserID, ClientEnvelope{
 					V:       1,
 					Type:    "call.signal",
 					ID:      uuid.New().String(),
-					Payload: env.Payload,
+					Payload: sanitizedPayload,
 				})
 			}
 

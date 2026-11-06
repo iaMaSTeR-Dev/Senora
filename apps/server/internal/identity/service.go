@@ -15,6 +15,8 @@ import (
 var (
 	ErrInvalidInput       = errors.New("invalid input")
 	ErrInvalidCredentials = errors.New("invalid username or password")
+	ErrPendingApproval    = errors.New("account registration is pending administrator approval")
+	ErrUserBanned         = errors.New("account has been banned by server administrator")
 )
 
 type Service struct {
@@ -30,16 +32,19 @@ func NewService(store storage.Store, sessions *auth.SessionService) *Service {
 }
 
 type RegisterParams struct {
-	Username    string
-	DisplayName string
-	Password    string
-	DeviceName  string
+	Username       string
+	DisplayName    string
+	Password       string
+	DeviceName     string
+	RegistrationIP string
 }
 
 type AuthResult struct {
-	User     *models.User    `json:"user"`
-	Device   *models.Device  `json:"device"`
-	Session  *models.Session `json:"session"`
+	User              *models.User    `json:"user"`
+	Device            *models.Device  `json:"device"`
+	Session           *models.Session `json:"session,omitempty"`
+	IsPendingApproval bool            `json:"is_pending_approval,omitempty"`
+	IsOwner           bool            `json:"is_owner,omitempty"`
 }
 
 func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, error) {
@@ -60,11 +65,34 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, 
 		return nil, err
 	}
 
+	// Count existing users to determine if this is the very first user (Server Owner)
+	userCount, _ := s.store.CountUsers(ctx)
+	isFirstUser := (userCount == 0)
+
+	approvalSetting, _ := s.store.GetServerSetting(ctx, "registration_approval", "false")
+	requiresApproval := (approvalSetting == "true")
+
+	isApproved := true
+	isOwner := false
+
+	if isFirstUser {
+		// The very first user is always approved and designated as Server Owner
+		isApproved = true
+		isOwner = true
+	} else if requiresApproval {
+		isApproved = false
+		isOwner = false
+	}
+
 	user := &models.User{
-		ID:           "usr_" + uuid.New().String(),
-		Username:     username,
-		DisplayName:  displayName,
-		PasswordHash: hash,
+		ID:             "usr_" + uuid.New().String(),
+		Username:       username,
+		DisplayName:    displayName,
+		PasswordHash:   hash,
+		IsApproved:     isApproved,
+		IsOwner:        isOwner,
+		IsBanned:       false,
+		RegistrationIP: strings.TrimSpace(p.RegistrationIP),
 	}
 
 	if err := s.store.CreateUser(ctx, user); err != nil {
@@ -85,15 +113,28 @@ func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, 
 		return nil, err
 	}
 
+	if !isApproved {
+		// Registration is pending owner approval; do not issue session token yet
+		return &AuthResult{
+			User:              user,
+			Device:            device,
+			Session:           nil,
+			IsPendingApproval: true,
+			IsOwner:           false,
+		}, nil
+	}
+
 	session, err := s.sessions.CreateSession(ctx, user.ID, device.ID)
 	if err != nil {
 		return nil, err
 	}
 
 	return &AuthResult{
-		User:    user,
-		Device:  device,
-		Session: session,
+		User:              user,
+		Device:            device,
+		Session:           session,
+		IsPendingApproval: false,
+		IsOwner:           isOwner,
 	}, nil
 }
 
@@ -109,6 +150,14 @@ func (s *Service) Login(ctx context.Context, username, password, deviceName stri
 	match, err := auth.ComparePassword(password, user.PasswordHash)
 	if err != nil || !match {
 		return nil, ErrInvalidCredentials
+	}
+
+	if user.IsBanned {
+		return nil, ErrUserBanned
+	}
+
+	if !user.IsApproved {
+		return nil, ErrPendingApproval
 	}
 
 	if deviceName == "" {
@@ -133,6 +182,7 @@ func (s *Service) Login(ctx context.Context, username, password, deviceName stri
 		User:    user,
 		Device:  device,
 		Session: session,
+		IsOwner: user.IsOwner,
 	}, nil
 }
 

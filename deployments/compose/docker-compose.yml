@@ -29,6 +29,7 @@ services:
       - ENVIRONMENT=production
       - TRUST_PROXY=true
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8}
+      - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-0}
     depends_on:
       postgres:
         condition: service_healthy

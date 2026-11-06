@@ -1,21 +1,22 @@
-# Binaries and compiled outputs
+# Binaries and build artifacts
 bin/
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-senora-server*
-/server
+senora-server
+senora-server-linux
+apps/server/senora-server
 
-# Dependencies & Build Artefacts
+# Go workspace files (local only)
+go.work
+go.work.sum
+
+# Dependencies
 node_modules/
 dist/
-dist.zip
 .vite/
-*.zip
-*.tar.gz
-deploy_temp/
 
 # Database files
 *.db
@@ -23,25 +24,14 @@ deploy_temp/
 *.db-wal
 *.db-shm
 
-# Environment & Local Secrets
+# Environment & logs
 .env
-.env.local
-.env.*.local
 *.log
 .DS_Store
 Thumbs.db
 
-# Test & Coverage Outputs
-*.out
-coverage/
-.system_generated/
-
-# IDE & Editor state
-.vscode/
-.idea/
-*.swp
-*.swo
-
 # Uploaded test media and attachments
 uploads/
 **/uploads/
+backups/
+**/backups/

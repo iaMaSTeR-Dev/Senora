@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,8 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -20,8 +27,9 @@ import (
 )
 
 type SQLStore struct {
-	db         *sql.DB
-	driverName string
+	db             *sql.DB
+	driverName     string
+	dataSourceName string
 }
 
 func NewSQLStore(driverName, dataSourceName string) (*SQLStore, error) {
@@ -39,9 +47,15 @@ func NewSQLStore(driverName, dataSourceName string) (*SQLStore, error) {
 	db.SetMaxIdleConns(10)
 	db.SetConnMaxLifetime(5 * time.Minute)
 
+	if driverName != "postgres" {
+		_, _ = db.Exec("PRAGMA busy_timeout = 10000;")
+		_, _ = db.Exec("PRAGMA journal_mode = WAL;")
+	}
+
 	s := &SQLStore{
-		db:         db,
-		driverName: driverName,
+		db:             db,
+		driverName:     driverName,
+		dataSourceName: dataSourceName,
 	}
 
 	if err := s.Migrate(); err != nil {
@@ -367,6 +381,62 @@ CREATE TABLE IF NOT EXISTS bot_tokens (
     revoked_at TIMESTAMP WITH TIME ZONE
 );
 CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
+
+CREATE TABLE IF NOT EXISTS push_devices (
+    id VARCHAR(64) PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id VARCHAR(64) NOT NULL,
+    platform VARCHAR(32) NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT DEFAULT '',
+    auth TEXT DEFAULT '',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uq_push_devices_user_device UNIQUE (user_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_push_devices_user ON push_devices(user_id);
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    key VARCHAR(64) PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_spectate_tokens (
+    token VARCHAR(128) PRIMARY KEY,
+    conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    created_by VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_spectate_tokens_conv ON audit_spectate_tokens(conversation_id);
+
+CREATE TABLE IF NOT EXISTS banned_ips (
+    ip VARCHAR(64) PRIMARY KEY,
+    reason TEXT DEFAULT '',
+    banned_by VARCHAR(64) DEFAULT '',
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_banned_ips_created ON banned_ips(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_shares (
+    id VARCHAR(64) PRIMARY KEY,
+    message_id VARCHAR(64) DEFAULT '',
+    file_path TEXT NOT NULL,
+    file_name VARCHAR(255) NOT NULL,
+    file_size BIGINT NOT NULL,
+    mime_type VARCHAR(128) NOT NULL,
+    creator_id VARCHAR(64) NOT NULL,
+    creator_name VARCHAR(64) DEFAULT '',
+    password_hash TEXT DEFAULT '',
+    expires_at TIMESTAMP WITH TIME ZONE,
+    max_downloads INT DEFAULT 0,
+    download_count INT DEFAULT 0,
+    views_count INT DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_media_shares_creator ON media_shares(creator_id);
+CREATE INDEX IF NOT EXISTS idx_media_shares_created ON media_shares(created_at DESC);
 `
 	} else {
 		// SQLite compatible schema
@@ -679,6 +749,62 @@ CREATE TABLE IF NOT EXISTS bot_tokens (
     revoked_at DATETIME
 );
 CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
+
+CREATE TABLE IF NOT EXISTS push_devices (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    p256dh TEXT DEFAULT '',
+    auth TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, device_id)
+);
+CREATE INDEX IF NOT EXISTS idx_push_devices_user ON push_devices(user_id);
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS audit_spectate_tokens (
+    token TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at DATETIME NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_spectate_tokens_conv ON audit_spectate_tokens(conversation_id);
+
+CREATE TABLE IF NOT EXISTS banned_ips (
+    ip TEXT PRIMARY KEY,
+    reason TEXT DEFAULT '',
+    banned_by TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_banned_ips_created ON banned_ips(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS media_shares (
+    id TEXT PRIMARY KEY,
+    message_id TEXT DEFAULT '',
+    file_path TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    file_size INTEGER NOT NULL,
+    mime_type TEXT NOT NULL,
+    creator_id TEXT NOT NULL,
+    creator_name TEXT DEFAULT '',
+    password_hash TEXT DEFAULT '',
+    expires_at DATETIME,
+    max_downloads INTEGER DEFAULT 0,
+    download_count INTEGER DEFAULT 0,
+    views_count INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_media_shares_creator ON media_shares(creator_id);
+CREATE INDEX IF NOT EXISTS idx_media_shares_created ON media_shares(created_at DESC);
 `
 	}
 
@@ -690,6 +816,17 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 	alterCols := []string{
 		"ALTER TABLE users ADD COLUMN bio TEXT DEFAULT ''",
 		"ALTER TABLE users ADD COLUMN avatar_url TEXT DEFAULT ''",
+		"ALTER TABLE users ADD COLUMN is_approved INTEGER DEFAULT 1",
+		"ALTER TABLE users ADD COLUMN is_owner INTEGER DEFAULT 0",
+		"ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0",
+		"ALTER TABLE users ADD COLUMN registration_ip TEXT DEFAULT ''",
+		`CREATE TABLE IF NOT EXISTS banned_ips (
+			ip TEXT PRIMARY KEY,
+			reason TEXT DEFAULT '',
+			banned_by TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_banned_ips_created ON banned_ips(created_at DESC)",
 		"ALTER TABLE devices ADD COLUMN registration_id INTEGER DEFAULT 0",
 		"ALTER TABLE devices ADD COLUMN signed_pre_key TEXT DEFAULT ''",
 		"ALTER TABLE conversations ADD COLUMN description TEXT DEFAULT ''",
@@ -697,6 +834,8 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 		"ALTER TABLE conversations ADD COLUMN pinned_message_id TEXT DEFAULT ''",
 		"ALTER TABLE conversations ADD COLUMN security_mode TEXT DEFAULT 'normal'",
 		"ALTER TABLE conversations ADD COLUMN disappearing_ttl INTEGER DEFAULT 0",
+		"ALTER TABLE conversations ADD COLUMN username TEXT DEFAULT ''",
+		"CREATE INDEX IF NOT EXISTS idx_conversations_username ON conversations(username)",
 		"ALTER TABLE messages ADD COLUMN reply_to_id TEXT DEFAULT ''",
 		"ALTER TABLE messages ADD COLUMN edited_at DATETIME",
 		"ALTER TABLE messages ADD COLUMN is_deleted INTEGER DEFAULT 0",
@@ -706,11 +845,66 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 		"ALTER TABLE sticker_packs ADD COLUMN creator_id TEXT DEFAULT ''",
 		"ALTER TABLE sticker_packs ADD COLUMN share_code TEXT DEFAULT ''",
 		"ALTER TABLE sticker_packs ADD COLUMN is_builtin INTEGER DEFAULT 0",
+		"ALTER TABLE conversations ADD COLUMN slow_mode_seconds INTEGER DEFAULT 0",
+		"ALTER TABLE users ADD COLUMN self_destruct_months INTEGER DEFAULT 6",
+		"ALTER TABLE users ADD COLUMN last_seen_at DATETIME",
+		"ALTER TABLE conversations ADD COLUMN is_forum INTEGER DEFAULT 0",
+		"ALTER TABLE messages ADD COLUMN topic_id TEXT DEFAULT ''",
+		"ALTER TABLE attachments ADD COLUMN is_view_once INTEGER DEFAULT 0",
+		"ALTER TABLE attachments ADD COLUMN storage_type TEXT DEFAULT 'local'",
+		"ALTER TABLE attachments ADD COLUMN public_url TEXT DEFAULT ''",
+		`CREATE TABLE IF NOT EXISTS forum_topics (
+			id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			title TEXT NOT NULL,
+			icon TEXT DEFAULT '💬',
+			color TEXT DEFAULT '#3390ec',
+			created_by TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_forum_topics_conv ON forum_topics(conversation_id)",
+		`CREATE TABLE IF NOT EXISTS conversation_pins (
+			id TEXT PRIMARY KEY,
+			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			pinned_by TEXT DEFAULT '',
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_conversation_pins_conv ON conversation_pins(conversation_id)",
+		`CREATE TABLE IF NOT EXISTS media_shares (
+			id TEXT PRIMARY KEY,
+			message_id TEXT DEFAULT '',
+			file_path TEXT NOT NULL,
+			file_name TEXT NOT NULL,
+			file_size INTEGER NOT NULL,
+			mime_type TEXT NOT NULL,
+			creator_id TEXT NOT NULL,
+			creator_name TEXT DEFAULT '',
+			password_hash TEXT DEFAULT '',
+			expires_at DATETIME,
+			max_downloads INTEGER DEFAULT 0,
+			download_count INTEGER DEFAULT 0,
+			views_count INTEGER DEFAULT 0,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
+		"CREATE INDEX IF NOT EXISTS idx_media_shares_creator ON media_shares(creator_id)",
+		"CREATE INDEX IF NOT EXISTS idx_media_shares_created ON media_shares(created_at DESC)",
 	}
 	if s.driverName == "postgres" {
 		alterCols = []string{
 			"ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT ''",
 			"ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT DEFAULT ''",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT TRUE",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS is_owner BOOLEAN DEFAULT FALSE",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned BOOLEAN DEFAULT FALSE",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS registration_ip VARCHAR(64) DEFAULT ''",
+			`CREATE TABLE IF NOT EXISTS banned_ips (
+				ip VARCHAR(64) PRIMARY KEY,
+				reason TEXT DEFAULT '',
+				banned_by VARCHAR(64) DEFAULT '',
+				created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_banned_ips_created ON banned_ips(created_at DESC)",
 			"ALTER TABLE devices ADD COLUMN IF NOT EXISTS registration_id INTEGER DEFAULT 0",
 			"ALTER TABLE devices ADD COLUMN IF NOT EXISTS signed_pre_key TEXT DEFAULT ''",
 			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS description TEXT DEFAULT ''",
@@ -718,6 +912,8 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_id TEXT DEFAULT ''",
 			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS security_mode VARCHAR(32) DEFAULT 'normal'",
 			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS disappearing_ttl INTEGER DEFAULT 0",
+			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS username VARCHAR(64) DEFAULT ''",
+			"CREATE INDEX IF NOT EXISTS idx_conversations_username ON conversations(username)",
 			"ALTER TABLE messages ADD COLUMN IF NOT EXISTS reply_to_id TEXT DEFAULT ''",
 			"ALTER TABLE messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMP WITH TIME ZONE",
 			"ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN DEFAULT FALSE",
@@ -727,6 +923,50 @@ CREATE INDEX IF NOT EXISTS idx_bot_tokens_hash ON bot_tokens(token_hash);
 			"ALTER TABLE sticker_packs ADD COLUMN IF NOT EXISTS creator_id VARCHAR(64) DEFAULT ''",
 			"ALTER TABLE sticker_packs ADD COLUMN IF NOT EXISTS share_code VARCHAR(64) DEFAULT ''",
 			"ALTER TABLE sticker_packs ADD COLUMN IF NOT EXISTS is_builtin BOOLEAN DEFAULT FALSE",
+			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS slow_mode_seconds INTEGER DEFAULT 0",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS self_destruct_months INTEGER DEFAULT 6",
+			"ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMP WITH TIME ZONE",
+			"ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_forum BOOLEAN DEFAULT FALSE",
+			"ALTER TABLE messages ADD COLUMN IF NOT EXISTS topic_id VARCHAR(64) DEFAULT ''",
+			"ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_view_once BOOLEAN DEFAULT FALSE",
+			"ALTER TABLE attachments ADD COLUMN IF NOT EXISTS storage_type VARCHAR(32) DEFAULT 'local'",
+			"ALTER TABLE attachments ADD COLUMN IF NOT EXISTS public_url TEXT DEFAULT ''",
+			`CREATE TABLE IF NOT EXISTS forum_topics (
+				id VARCHAR(64) PRIMARY KEY,
+				conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				title VARCHAR(128) NOT NULL,
+				icon VARCHAR(32) DEFAULT '💬',
+				color VARCHAR(32) DEFAULT '#3390ec',
+				created_by VARCHAR(64) DEFAULT '',
+				created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_forum_topics_conv ON forum_topics(conversation_id)",
+			`CREATE TABLE IF NOT EXISTS conversation_pins (
+				id VARCHAR(64) PRIMARY KEY,
+				conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+				message_id VARCHAR(64) NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+				pinned_by VARCHAR(64) DEFAULT '',
+				created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_conversation_pins_conv ON conversation_pins(conversation_id)",
+			`CREATE TABLE IF NOT EXISTS media_shares (
+				id VARCHAR(64) PRIMARY KEY,
+				message_id VARCHAR(64) DEFAULT '',
+				file_path TEXT NOT NULL,
+				file_name VARCHAR(255) NOT NULL,
+				file_size BIGINT NOT NULL,
+				mime_type VARCHAR(128) NOT NULL,
+				creator_id VARCHAR(64) NOT NULL,
+				creator_name VARCHAR(64) DEFAULT '',
+				password_hash TEXT DEFAULT '',
+				expires_at TIMESTAMP WITH TIME ZONE,
+				max_downloads INT DEFAULT 0,
+				download_count INT DEFAULT 0,
+				views_count INT DEFAULT 0,
+				created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			)`,
+			"CREATE INDEX IF NOT EXISTS idx_media_shares_creator ON media_shares(creator_id)",
+			"CREATE INDEX IF NOT EXISTS idx_media_shares_created ON media_shares(created_at DESC)",
 		}
 	}
 	for _, alterStmt := range alterCols {
@@ -750,75 +990,115 @@ func (s *SQLStore) CreateUser(ctx context.Context, u *models.User) error {
 	u.CreatedAt = now
 	u.UpdatedAt = now
 
-	query := `INSERT INTO users (id, username, display_name, password_hash, created_at, updated_at) 
-	          VALUES (?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO users (id, username, display_name, password_hash, is_approved, is_owner, is_banned, registration_ip, created_at, updated_at) 
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
-		query = `INSERT INTO users (id, username, display_name, password_hash, created_at, updated_at) 
-		          VALUES ($1, $2, $3, $4, $5, $6)`
+		query = `INSERT INTO users (id, username, display_name, password_hash, is_approved, is_owner, is_banned, registration_ip, created_at, updated_at) 
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	}
 
-	_, err := s.db.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, u.CreatedAt, u.UpdatedAt)
+	apprVal := 0
+	if u.IsApproved {
+		apprVal = 1
+	}
+	ownerVal := 0
+	if u.IsOwner {
+		ownerVal = 1
+	}
+	bannedVal := 0
+	if u.IsBanned {
+		bannedVal = 1
+	}
+
+	var err error
+	if s.driverName == "postgres" {
+		_, err = s.db.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, u.IsApproved, u.IsOwner, u.IsBanned, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
+	} else {
+		_, err = s.db.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, apprVal, ownerVal, bannedVal, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
+	}
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
 			return ErrAlreadyExists
 		}
 		return err
 	}
+
+	instQuery := `INSERT OR IGNORE INTO user_installed_stickers (user_id, pack_id, installed_at)
+	              SELECT ?, id, ? FROM sticker_packs WHERE is_builtin = 1 OR id LIKE 'pack_senora_%' OR id LIKE 'pack_crypto_%' OR id LIKE 'pack_builtin_%'`
+	if s.driverName == "postgres" {
+		instQuery = `INSERT INTO user_installed_stickers (user_id, pack_id, installed_at)
+		              SELECT $1, id, $2 FROM sticker_packs WHERE is_builtin = TRUE OR id LIKE 'pack_senora_%' OR id LIKE 'pack_crypto_%' OR id LIKE 'pack_builtin_%' ON CONFLICT DO NOTHING`
+	}
+	_, _ = s.db.ExecContext(ctx, instQuery, u.ID, u.CreatedAt)
+
 	return nil
 }
 
 func (s *SQLStore) GetUserByID(ctx context.Context, id string) (*models.User, error) {
-	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users WHERE id = ?`
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE id = ?`
 	if s.driverName == "postgres" {
-		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users WHERE id = $1`
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE id = $1`
 	}
 
 	row := s.db.QueryRowContext(ctx, query, id)
 	var u models.User
-	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var isApproved, isOwner, isBanned bool
+	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.SelfDestructMonths, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	u.IsApproved = isApproved
+	u.IsOwner = isOwner
+	u.IsBanned = isBanned
 	return &u, nil
 }
 
 func (s *SQLStore) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
-	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users WHERE LOWER(username) = LOWER(?)`
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER(?)`
 	if s.driverName == "postgres" {
-		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users WHERE LOWER(username) = LOWER($1)`
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER($1)`
 	}
 
 	row := s.db.QueryRowContext(ctx, query, username)
 	var u models.User
-	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	var isApproved, isOwner, isBanned bool
+	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.SelfDestructMonths, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	u.IsApproved = isApproved
+	u.IsOwner = isOwner
+	u.IsBanned = isBanned
 	return &u, nil
 }
 
 func (s *SQLStore) SearchUsers(ctx context.Context, queryStr string, excludeUserID string) ([]*models.User, error) {
-	pattern := "%" + strings.ToLower(queryStr) + "%"
+	cleanQuery := strings.TrimPrefix(strings.TrimSpace(queryStr), "@")
+	cleanQuery = strings.TrimSpace(cleanQuery)
+	if cleanQuery == "" || (len(cleanQuery) < 3 && !strings.HasPrefix(cleanQuery, "usr_")) {
+		return []*models.User{}, nil
+	}
+	qLower := strings.ToLower(cleanQuery)
 	query := `SELECT id, username, display_name, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users 
-	          WHERE (LOWER(username) LIKE ? OR LOWER(display_name) LIKE ?) AND id != ? 
-	          ORDER BY username ASC LIMIT 20`
+	          WHERE (LOWER(username) = ? OR id = ?) AND id != ? AND id != 'usr_senoramasterbot'
+	          LIMIT 5`
 	if s.driverName == "postgres" {
 		query = `SELECT id, username, display_name, COALESCE(bio, ''), COALESCE(avatar_url, ''), created_at, updated_at FROM users 
-		          WHERE (LOWER(username) LIKE $1 OR LOWER(display_name) LIKE $2) AND id != $3 
-		          ORDER BY username ASC LIMIT 20`
+		          WHERE (LOWER(username) = $1 OR id = $2) AND id != $3 AND id != 'usr_senoramasterbot'
+		          LIMIT 5`
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, pattern, pattern, excludeUserID)
+	rows, err := s.db.QueryContext(ctx, query, qLower, cleanQuery, excludeUserID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var users []*models.User
+	users := []*models.User{}
 	for rows.Next() {
 		var u models.User
 		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Bio, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt); err != nil {
@@ -831,12 +1111,55 @@ func (s *SQLStore) SearchUsers(ctx context.Context, queryStr string, excludeUser
 
 func (s *SQLStore) UpdateUser(ctx context.Context, u *models.User) error {
 	u.UpdatedAt = time.Now().UTC()
-	query := `UPDATE users SET display_name = ?, bio = ?, avatar_url = ?, updated_at = ? WHERE id = ?`
-	if s.driverName == "postgres" {
-		query = `UPDATE users SET display_name = $1, bio = $2, avatar_url = $3, updated_at = $4 WHERE id = $5`
+	if u.SelfDestructMonths <= 0 {
+		u.SelfDestructMonths = 6
 	}
-	_, err := s.db.ExecContext(ctx, query, u.DisplayName, u.Bio, u.AvatarURL, u.UpdatedAt, u.ID)
+	query := `UPDATE users SET display_name = ?, bio = ?, avatar_url = ?, self_destruct_months = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET display_name = $1, bio = $2, avatar_url = $3, self_destruct_months = $4, updated_at = $5 WHERE id = $6`
+	}
+	_, err := s.db.ExecContext(ctx, query, u.DisplayName, u.Bio, u.AvatarURL, u.SelfDestructMonths, u.UpdatedAt, u.ID)
 	return err
+}
+
+func (s *SQLStore) UpdateUserSelfDestruct(ctx context.Context, userID string, months int) error {
+	if months <= 0 {
+		months = 6
+	}
+	query := `UPDATE users SET self_destruct_months = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET self_destruct_months = $1, updated_at = $2 WHERE id = $3`
+	}
+	_, err := s.db.ExecContext(ctx, query, months, time.Now().UTC(), userID)
+	return err
+}
+
+func (s *SQLStore) UpdateUserLastSeen(ctx context.Context, userID string) error {
+	query := `UPDATE users SET last_seen_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET last_seen_at = $1 WHERE id = $2`
+	}
+	_, err := s.db.ExecContext(ctx, query, time.Now().UTC(), userID)
+	return err
+}
+
+func (s *SQLStore) UpdateUserPassword(ctx context.Context, userID, newPasswordHash string) error {
+	query := `UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3`
+	}
+	res, err := s.db.ExecContext(ctx, query, newPasswordHash, time.Now().UTC(), userID)
+	if err != nil {
+		return err
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------
@@ -1018,12 +1341,12 @@ func (s *SQLStore) CreateConversation(ctx context.Context, c *models.Conversatio
 	}
 	defer tx.Rollback()
 
-	convQuery := `INSERT INTO conversations (id, type, title, description, avatar_url, pinned_message_id, security_mode, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	convQuery := `INSERT INTO conversations (id, type, title, description, avatar_url, pinned_message_id, security_mode, username, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
-		convQuery = `INSERT INTO conversations (id, type, title, description, avatar_url, pinned_message_id, security_mode, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+		convQuery = `INSERT INTO conversations (id, type, title, description, avatar_url, pinned_message_id, security_mode, username, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 	}
 
-	if _, err := tx.ExecContext(ctx, convQuery, c.ID, c.Type, c.Title, c.Description, c.AvatarURL, c.PinnedMessageID, c.SecurityMode, c.CreatedAt, c.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, convQuery, c.ID, c.Type, c.Title, c.Description, c.AvatarURL, c.PinnedMessageID, c.SecurityMode, c.Username, c.CreatedAt, c.UpdatedAt); err != nil {
 		return err
 	}
 
@@ -1056,14 +1379,14 @@ func (s *SQLStore) CreateConversation(ctx context.Context, c *models.Conversatio
 }
 
 func (s *SQLStore) GetConversationByID(ctx context.Context, id string) (*models.Conversation, error) {
-	query := `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), COALESCE(disappearing_ttl, 0), created_at, updated_at FROM conversations WHERE id = ?`
+	query := `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), COALESCE(disappearing_ttl, 0), COALESCE(slow_mode_seconds, 0), COALESCE(username, ''), created_at, updated_at FROM conversations WHERE id = ?`
 	if s.driverName == "postgres" {
-		query = `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), COALESCE(disappearing_ttl, 0), created_at, updated_at FROM conversations WHERE id = $1`
+		query = `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), COALESCE(disappearing_ttl, 0), COALESCE(slow_mode_seconds, 0), COALESCE(username, ''), created_at, updated_at FROM conversations WHERE id = $1`
 	}
 
 	row := s.db.QueryRowContext(ctx, query, id)
 	var c models.Conversation
-	if err := row.Scan(&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.DisappearingTTL, &c.CreatedAt, &c.UpdatedAt); err != nil {
+	if err := row.Scan(&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.DisappearingTTL, &c.SlowModeSeconds, &c.Username, &c.CreatedAt, &c.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -1104,12 +1427,40 @@ func (s *SQLStore) GetConversationByID(ctx context.Context, id string) (*models.
 
 func (s *SQLStore) UpdateConversation(ctx context.Context, c *models.Conversation) error {
 	c.UpdatedAt = time.Now().UTC()
-	query := `UPDATE conversations SET title = ?, description = ?, avatar_url = ?, pinned_message_id = ?, updated_at = ? WHERE id = ?`
+	query := `UPDATE conversations SET title = ?, description = ?, avatar_url = ?, pinned_message_id = ?, slow_mode_seconds = ?, username = ?, updated_at = ? WHERE id = ?`
 	if s.driverName == "postgres" {
-		query = `UPDATE conversations SET title = $1, description = $2, avatar_url = $3, pinned_message_id = $4, updated_at = $5 WHERE id = $6`
+		query = `UPDATE conversations SET title = $1, description = $2, avatar_url = $3, pinned_message_id = $4, slow_mode_seconds = $5, username = $6, updated_at = $7 WHERE id = $8`
 	}
-	_, err := s.db.ExecContext(ctx, query, c.Title, c.Description, c.AvatarURL, c.PinnedMessageID, c.UpdatedAt, c.ID)
+	_, err := s.db.ExecContext(ctx, query, c.Title, c.Description, c.AvatarURL, c.PinnedMessageID, c.SlowModeSeconds, c.Username, c.UpdatedAt, c.ID)
 	return err
+}
+
+func (s *SQLStore) UpdateConversationSlowMode(ctx context.Context, convID string, seconds int) error {
+	if seconds < 0 {
+		seconds = 0
+	}
+	query := `UPDATE conversations SET slow_mode_seconds = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE conversations SET slow_mode_seconds = $1, updated_at = $2 WHERE id = $3`
+	}
+	_, err := s.db.ExecContext(ctx, query, seconds, time.Now().UTC(), convID)
+	return err
+}
+
+func (s *SQLStore) GetUserLastMessageTime(ctx context.Context, convID, userID string) (time.Time, error) {
+	query := `SELECT created_at FROM messages WHERE conversation_id = ? AND sender_id = ? AND is_deleted = 0 ORDER BY created_at DESC LIMIT 1`
+	if s.driverName == "postgres" {
+		query = `SELECT created_at FROM messages WHERE conversation_id = $1 AND sender_id = $2 AND is_deleted = FALSE ORDER BY created_at DESC LIMIT 1`
+	}
+	var t time.Time
+	err := s.db.QueryRowContext(ctx, query, convID, userID).Scan(&t)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return time.Time{}, nil
+		}
+		return time.Time{}, err
+	}
+	return t, nil
 }
 
 func (s *SQLStore) AddConversationMember(ctx context.Context, convID, userID, role string) error {
@@ -1138,7 +1489,7 @@ func (s *SQLStore) RemoveConversationMember(ctx context.Context, convID, userID 
 
 func (s *SQLStore) ListConversationsForUser(ctx context.Context, userID string) ([]*models.Conversation, error) {
 	query := `
-		SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), COALESCE(c.disappearing_ttl, 0), c.created_at, c.updated_at 
+		SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), COALESCE(c.disappearing_ttl, 0), COALESCE(c.slow_mode_seconds, 0), COALESCE(c.username, ''), c.created_at, c.updated_at 
 		FROM conversations c
 		INNER JOIN conversation_members cm ON c.id = cm.conversation_id
 		WHERE cm.user_id = ?
@@ -1146,7 +1497,7 @@ func (s *SQLStore) ListConversationsForUser(ctx context.Context, userID string) 
 	`
 	if s.driverName == "postgres" {
 		query = `
-			SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), COALESCE(c.disappearing_ttl, 0), c.created_at, c.updated_at 
+			SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), COALESCE(c.disappearing_ttl, 0), COALESCE(c.slow_mode_seconds, 0), COALESCE(c.username, ''), c.created_at, c.updated_at 
 			FROM conversations c
 			INNER JOIN conversation_members cm ON c.id = cm.conversation_id
 			WHERE cm.user_id = $1
@@ -1163,7 +1514,7 @@ func (s *SQLStore) ListConversationsForUser(ctx context.Context, userID string) 
 	var convs []*models.Conversation
 	for rows.Next() {
 		var c models.Conversation
-		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.DisappearingTTL, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.DisappearingTTL, &c.SlowModeSeconds, &c.Username, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		convs = append(convs, &c)
@@ -1389,11 +1740,11 @@ func (s *SQLStore) CreateMessageWithOutbox(ctx context.Context, msg *models.Mess
 		}
 	}
 
-	msgQuery := `INSERT INTO messages (id, conversation_id, sender_id, ciphertext, nonce, ephemeral_public_key, idempotency_key, reply_to_id, is_deleted, is_pinned, reactions, expires_at, created_at)
-	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	msgQuery := `INSERT INTO messages (id, conversation_id, sender_id, ciphertext, nonce, ephemeral_public_key, idempotency_key, topic_id, reply_to_id, is_deleted, is_pinned, reactions, expires_at, created_at)
+	             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
-		msgQuery = `INSERT INTO messages (id, conversation_id, sender_id, ciphertext, nonce, ephemeral_public_key, idempotency_key, reply_to_id, is_deleted, is_pinned, reactions, expires_at, created_at)
-		             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+		msgQuery = `INSERT INTO messages (id, conversation_id, sender_id, ciphertext, nonce, ephemeral_public_key, idempotency_key, topic_id, reply_to_id, is_deleted, is_pinned, reactions, expires_at, created_at)
+		             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 	}
 
 	var idempVal sql.NullString
@@ -1408,7 +1759,7 @@ func (s *SQLStore) CreateMessageWithOutbox(ctx context.Context, msg *models.Mess
 		msg.Reactions = "{}"
 	}
 
-	_, err = tx.ExecContext(ctx, msgQuery, msg.ID, msg.ConversationID, msg.SenderID, msg.Ciphertext, msg.Nonce, ephemVal, idempVal, msg.ReplyToID, msg.IsDeleted, msg.IsPinned, msg.Reactions, msg.ExpiresAt, msg.CreatedAt)
+	_, err = tx.ExecContext(ctx, msgQuery, msg.ID, msg.ConversationID, msg.SenderID, msg.Ciphertext, msg.Nonce, ephemVal, idempVal, msg.TopicID, msg.ReplyToID, msg.IsDeleted, msg.IsPinned, msg.Reactions, msg.ExpiresAt, msg.CreatedAt)
 	if err != nil {
 		_ = tx.Rollback()
 		if msg.IdempotencyKey != "" {
@@ -1447,12 +1798,34 @@ func (s *SQLStore) CreateMessageWithOutbox(ctx context.Context, msg *models.Mess
 		return nil, nil, err
 	}
 
+	var senderUsername, senderDisplayName, senderAvatarURL string
+	userQuery := `SELECT username, display_name, COALESCE(avatar_url, '') FROM users WHERE id = ?`
+	if s.driverName == "postgres" {
+		userQuery = `SELECT username, display_name, COALESCE(avatar_url, '') FROM users WHERE id = $1`
+	}
+	_ = tx.QueryRowContext(ctx, userQuery, msg.SenderID).Scan(&senderUsername, &senderDisplayName, &senderAvatarURL)
+	if senderDisplayName == "" {
+		senderDisplayName = senderUsername
+	}
+
+	var convTitle, convType string
+	convQuery := `SELECT COALESCE(title, ''), type FROM conversations WHERE id = ?`
+	if s.driverName == "postgres" {
+		convQuery = `SELECT COALESCE(title, ''), type FROM conversations WHERE id = $1`
+	}
+	_ = tx.QueryRowContext(ctx, convQuery, msg.ConversationID).Scan(&convTitle, &convType)
+
 	// 3. Insert outbox events for all participants (atomically in same transaction)
 	payloadMap := map[string]interface{}{
 		"id":                   msg.ID,
 		"message_id":           msg.ID,
 		"conversation_id":      msg.ConversationID,
+		"conversation_title":   convTitle,
+		"conversation_type":    convType,
 		"sender_id":            msg.SenderID,
+		"sender_username":      senderUsername,
+		"sender_display_name":  senderDisplayName,
+		"sender_avatar_url":    senderAvatarURL,
 		"ciphertext":           msg.Ciphertext,
 		"nonce":                msg.Nonce,
 		"ephemeral_public_key": msg.EphemeralPublicKey,
@@ -2003,41 +2376,53 @@ func (s *SQLStore) CreateAttachment(ctx context.Context, a *models.Attachment) e
 	}
 	a.CreatedAt = time.Now().UTC()
 
-	query := `INSERT INTO attachments (id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, created_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO attachments (id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, is_view_once, storage_type, public_url, created_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
-		query = `INSERT INTO attachments (id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, created_at)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+		query = `INSERT INTO attachments (id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, is_view_once, storage_type, public_url, created_at)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
 	}
 
 	encVal := 1
 	if !a.IsEncrypted {
 		encVal = 0
 	}
+	viewOnceVal := 0
+	if a.IsViewOnce {
+		viewOnceVal = 1
+	}
+	storageType := a.StorageType
+	if storageType == "" {
+		storageType = "local"
+	}
 	var err error
 	if s.driverName == "postgres" {
-		_, err = s.db.ExecContext(ctx, query, a.ID, a.ConversationID, a.UploaderID, a.Filename, a.ContentType, a.SizeBytes, a.StoragePath, a.IsEncrypted, a.CreatedAt)
+		_, err = s.db.ExecContext(ctx, query, a.ID, a.ConversationID, a.UploaderID, a.Filename, a.ContentType, a.SizeBytes, a.StoragePath, a.IsEncrypted, a.IsViewOnce, storageType, a.PublicURL, a.CreatedAt)
 	} else {
-		_, err = s.db.ExecContext(ctx, query, a.ID, a.ConversationID, a.UploaderID, a.Filename, a.ContentType, a.SizeBytes, a.StoragePath, encVal, a.CreatedAt)
+		_, err = s.db.ExecContext(ctx, query, a.ID, a.ConversationID, a.UploaderID, a.Filename, a.ContentType, a.SizeBytes, a.StoragePath, encVal, viewOnceVal, storageType, a.PublicURL, a.CreatedAt)
 	}
 	return err
 }
 
 func (s *SQLStore) GetAttachmentByID(ctx context.Context, id string) (*models.Attachment, error) {
-	query := `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, created_at FROM attachments WHERE id = ?`
+	query := `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, COALESCE(is_view_once, 0), COALESCE(storage_type, 'local'), COALESCE(public_url, ''), created_at FROM attachments WHERE id = ?`
 	if s.driverName == "postgres" {
-		query = `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, created_at FROM attachments WHERE id = $1`
+		query = `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, COALESCE(is_view_once, false), COALESCE(storage_type, 'local'), COALESCE(public_url, ''), created_at FROM attachments WHERE id = $1`
 	}
 
 	row := s.db.QueryRowContext(ctx, query, id)
 	var a models.Attachment
-	var encInt int
+	var encInt, viewOnceInt int
+	var isEnc, isViewOnce bool
 	var err error
 	if s.driverName == "postgres" {
-		err = row.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &a.IsEncrypted, &a.CreatedAt)
+		err = row.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &isEnc, &isViewOnce, &a.StorageType, &a.PublicURL, &a.CreatedAt)
+		a.IsEncrypted = isEnc
+		a.IsViewOnce = isViewOnce
 	} else {
-		err = row.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &encInt, &a.CreatedAt)
+		err = row.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &encInt, &viewOnceInt, &a.StorageType, &a.PublicURL, &a.CreatedAt)
 		a.IsEncrypted = (encInt != 0)
+		a.IsViewOnce = (viewOnceInt != 0)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -2046,6 +2431,49 @@ func (s *SQLStore) GetAttachmentByID(ctx context.Context, id string) (*models.At
 		return nil, err
 	}
 	return &a, nil
+}
+
+func (s *SQLStore) UpdateAttachmentStorage(ctx context.Context, id, storageType, publicURL string) error {
+	query := `UPDATE attachments SET storage_type = ?, public_url = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE attachments SET storage_type = $1, public_url = $2 WHERE id = $3`
+	}
+	_, err := s.db.ExecContext(ctx, query, storageType, publicURL, id)
+	return err
+}
+
+func (s *SQLStore) ListLocalAttachments(ctx context.Context) ([]*models.Attachment, error) {
+	query := `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, COALESCE(is_view_once, 0), COALESCE(storage_type, 'local'), COALESCE(public_url, ''), created_at FROM attachments WHERE storage_type != 'arvan_s3' OR storage_type IS NULL ORDER BY created_at ASC`
+	if s.driverName == "postgres" {
+		query = `SELECT id, conversation_id, uploader_id, filename, content_type, size_bytes, storage_path, is_encrypted, COALESCE(is_view_once, false), COALESCE(storage_type, 'local'), COALESCE(public_url, ''), created_at FROM attachments WHERE storage_type != 'arvan_s3' OR storage_type IS NULL ORDER BY created_at ASC`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.Attachment
+	for rows.Next() {
+		var a models.Attachment
+		var encInt, viewOnceInt int
+		var isEnc, isViewOnce bool
+		if s.driverName == "postgres" {
+			err = rows.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &isEnc, &isViewOnce, &a.StorageType, &a.PublicURL, &a.CreatedAt)
+			a.IsEncrypted = isEnc
+			a.IsViewOnce = isViewOnce
+		} else {
+			err = rows.Scan(&a.ID, &a.ConversationID, &a.UploaderID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.StoragePath, &encInt, &viewOnceInt, &a.StorageType, &a.PublicURL, &a.CreatedAt)
+			a.IsEncrypted = (encInt != 0)
+			a.IsViewOnce = (viewOnceInt != 0)
+		}
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, &a)
+	}
+	return list, rows.Err()
 }
 
 func (s *SQLStore) BlockUser(ctx context.Context, blockerID, blockedID string) error {
@@ -2219,7 +2647,7 @@ func (s *SQLStore) GetMemberRole(ctx context.Context, conversationID, userID str
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) ListStickerPacks(ctx context.Context) ([]*models.StickerPack, error) {
-	query := `SELECT id, name, title, thumbnail_url, author, sticker_count, created_at FROM sticker_packs ORDER BY created_at ASC`
+	query := `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, is_builtin, created_at FROM sticker_packs ORDER BY created_at ASC`
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -2229,10 +2657,12 @@ func (s *SQLStore) ListStickerPacks(ctx context.Context) ([]*models.StickerPack,
 	var packs []*models.StickerPack
 	for rows.Next() {
 		var p models.StickerPack
-		if err := rows.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.StickerCount, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.CreatorID, &p.ShareCode, &p.StickerCount, &p.IsBuiltin, &p.CreatedAt); err != nil {
 			return nil, err
 		}
-		p.IsBuiltin = strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_nexa_") || strings.HasPrefix(p.ID, "pack_crypto_")
+		if !p.IsBuiltin && (strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_senora_") || strings.HasPrefix(p.ID, "pack_crypto_")) {
+			p.IsBuiltin = true
+		}
 		packs = append(packs, &p)
 	}
 	if packs == nil {
@@ -2242,19 +2672,21 @@ func (s *SQLStore) ListStickerPacks(ctx context.Context) ([]*models.StickerPack,
 }
 
 func (s *SQLStore) GetStickerPackByID(ctx context.Context, id string) (*models.StickerPack, error) {
-	query := `SELECT id, name, title, thumbnail_url, author, sticker_count, created_at FROM sticker_packs WHERE id = ?`
+	query := `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, is_builtin, created_at FROM sticker_packs WHERE id = ?`
 	if s.driverName == "postgres" {
-		query = `SELECT id, name, title, thumbnail_url, author, sticker_count, created_at FROM sticker_packs WHERE id = $1`
+		query = `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, is_builtin, created_at FROM sticker_packs WHERE id = $1`
 	}
 	row := s.db.QueryRowContext(ctx, query, id)
 	var p models.StickerPack
-	if err := row.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.StickerCount, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.CreatorID, &p.ShareCode, &p.StickerCount, &p.IsBuiltin, &p.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	p.IsBuiltin = strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_nexa_") || strings.HasPrefix(p.ID, "pack_crypto_")
+	if !p.IsBuiltin && (strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_senora_") || strings.HasPrefix(p.ID, "pack_crypto_")) {
+		p.IsBuiltin = true
+	}
 
 	stickers, err := s.GetStickersForPack(ctx, p.ID)
 	if err == nil {
@@ -2288,6 +2720,22 @@ func (s *SQLStore) GetStickersForPack(ctx context.Context, packID string) ([]*mo
 	return list, rows.Err()
 }
 
+func (s *SQLStore) GetStickerByID(ctx context.Context, id string) (*models.Sticker, error) {
+	query := `SELECT id, pack_id, emoji, asset_url, width, height FROM stickers WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT id, pack_id, emoji, asset_url, width, height FROM stickers WHERE id = $1`
+	}
+	var st models.Sticker
+	err := s.db.QueryRowContext(ctx, query, id).Scan(&st.ID, &st.PackID, &st.Emoji, &st.AssetURL, &st.Width, &st.Height)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &st, nil
+}
+
 func (s *SQLStore) InstallStickerPack(ctx context.Context, userID, packID string) error {
 	query := `INSERT OR IGNORE INTO user_installed_stickers (user_id, pack_id, installed_at) VALUES (?, ?, ?)`
 	if s.driverName == "postgres" {
@@ -2306,14 +2754,95 @@ func (s *SQLStore) UninstallStickerPack(ctx context.Context, userID, packID stri
 	return err
 }
 
+func (s *SQLStore) DeleteStickerPack(ctx context.Context, packID, userID string) error {
+	pack, err := s.GetStickerPackByID(ctx, packID)
+	if err != nil {
+		return err
+	}
+	if pack.IsBuiltin {
+		return errors.New("cannot delete built-in sticker packs")
+	}
+	isOwner, _ := s.IsUserOwner(ctx, userID)
+	if !isOwner && pack.CreatorID != "" && pack.CreatorID != userID {
+		return errors.New("only the creator can delete this sticker pack")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	delStk := `DELETE FROM stickers WHERE pack_id = ?`
+	delInst := `DELETE FROM user_installed_stickers WHERE pack_id = ?`
+	delPack := `DELETE FROM sticker_packs WHERE id = ?`
+	if s.driverName == "postgres" {
+		delStk = `DELETE FROM stickers WHERE pack_id = $1`
+		delInst = `DELETE FROM user_installed_stickers WHERE pack_id = $1`
+		delPack = `DELETE FROM sticker_packs WHERE id = $1`
+	}
+
+	if _, err := tx.ExecContext(ctx, delStk, packID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, delInst, packID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, delPack, packID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLStore) DeleteSticker(ctx context.Context, stickerID, userID string) error {
+	stk, err := s.GetStickerByID(ctx, stickerID)
+	if err != nil {
+		return err
+	}
+	pack, err := s.GetStickerPackByID(ctx, stk.PackID)
+	if err != nil {
+		return err
+	}
+	if pack.IsBuiltin {
+		return errors.New("cannot delete stickers from built-in packs")
+	}
+	isOwner, _ := s.IsUserOwner(ctx, userID)
+	if !isOwner && pack.CreatorID != "" && pack.CreatorID != userID {
+		return errors.New("only the creator can delete stickers from this pack")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	delQuery := `DELETE FROM stickers WHERE id = ?`
+	upQuery := `UPDATE sticker_packs SET sticker_count = MAX(0, sticker_count - 1) WHERE id = ?`
+	if s.driverName == "postgres" {
+		delQuery = `DELETE FROM stickers WHERE id = $1`
+		upQuery = `UPDATE sticker_packs SET sticker_count = GREATEST(0, sticker_count - 1) WHERE id = $1`
+	}
+
+	if _, err := tx.ExecContext(ctx, delQuery, stickerID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, upQuery, stk.PackID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func (s *SQLStore) GetInstalledStickerPacks(ctx context.Context, userID string) ([]*models.StickerPack, error) {
-	query := `SELECT sp.id, sp.name, sp.title, sp.thumbnail_url, sp.author, sp.sticker_count, sp.created_at
+	query := `SELECT sp.id, sp.name, sp.title, sp.thumbnail_url, sp.author, COALESCE(sp.creator_id, ''), COALESCE(sp.share_code, ''), sp.sticker_count, sp.is_builtin, sp.created_at
 	          FROM sticker_packs sp
 	          INNER JOIN user_installed_stickers uis ON sp.id = uis.pack_id
 	          WHERE uis.user_id = ?
 	          ORDER BY uis.installed_at DESC`
 	if s.driverName == "postgres" {
-		query = `SELECT sp.id, sp.name, sp.title, sp.thumbnail_url, sp.author, sp.sticker_count, sp.created_at
+		query = `SELECT sp.id, sp.name, sp.title, sp.thumbnail_url, sp.author, COALESCE(sp.creator_id, ''), COALESCE(sp.share_code, ''), sp.sticker_count, sp.is_builtin, sp.created_at
 		          FROM sticker_packs sp
 		          INNER JOIN user_installed_stickers uis ON sp.id = uis.pack_id
 		          WHERE uis.user_id = $1
@@ -2328,18 +2857,19 @@ func (s *SQLStore) GetInstalledStickerPacks(ctx context.Context, userID string) 
 	var packs []*models.StickerPack
 	for rows.Next() {
 		var p models.StickerPack
-		if err := rows.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.StickerCount, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.CreatorID, &p.ShareCode, &p.StickerCount, &p.IsBuiltin, &p.CreatedAt); err != nil {
 			return nil, err
 		}
-		p.IsBuiltin = strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_nexa_") || strings.HasPrefix(p.ID, "pack_crypto_")
+		if !p.IsBuiltin && (strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_senora_") || strings.HasPrefix(p.ID, "pack_crypto_")) {
+			p.IsBuiltin = true
+		}
 		if stks, err := s.GetStickersForPack(ctx, p.ID); err == nil {
 			p.Stickers = stks
 		}
 		packs = append(packs, &p)
 	}
 	if packs == nil {
-		// If user has none installed, auto-return all built-in packs
-		return s.ListStickerPacks(ctx)
+		packs = []*models.StickerPack{}
 	}
 	return packs, rows.Err()
 }
@@ -2509,9 +3039,18 @@ func (s *SQLStore) DeleteMessageForEveryone(ctx context.Context, conversationID,
 		return ErrUnauthorized
 	}
 	if msg.SenderID != authorID {
-		role, _ := s.GetMemberRole(ctx, conversationID, authorID)
-		if role != "owner" && role != "admin" {
-			return ErrUnauthorized
+		conv, err := s.GetConversationByID(ctx, conversationID)
+		if err != nil {
+			return err
+		}
+		// In direct 1-on-1 chats, Telegram allows either participant to delete for both
+		isDirect := conv.Type == "direct"
+		if !isDirect {
+			role, _ := s.GetMemberRole(ctx, conversationID, authorID)
+			isOwner, _ := s.IsUserOwner(ctx, authorID)
+			if role != "owner" && role != "admin" && !isOwner {
+				return ErrUnauthorized
+			}
 		}
 	}
 	return s.DeleteMessage(ctx, messageID)
@@ -2681,20 +3220,59 @@ func (s *SQLStore) CreateUserStickerPack(ctx context.Context, pack *models.Stick
 	return tx.Commit()
 }
 
-func (s *SQLStore) GetStickerPackByShareCode(ctx context.Context, shareCode string) (*models.StickerPack, error) {
-	query := `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, created_at FROM sticker_packs WHERE share_code = ?`
+func (s *SQLStore) AddStickerToPack(ctx context.Context, packID string, sticker *models.Sticker) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if sticker.ID == "" {
+		sticker.ID = fmt.Sprintf("%s_stk_%d", packID, time.Now().UnixNano())
+	}
+	sticker.PackID = packID
+	if sticker.Width == 0 {
+		sticker.Width = 256
+	}
+	if sticker.Height == 0 {
+		sticker.Height = 256
+	}
+
+	stQuery := `INSERT INTO stickers (id, pack_id, emoji, asset_url, width, height) VALUES (?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
-		query = `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, created_at FROM sticker_packs WHERE share_code = $1`
+		stQuery = `INSERT INTO stickers (id, pack_id, emoji, asset_url, width, height) VALUES ($1, $2, $3, $4, $5, $6)`
+	}
+	if _, err := tx.ExecContext(ctx, stQuery, sticker.ID, sticker.PackID, sticker.Emoji, sticker.AssetURL, sticker.Width, sticker.Height); err != nil {
+		return err
+	}
+
+	upQuery := `UPDATE sticker_packs SET sticker_count = sticker_count + 1 WHERE id = ?`
+	if s.driverName == "postgres" {
+		upQuery = `UPDATE sticker_packs SET sticker_count = sticker_count + 1 WHERE id = $1`
+	}
+	if _, err := tx.ExecContext(ctx, upQuery, packID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (s *SQLStore) GetStickerPackByShareCode(ctx context.Context, shareCode string) (*models.StickerPack, error) {
+	query := `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, is_builtin, created_at FROM sticker_packs WHERE share_code = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT id, name, title, thumbnail_url, author, COALESCE(creator_id, ''), COALESCE(share_code, ''), sticker_count, is_builtin, created_at FROM sticker_packs WHERE share_code = $1`
 	}
 	var p models.StickerPack
 	row := s.db.QueryRowContext(ctx, query, shareCode)
-	if err := row.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.CreatorID, &p.ShareCode, &p.StickerCount, &p.CreatedAt); err != nil {
+	if err := row.Scan(&p.ID, &p.Name, &p.Title, &p.ThumbnailURL, &p.Author, &p.CreatorID, &p.ShareCode, &p.StickerCount, &p.IsBuiltin, &p.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	p.IsBuiltin = strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_nexa_") || strings.HasPrefix(p.ID, "pack_crypto_")
+	if !p.IsBuiltin && (strings.HasPrefix(p.ID, "pack_builtin_") || strings.HasPrefix(p.ID, "pack_senora_") || strings.HasPrefix(p.ID, "pack_crypto_")) {
+		p.IsBuiltin = true
+	}
 	stks, err := s.GetStickersForPack(ctx, p.ID)
 	if err == nil {
 		p.Stickers = stks
@@ -3391,11 +3969,15 @@ func (s *SQLStore) CreateConversationInvite(ctx context.Context, inv *models.Con
 		inv.ID = uuid.New().String()
 	}
 	inv.CreatedAt = time.Now().UTC()
+	var expVal interface{} = nil
+	if inv.ExpiresAt != nil && !inv.ExpiresAt.IsZero() && inv.ExpiresAt.Year() > 1970 {
+		expVal = inv.ExpiresAt.UTC()
+	}
 	query := `INSERT INTO conversation_invites (id, conversation_id, creator_id, invite_code, max_uses, uses_count, expires_at, is_revoked, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
 	if s.driverName == "postgres" {
 		query = `INSERT INTO conversation_invites (id, conversation_id, creator_id, invite_code, max_uses, uses_count, expires_at, is_revoked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)`
 	}
-	_, err := s.db.ExecContext(ctx, query, inv.ID, inv.ConversationID, inv.CreatorID, inv.InviteCode, inv.MaxUses, inv.UsesCount, inv.ExpiresAt, inv.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, inv.ID, inv.ConversationID, inv.CreatorID, inv.InviteCode, inv.MaxUses, inv.UsesCount, expVal, inv.CreatedAt)
 	return err
 }
 
@@ -3407,12 +3989,13 @@ func (s *SQLStore) GetConversationInviteByCode(ctx context.Context, code string)
 	var inv models.ConversationInvite
 	var isRevokedInt int
 	var isRevokedBool bool
+	var expiresAt sql.NullTime
 	var err error
 	if s.driverName == "postgres" {
-		err = s.db.QueryRowContext(ctx, query, code).Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &inv.ExpiresAt, &isRevokedBool, &inv.CreatedAt)
+		err = s.db.QueryRowContext(ctx, query, code).Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &expiresAt, &isRevokedBool, &inv.CreatedAt)
 		inv.IsRevoked = isRevokedBool
 	} else {
-		err = s.db.QueryRowContext(ctx, query, code).Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &inv.ExpiresAt, &isRevokedInt, &inv.CreatedAt)
+		err = s.db.QueryRowContext(ctx, query, code).Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &expiresAt, &isRevokedInt, &inv.CreatedAt)
 		inv.IsRevoked = isRevokedInt != 0
 	}
 	if err != nil {
@@ -3420,6 +4003,12 @@ func (s *SQLStore) GetConversationInviteByCode(ctx context.Context, code string)
 			return nil, ErrNotFound
 		}
 		return nil, err
+	}
+	if expiresAt.Valid && !expiresAt.Time.IsZero() && expiresAt.Time.Year() > 1970 {
+		t := expiresAt.Time.UTC()
+		inv.ExpiresAt = &t
+	} else {
+		inv.ExpiresAt = nil
 	}
 	return &inv, nil
 }
@@ -3440,16 +4029,23 @@ func (s *SQLStore) ListConversationInvites(ctx context.Context, conversationID s
 		var inv models.ConversationInvite
 		var isRevokedInt int
 		var isRevokedBool bool
+		var expiresAt sql.NullTime
 		if s.driverName == "postgres" {
-			if err := rows.Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &inv.ExpiresAt, &isRevokedBool, &inv.CreatedAt); err != nil {
+			if err := rows.Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &expiresAt, &isRevokedBool, &inv.CreatedAt); err != nil {
 				return nil, err
 			}
 			inv.IsRevoked = isRevokedBool
 		} else {
-			if err := rows.Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &inv.ExpiresAt, &isRevokedInt, &inv.CreatedAt); err != nil {
+			if err := rows.Scan(&inv.ID, &inv.ConversationID, &inv.CreatorID, &inv.InviteCode, &inv.MaxUses, &inv.UsesCount, &expiresAt, &isRevokedInt, &inv.CreatedAt); err != nil {
 				return nil, err
 			}
 			inv.IsRevoked = isRevokedInt != 0
+		}
+		if expiresAt.Valid && !expiresAt.Time.IsZero() && expiresAt.Time.Year() > 1970 {
+			t := expiresAt.Time.UTC()
+			inv.ExpiresAt = &t
+		} else {
+			inv.ExpiresAt = nil
 		}
 		list = append(list, &inv)
 	}
@@ -3480,7 +4076,7 @@ func (s *SQLStore) UseConversationInvite(ctx context.Context, code, userID strin
 	if inv.IsRevoked {
 		return nil, errors.New("invite link has been revoked")
 	}
-	if inv.ExpiresAt != nil && inv.ExpiresAt.Before(time.Now().UTC()) {
+	if inv.ExpiresAt != nil && !inv.ExpiresAt.IsZero() && inv.ExpiresAt.Year() > 1970 && inv.ExpiresAt.Before(time.Now().UTC()) {
 		return nil, errors.New("invite link has expired")
 	}
 	if inv.MaxUses > 0 && inv.UsesCount >= inv.MaxUses {
@@ -3557,21 +4153,68 @@ func (s *SQLStore) SetConversationTTL(ctx context.Context, conversationID string
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) GlobalSearch(ctx context.Context, userID, query string) (map[string]interface{}, error) {
-	trimmed := "%" + strings.TrimSpace(query) + "%"
-
-	// 1. Search public channels
-	chQuery := `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, '') FROM conversations WHERE type = 'channel' AND (title LIKE ? OR description LIKE ?) LIMIT 10`
-	if s.driverName == "postgres" {
-		chQuery = `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, '') FROM conversations WHERE type = 'channel' AND (title ILIKE $1 OR description ILIKE $2) LIMIT 10`
+	cleanQuery := strings.TrimPrefix(strings.TrimSpace(query), "@")
+	cleanQuery = strings.TrimSpace(cleanQuery)
+	if cleanQuery == "" {
+		return map[string]interface{}{
+			"channels":      []map[string]interface{}{},
+			"users":         []*models.User{},
+			"conversations": []*models.Conversation{},
+		}, nil
 	}
-	chRows, err := s.db.QueryContext(ctx, chQuery, trimmed, trimmed)
+	qLower := strings.ToLower(cleanQuery)
+
+	// Search user's active conversations (local dialogs)
+	convs, _ := s.ListConversationsForUser(ctx, userID)
+	matchedConvs := []*models.Conversation{}
+	for _, c := range convs {
+		matched := false
+		if strings.Contains(strings.ToLower(c.Title), qLower) || strings.Contains(strings.ToLower(c.Description), qLower) {
+			matched = true
+		} else {
+			// Check peer participants' username and display_name for direct chats
+			for _, p := range c.Participants {
+				if strings.Contains(strings.ToLower(p.Username), qLower) || strings.Contains(strings.ToLower(p.DisplayName), qLower) {
+					matched = true
+					break
+				}
+			}
+		}
+		if matched {
+			matchedConvs = append(matchedConvs, c)
+		}
+	}
+
+	// Short queries (< 3 chars) that are not conversation IDs NEVER query public channels or users
+	if len(cleanQuery) < 3 && !strings.HasPrefix(cleanQuery, "cnv_") && !strings.HasPrefix(cleanQuery, "usr_") {
+		return map[string]interface{}{
+			"channels":      []map[string]interface{}{},
+			"users":         []*models.User{},
+			"conversations": matchedConvs,
+		}, nil
+	}
+
+	// 1. Search public channels & groups by EXACT conversation ID or EXACT username ONLY (no title matching)
+	chQuery := `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(username, '') 
+	            FROM conversations 
+	            WHERE (type = 'channel' OR type = 'group') 
+	              AND (id = ? OR (username != '' AND LOWER(username) = ?)) 
+	            LIMIT 5`
+	if s.driverName == "postgres" {
+		chQuery = `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(username, '') 
+		            FROM conversations 
+		            WHERE (type = 'channel' OR type = 'group') 
+		              AND (id = $1 OR (username != '' AND LOWER(username) = $2)) 
+		            LIMIT 5`
+	}
+	chRows, err := s.db.QueryContext(ctx, chQuery, cleanQuery, qLower)
 	channels := []map[string]interface{}{}
 	if err == nil {
 		for chRows.Next() {
-			var id, cType, title, desc, avatar string
-			if err := chRows.Scan(&id, &cType, &title, &desc, &avatar); err == nil {
+			var id, cType, title, desc, avatar, uname string
+			if err := chRows.Scan(&id, &cType, &title, &desc, &avatar, &uname); err == nil {
 				channels = append(channels, map[string]interface{}{
-					"id": id, "type": cType, "title": title, "description": desc, "avatar_url": avatar,
+					"id": id, "type": cType, "title": title, "description": desc, "avatar_url": avatar, "username": uname,
 				})
 			}
 		}
@@ -3582,17 +4225,13 @@ func (s *SQLStore) GlobalSearch(ctx context.Context, userID, query string) (map[
 		chRows.Close()
 	}
 
-	// 2. Search users
-	users, _ := s.SearchUsers(ctx, strings.TrimSpace(query), userID)
-
-	// 3. Search user's active conversations
-	convs, _ := s.ListConversationsForUser(ctx, userID)
-	matchedConvs := []*models.Conversation{}
-	qLower := strings.ToLower(strings.TrimSpace(query))
-	for _, c := range convs {
-		if strings.Contains(strings.ToLower(c.Title), qLower) || strings.Contains(strings.ToLower(c.Description), qLower) {
-			matchedConvs = append(matchedConvs, c)
-		}
+	// 2. Search users (stripping @ so @alice matches alice) - EXACT MATCH ONLY
+	users, _ := s.SearchUsers(ctx, cleanQuery, userID)
+	if users == nil {
+		users = []*models.User{}
+	}
+	if channels == nil {
+		channels = []map[string]interface{}{}
 	}
 
 	return map[string]interface{}{
@@ -3867,4 +4506,1179 @@ func (s *SQLStore) RevokeBotToken(ctx context.Context, tokenID, createdBy string
 	}
 	return nil
 }
+
+func (s *SQLStore) RegisterPushDevice(ctx context.Context, reg *models.PushDeviceRegistration) error {
+	now := time.Now().UTC()
+	reg.UpdatedAt = now
+	if reg.CreatedAt.IsZero() {
+		reg.CreatedAt = now
+	}
+
+	query := `INSERT INTO push_devices (id, user_id, device_id, platform, endpoint, p256dh, auth, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(user_id, device_id) DO UPDATE SET
+			platform = excluded.platform,
+			endpoint = excluded.endpoint,
+			p256dh = excluded.p256dh,
+			auth = excluded.auth,
+			updated_at = excluded.updated_at`
+
+	if s.driverName == "postgres" {
+		query = `INSERT INTO push_devices (id, user_id, device_id, platform, endpoint, p256dh, auth, created_at, updated_at)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			ON CONFLICT(user_id, device_id) DO UPDATE SET
+				platform = EXCLUDED.platform,
+				endpoint = EXCLUDED.endpoint,
+				p256dh = EXCLUDED.p256dh,
+				auth = EXCLUDED.auth,
+				updated_at = EXCLUDED.updated_at`
+	}
+
+	_, err := s.db.ExecContext(ctx, query, reg.ID, reg.UserID, reg.DeviceID, reg.Platform, reg.Endpoint, reg.P256DH, reg.Auth, reg.CreatedAt, reg.UpdatedAt)
+	return err
+}
+
+func (s *SQLStore) UnregisterPushDevice(ctx context.Context, userID, deviceID string) error {
+	query := `DELETE FROM push_devices WHERE user_id = ? AND device_id = ?`
+	if s.driverName == "postgres" {
+		query = `DELETE FROM push_devices WHERE user_id = $1 AND device_id = $2`
+	}
+	_, err := s.db.ExecContext(ctx, query, userID, deviceID)
+	return err
+}
+
+func (s *SQLStore) GetPushDevicesForUser(ctx context.Context, userID string) ([]*models.PushDeviceRegistration, error) {
+	query := `SELECT id, user_id, device_id, platform, endpoint, p256dh, auth, created_at, updated_at FROM push_devices WHERE user_id = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT id, user_id, device_id, platform, endpoint, p256dh, auth, created_at, updated_at FROM push_devices WHERE user_id = $1`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.PushDeviceRegistration
+	for rows.Next() {
+		var r models.PushDeviceRegistration
+		if err := rows.Scan(&r.ID, &r.UserID, &r.DeviceID, &r.Platform, &r.Endpoint, &r.P256DH, &r.Auth, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, &r)
+	}
+	if list == nil {
+		list = []*models.PushDeviceRegistration{}
+	}
+	return list, rows.Err()
+}
+
+// ---------------------------------------------------------------------
+// Server Settings & Administration
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) SetUserApproved(ctx context.Context, userID string, approved bool) error {
+	now := time.Now().UTC()
+	query := `UPDATE users SET is_approved = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET is_approved = $1, updated_at = $2 WHERE id = $3`
+		_, err := s.db.ExecContext(ctx, query, approved, now, userID)
+		return err
+	}
+	apprVal := 0
+	if approved {
+		apprVal = 1
+	}
+	_, err := s.db.ExecContext(ctx, query, apprVal, now, userID)
+	return err
+}
+
+func (s *SQLStore) SetUserBanned(ctx context.Context, userID string, banned bool) error {
+	now := time.Now().UTC()
+	query := `UPDATE users SET is_banned = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET is_banned = $1, updated_at = $2 WHERE id = $3`
+		if _, err := s.db.ExecContext(ctx, query, banned, now, userID); err != nil {
+			return err
+		}
+	} else {
+		bannedVal := 0
+		if banned {
+			bannedVal = 1
+		}
+		if _, err := s.db.ExecContext(ctx, query, bannedVal, now, userID); err != nil {
+			return err
+		}
+	}
+	// If banned, revoke all active sessions immediately
+	if banned {
+		delQuery := `DELETE FROM sessions WHERE user_id = ?`
+		if s.driverName == "postgres" {
+			delQuery = `DELETE FROM sessions WHERE user_id = $1`
+		}
+		_, _ = s.db.ExecContext(ctx, delQuery, userID)
+	}
+	return nil
+}
+
+func (s *SQLStore) SetUserOwner(ctx context.Context, userID string, isOwner bool) error {
+	now := time.Now().UTC()
+	query := `UPDATE users SET is_owner = ?, updated_at = ? WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `UPDATE users SET is_owner = $1, updated_at = $2 WHERE id = $3`
+		_, err := s.db.ExecContext(ctx, query, isOwner, now, userID)
+		return err
+	}
+	ownerVal := 0
+	if isOwner {
+		ownerVal = 1
+	}
+	_, err := s.db.ExecContext(ctx, query, ownerVal, now, userID)
+	return err
+}
+
+func (s *SQLStore) IsUserOwner(ctx context.Context, userID string) (bool, error) {
+	query := `SELECT COALESCE(is_owner, 0) FROM users WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT COALESCE(is_owner, FALSE) FROM users WHERE id = $1`
+	}
+	var isOwner bool
+	err := s.db.QueryRowContext(ctx, query, userID).Scan(&isOwner)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	return isOwner, nil
+}
+
+func (s *SQLStore) GetServerOwner(ctx context.Context) (*models.User, error) {
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE is_owner = 1 LIMIT 1`
+	if s.driverName == "postgres" {
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE is_owner = TRUE LIMIT 1`
+	}
+	var u models.User
+	var isApproved, isOwner, isBanned bool
+	err := s.db.QueryRowContext(ctx, query).Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.CreatedAt, &u.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	u.IsApproved = isApproved
+	u.IsOwner = isOwner
+	u.IsBanned = isBanned
+	return &u, nil
+}
+
+func (s *SQLStore) ListAllUsers(ctx context.Context) ([]*models.User, error) {
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE id != 'usr_senoramasterbot' ORDER BY created_at DESC`
+	if s.driverName == "postgres" {
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE id != 'usr_senoramasterbot' ORDER BY created_at DESC`
+	}
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		var u models.User
+		var isApproved, isOwner, isBanned bool
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		u.IsApproved = isApproved
+		u.IsOwner = isOwner
+		u.IsBanned = isBanned
+		users = append(users, &u)
+	}
+	if users == nil {
+		users = []*models.User{}
+	}
+	return users, rows.Err()
+}
+
+func (s *SQLStore) ListPendingUsers(ctx context.Context) ([]*models.User, error) {
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE (is_approved = 0) AND id != 'usr_senoramasterbot' ORDER BY created_at ASC`
+	if s.driverName == "postgres" {
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), created_at, updated_at FROM users WHERE (is_approved = FALSE) AND id != 'usr_senoramasterbot' ORDER BY created_at ASC`
+	}
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*models.User
+	for rows.Next() {
+		var u models.User
+		var isApproved, isOwner, isBanned bool
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		u.IsApproved = isApproved
+		u.IsOwner = isOwner
+		u.IsBanned = isBanned
+		users = append(users, &u)
+	}
+	if users == nil {
+		users = []*models.User{}
+	}
+	return users, rows.Err()
+}
+
+func (s *SQLStore) DeleteUser(ctx context.Context, userID string) error {
+	query := `DELETE FROM users WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `DELETE FROM users WHERE id = $1`
+	}
+	_, err := s.db.ExecContext(ctx, query, userID)
+	return err
+}
+
+func (s *SQLStore) CountUsers(ctx context.Context) (int, error) {
+	query := `SELECT COUNT(*) FROM users WHERE id != 'usr_senoramasterbot'`
+	var count int
+	err := s.db.QueryRowContext(ctx, query).Scan(&count)
+	return count, err
+}
+
+func (s *SQLStore) GetServerSetting(ctx context.Context, key, defaultValue string) (string, error) {
+	query := `SELECT value FROM server_settings WHERE key = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT value FROM server_settings WHERE key = $1`
+	}
+	var val string
+	err := s.db.QueryRowContext(ctx, query, key).Scan(&val)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return defaultValue, nil
+		}
+		return defaultValue, err
+	}
+	return val, nil
+}
+
+func (s *SQLStore) SetServerSetting(ctx context.Context, key, value string) error {
+	now := time.Now().UTC()
+	query := `INSERT INTO server_settings (key, value, updated_at) VALUES (?, ?, ?)
+	          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+	if s.driverName == "postgres" {
+		query = `INSERT INTO server_settings (key, value, updated_at) VALUES ($1, $2, $3)
+		          ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`
+	}
+	_, err := s.db.ExecContext(ctx, query, key, value, now)
+	return err
+}
+
+var serverStartTime = time.Now().UTC()
+
+func (s *SQLStore) GetServerStats(ctx context.Context) (*models.ServerStats, error) {
+	stats := &models.ServerStats{
+		ServerStartedAt: serverStartTime,
+		UptimeSeconds:   int64(time.Since(serverStartTime).Seconds()),
+		GoVersion:       runtime.Version(),
+	}
+
+	// Memory & goroutines
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	stats.MemoryAllocMB = float64(m.Alloc) / (1024 * 1024)
+	stats.MemorySysMB = float64(m.Sys) / (1024 * 1024)
+	stats.NumGoroutines = runtime.NumGoroutine()
+
+	// Users counts
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id != 'usr_senoramasterbot'`).Scan(&stats.TotalUsers)
+	
+	if s.driverName == "postgres" {
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_approved = FALSE AND id != 'usr_senoramasterbot'`).Scan(&stats.PendingUsers)
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_banned = TRUE AND id != 'usr_senoramasterbot'`).Scan(&stats.BannedUsers)
+	} else {
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_approved = 0 AND id != 'usr_senoramasterbot'`).Scan(&stats.PendingUsers)
+		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_banned = 1 AND id != 'usr_senoramasterbot'`).Scan(&stats.BannedUsers)
+	}
+
+	// Sessions active
+	now := time.Now().UTC()
+	sessQuery := `SELECT COUNT(*) FROM sessions WHERE expires_at > ?`
+	if s.driverName == "postgres" {
+		sessQuery = `SELECT COUNT(*) FROM sessions WHERE expires_at > $1`
+	}
+	_ = s.db.QueryRowContext(ctx, sessQuery, now).Scan(&stats.ActiveSessions)
+	stats.OnlineUsers = stats.ActiveSessions
+
+	// Conversations & Messages
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversations`).Scan(&stats.TotalConversations)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE is_deleted = 0 OR is_deleted IS FALSE`).Scan(&stats.TotalMessages)
+
+	// Attachments & Storage
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments`).Scan(&stats.TotalAttachments, &stats.TotalStorageBytes)
+
+	// Server settings flags
+	apprStr, _ := s.GetServerSetting(ctx, "registration_approval", "true")
+	stats.ApprovalRequired = (apprStr == "true")
+	maintStr, _ := s.GetServerSetting(ctx, "maintenance_mode", "false")
+	stats.MaintenanceMode = (maintStr == "true")
+
+	return stats, nil
+}
+
+func (s *SQLStore) GetStorageAnalytics(ctx context.Context) (*models.StorageAnalytics, error) {
+	analytics := &models.StorageAnalytics{}
+
+	// Total attachments and total bytes
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments`).
+		Scan(&analytics.TotalAttachments, &analytics.TotalBytes)
+
+	// Images
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE content_type LIKE 'image/%'`).
+		Scan(&analytics.ImageCount, &analytics.ImageBytes)
+
+	// Videos
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE content_type LIKE 'video/%'`).
+		Scan(&analytics.VideoCount, &analytics.VideoBytes)
+
+	// Audio / Voice
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE content_type LIKE 'audio/%'`).
+		Scan(&analytics.AudioCount, &analytics.AudioBytes)
+
+	// Documents / Other
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE content_type NOT LIKE 'image/%' AND content_type NOT LIKE 'video/%' AND content_type NOT LIKE 'audio/%'`).
+		Scan(&analytics.DocumentCount, &analytics.DocumentBytes)
+
+	// Arvan S3 vs Local
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE storage_type = 'arvan_s3'`).
+		Scan(&analytics.S3Count, &analytics.S3Bytes)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments WHERE storage_type != 'arvan_s3' OR storage_type IS NULL`).
+		Scan(&analytics.LocalCount, &analytics.LocalBytes)
+
+	return analytics, nil
+}
+
+// ---------------------------------------------------------------------
+// Admin Chat Spectating
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) CreateSpectateToken(ctx context.Context, token, conversationID, createdBy string, ttl time.Duration) (*models.SpectateToken, error) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(ttl)
+
+	query := `INSERT INTO audit_spectate_tokens (token, conversation_id, created_by, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`
+	if s.driverName == "postgres" {
+		query = `INSERT INTO audit_spectate_tokens (token, conversation_id, created_by, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)`
+	}
+	_, err := s.db.ExecContext(ctx, query, token, conversationID, createdBy, expiresAt, now)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.SpectateToken{
+		Token:          token,
+		ConversationID: conversationID,
+		CreatedBy:      createdBy,
+		ExpiresAt:      expiresAt,
+		CreatedAt:      now,
+	}, nil
+}
+
+func (s *SQLStore) GetSpectateToken(ctx context.Context, token string) (*models.SpectateToken, error) {
+	now := time.Now().UTC()
+	query := `SELECT token, conversation_id, created_by, expires_at, created_at FROM audit_spectate_tokens WHERE token = ? AND expires_at > ?`
+	if s.driverName == "postgres" {
+		query = `SELECT token, conversation_id, created_by, expires_at, created_at FROM audit_spectate_tokens WHERE token = $1 AND expires_at > $2`
+	}
+
+	var st models.SpectateToken
+	err := s.db.QueryRowContext(ctx, query, token, now).Scan(&st.Token, &st.ConversationID, &st.CreatedBy, &st.ExpiresAt, &st.CreatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &st, nil
+}
+
+func (s *SQLStore) GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error) {
+	query := `SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), c.created_at, c.updated_at
+	          FROM conversations c
+	          JOIN conversation_members m1 ON c.id = m1.conversation_id AND m1.user_id = ?
+	          JOIN conversation_members m2 ON c.id = m2.conversation_id AND m2.user_id = ?
+	          WHERE c.type = 'direct'
+	          LIMIT 1`
+	if s.driverName == "postgres" {
+		query = `SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), c.created_at, c.updated_at
+		          FROM conversations c
+		          JOIN conversation_members m1 ON c.id = m1.conversation_id AND m1.user_id = $1
+		          JOIN conversation_members m2 ON c.id = m2.conversation_id AND m2.user_id = $2
+		          WHERE c.type = 'direct'
+		          LIMIT 1`
+	}
+
+	var c models.Conversation
+	err := s.db.QueryRowContext(ctx, query, user1ID, user2ID).Scan(
+		&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.CreatedAt, &c.UpdatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *SQLStore) ListAllConversations(ctx context.Context, limit int) ([]*models.Conversation, error) {
+	if limit <= 0 || limit > 200 {
+		limit = 100
+	}
+	query := `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), created_at, updated_at
+	          FROM conversations
+	          ORDER BY updated_at DESC
+	          LIMIT ?`
+	if s.driverName == "postgres" {
+		query = `SELECT id, type, COALESCE(title, ''), COALESCE(description, ''), COALESCE(avatar_url, ''), COALESCE(pinned_message_id, ''), COALESCE(security_mode, 'normal'), created_at, updated_at
+		          FROM conversations
+		          ORDER BY updated_at DESC
+		          LIMIT $1`
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.Conversation
+	for rows.Next() {
+		var c models.Conversation
+		if err := rows.Scan(&c.ID, &c.Type, &c.Title, &c.Description, &c.AvatarURL, &c.PinnedMessageID, &c.SecurityMode, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, &c)
+	}
+	if list == nil {
+		list = []*models.Conversation{}
+	}
+	return list, rows.Err()
+}
+
+// ---------------------------------------------------------------------
+// IP Blacklist & Ban Management
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) BanIP(ctx context.Context, rawIP, reason, bannedBy string) error {
+	ip := strings.TrimSpace(rawIP)
+	if ip == "" {
+		return errors.New("invalid empty IP address")
+	}
+	// Check if valid IP or CIDR notation
+	if net.ParseIP(ip) == nil {
+		if _, _, err := net.ParseCIDR(ip); err != nil {
+			return fmt.Errorf("invalid IP address or CIDR subnet: %s", rawIP)
+		}
+	}
+	now := time.Now().UTC()
+
+	query := `INSERT INTO banned_ips (ip, reason, banned_by, created_at)
+	          VALUES (?, ?, ?, ?)
+	          ON CONFLICT(ip) DO UPDATE SET reason = excluded.reason, banned_by = excluded.banned_by, created_at = excluded.created_at`
+	if s.driverName == "postgres" {
+		query = `INSERT INTO banned_ips (ip, reason, banned_by, created_at)
+		          VALUES ($1, $2, $3, $4)
+		          ON CONFLICT(ip) DO UPDATE SET reason = EXCLUDED.reason, banned_by = EXCLUDED.banned_by, created_at = EXCLUDED.created_at`
+	}
+
+	_, err := s.db.ExecContext(ctx, query, ip, reason, bannedBy, now)
+	return err
+}
+
+func (s *SQLStore) UnbanIP(ctx context.Context, rawIP string) error {
+	ip := strings.TrimSpace(rawIP)
+	if ip == "" {
+		return errors.New("invalid empty IP address")
+	}
+
+	query := `DELETE FROM banned_ips WHERE ip = ?`
+	if s.driverName == "postgres" {
+		query = `DELETE FROM banned_ips WHERE ip = $1`
+	}
+
+	_, err := s.db.ExecContext(ctx, query, ip)
+	return err
+}
+
+func (s *SQLStore) IsIPBanned(ctx context.Context, rawIP string) (bool, error) {
+	ip := strings.TrimSpace(rawIP)
+	if ip == "" {
+		return false, nil
+	}
+
+	// 1. Direct match
+	query := `SELECT 1 FROM banned_ips WHERE ip = ? LIMIT 1`
+	if s.driverName == "postgres" {
+		query = `SELECT 1 FROM banned_ips WHERE ip = $1 LIMIT 1`
+	}
+
+	var dummy int
+	err := s.db.QueryRowContext(ctx, query, ip).Scan(&dummy)
+	if err == nil {
+		return true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
+
+	// 2. CIDR subnet check
+	parsedClient := net.ParseIP(ip)
+	if parsedClient != nil {
+		cidrQuery := `SELECT ip FROM banned_ips WHERE ip LIKE '%/%'`
+		rows, err := s.db.QueryContext(ctx, cidrQuery)
+		if err == nil {
+			defer rows.Close()
+			isBanned := false
+			for rows.Next() {
+				var cidrStr string
+				if err := rows.Scan(&cidrStr); err == nil {
+					if _, cidr, err := net.ParseCIDR(cidrStr); err == nil {
+						if cidr.Contains(parsedClient) {
+							isBanned = true
+							break
+						}
+					}
+				}
+			}
+			if err := rows.Err(); err != nil {
+				return false, err
+			}
+			if isBanned {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func (s *SQLStore) ListBannedIPs(ctx context.Context) ([]*models.BannedIP, error) {
+	query := `SELECT ip, COALESCE(reason, ''), COALESCE(banned_by, ''), created_at FROM banned_ips ORDER BY created_at DESC`
+	rows, err := s.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.BannedIP
+	for rows.Next() {
+		var b models.BannedIP
+		if err := rows.Scan(&b.IP, &b.Reason, &b.BannedBy, &b.CreatedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, &b)
+	}
+	if list == nil {
+		list = []*models.BannedIP{}
+	}
+	return list, rows.Err()
+}
+
+// ---------------------------------------------------------------------
+// Database Backup
+// ---------------------------------------------------------------------
+
+func formatSQLValue(v interface{}) string {
+	if v == nil {
+		return "NULL"
+	}
+	switch val := v.(type) {
+	case bool:
+		if val {
+			return "TRUE"
+		}
+		return "FALSE"
+	case int, int8, int16, int32, int64:
+		return fmt.Sprintf("%d", val)
+	case uint, uint8, uint16, uint32, uint64:
+		return fmt.Sprintf("%d", val)
+	case float32, float64:
+		return fmt.Sprintf("%f", val)
+	case time.Time:
+		return fmt.Sprintf("'%s'", val.UTC().Format("2006-01-02 15:04:05.999999-07"))
+	case []byte:
+		if utf8.Valid(val) {
+			s := strings.ReplaceAll(string(val), "'", "''")
+			return fmt.Sprintf("'%s'", s)
+		}
+		return fmt.Sprintf("decode('%x', 'hex')", val)
+	case string:
+		s := strings.ReplaceAll(val, "'", "''")
+		return fmt.Sprintf("'%s'", s)
+	default:
+		s := fmt.Sprintf("%v", val)
+		s = strings.ReplaceAll(s, "'", "''")
+		return fmt.Sprintf("'%s'", s)
+	}
+}
+
+func (s *SQLStore) backupPostgres(ctx context.Context, destPath string) error {
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create postgres backup file: %w", err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	fmt.Fprintf(w, "-- ========================================================\n")
+	fmt.Fprintf(w, "-- Senora PostgreSQL Database Snapshot Backup\n")
+	fmt.Fprintf(w, "-- Generated at: %s UTC\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(w, "-- ========================================================\n\n")
+	fmt.Fprintf(w, "BEGIN;\n")
+	fmt.Fprintf(w, "SET statement_timeout = 0;\n")
+	fmt.Fprintf(w, "SET client_encoding = 'UTF8';\n")
+	fmt.Fprintf(w, "SET standard_conforming_strings = on;\n\n")
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT table_name 
+		FROM information_schema.tables 
+		WHERE table_schema = 'public' AND table_type = 'BASE TABLE' 
+		ORDER BY table_name;
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to query postgres tables: %w", err)
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var t string
+		if err := rows.Scan(&t); err == nil && t != "" {
+			tables = append(tables, t)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("error reading postgres tables: %w", err)
+	}
+	rows.Close()
+
+	for _, tbl := range tables {
+		fmt.Fprintf(w, "\n-- Table: %s\n", tbl)
+
+		colRows, err := s.db.QueryContext(ctx, `
+			SELECT column_name 
+			FROM information_schema.columns 
+			WHERE table_schema = 'public' AND table_name = $1 
+			ORDER BY ordinal_position;
+		`, tbl)
+		if err != nil {
+			continue
+		}
+
+		var cols []string
+		for colRows.Next() {
+			var col string
+			if err := colRows.Scan(&col); err == nil {
+				cols = append(cols, col)
+			}
+		}
+		if err := colRows.Err(); err != nil {
+			colRows.Close()
+			continue
+		}
+		colRows.Close()
+
+		if len(cols) == 0 {
+			continue
+		}
+
+		quotedCols := make([]string, len(cols))
+		for i, c := range cols {
+			quotedCols[i] = fmt.Sprintf("%q", c)
+		}
+		colList := strings.Join(quotedCols, ", ")
+
+		dataRows, err := s.db.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %q", colList, tbl))
+		if err != nil {
+			continue
+		}
+
+		colCount := len(cols)
+		for dataRows.Next() {
+			values := make([]interface{}, colCount)
+			valuePtrs := make([]interface{}, colCount)
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+
+			if err := dataRows.Scan(valuePtrs...); err != nil {
+				continue
+			}
+
+			valStrs := make([]string, colCount)
+			for i, v := range values {
+				valStrs[i] = formatSQLValue(v)
+			}
+
+			fmt.Fprintf(w, "INSERT INTO %q (%s) VALUES (%s);\n", tbl, colList, strings.Join(valStrs, ", "))
+		}
+		if err := dataRows.Err(); err != nil {
+			dataRows.Close()
+			continue
+		}
+		dataRows.Close()
+	}
+
+	fmt.Fprintf(w, "\nCOMMIT;\n-- End of Backup\n")
+	return nil
+}
+
+func (s *SQLStore) dumpSQLiteTables(ctx context.Context, destPath string) error {
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return fmt.Errorf("failed to create sqlite backup file: %w", err)
+	}
+	defer f.Close()
+
+	w := bufio.NewWriter(f)
+	defer w.Flush()
+
+	fmt.Fprintf(w, "-- Senora SQLite Database Dump\nBEGIN;\n")
+	rows, err := s.db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	var tables []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err == nil {
+			tables = append(tables, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, tbl := range tables {
+		colRows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%q)", tbl))
+		if err != nil {
+			continue
+		}
+		var cols []string
+		for colRows.Next() {
+			var cid int
+			var cname, ctype string
+			var notnull, pk int
+			var dflt interface{}
+			if err := colRows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk); err == nil {
+				cols = append(cols, cname)
+			}
+		}
+		if err := colRows.Err(); err != nil {
+			colRows.Close()
+			continue
+		}
+		colRows.Close()
+
+		if len(cols) == 0 {
+			continue
+		}
+
+		quotedCols := make([]string, len(cols))
+		for i, c := range cols {
+			quotedCols[i] = fmt.Sprintf("%q", c)
+		}
+		colList := strings.Join(quotedCols, ", ")
+
+		dataRows, err := s.db.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %q", colList, tbl))
+		if err != nil {
+			continue
+		}
+
+		for dataRows.Next() {
+			values := make([]interface{}, len(cols))
+			valuePtrs := make([]interface{}, len(cols))
+			for i := range values {
+				valuePtrs[i] = &values[i]
+			}
+			if err := dataRows.Scan(valuePtrs...); err != nil {
+				continue
+			}
+			valStrs := make([]string, len(cols))
+			for i, v := range values {
+				valStrs[i] = formatSQLValue(v)
+			}
+			fmt.Fprintf(w, "INSERT INTO %q (%s) VALUES (%s);\n", tbl, colList, strings.Join(valStrs, ", "))
+		}
+		if err := dataRows.Err(); err != nil {
+			dataRows.Close()
+			continue
+		}
+		dataRows.Close()
+	}
+	fmt.Fprintf(w, "COMMIT;\n")
+	return nil
+}
+
+func (s *SQLStore) BackupDatabase(ctx context.Context, destPath string) error {
+	destPath = strings.TrimSpace(destPath)
+	if destPath == "" {
+		return errors.New("destination path cannot be empty")
+	}
+
+	dir := filepath.Dir(destPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create backup directory: %w", err)
+	}
+
+	if s.driverName == "postgres" {
+		return s.backupPostgres(ctx, destPath)
+	}
+
+	// SQLite: flush WAL checkpoint first
+	_, _ = s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
+
+	// Attempt VACUUM INTO
+	cleanPath := strings.ReplaceAll(destPath, "'", "''")
+	cleanPath = filepath.ToSlash(cleanPath)
+	_ = os.Remove(destPath) // Remove if already exists so VACUUM INTO doesn't fail
+	vacuumQuery := fmt.Sprintf("VACUUM INTO '%s'", cleanPath)
+	if _, err := s.db.ExecContext(ctx, vacuumQuery); err == nil {
+		if fi, statErr := os.Stat(destPath); statErr == nil && fi.Size() > 0 {
+			return nil
+		}
+	}
+
+	// Fallback 1: Direct file copy of source db file
+	srcFile := s.dataSourceName
+	if idx := strings.Index(srcFile, "?"); idx != -1 {
+		srcFile = srcFile[:idx]
+	}
+	srcFile = strings.TrimPrefix(srcFile, "file:")
+	if srcFile != ":memory:" && srcFile != "" {
+		if in, err := os.Open(srcFile); err == nil {
+			defer in.Close()
+			if out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
+				defer out.Close()
+				if _, err := io.Copy(out, in); err == nil {
+					if fi, statErr := os.Stat(destPath); statErr == nil && fi.Size() > 0 {
+						return nil
+					}
+				}
+			}
+		}
+	}
+
+	// Fallback 2: Comprehensive table dump
+	return s.dumpSQLiteTables(ctx, destPath)
+}
+
+// ---------------------------------------------------------------------
+// Forum Topics & Supergroups
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) ToggleConversationForum(ctx context.Context, convID string, isForum bool) error {
+	query := "UPDATE conversations SET is_forum = ?, updated_at = ? WHERE id = ?"
+	isForumVal := 0
+	if isForum {
+		isForumVal = 1
+	}
+	if s.driverName == "postgres" {
+		query = "UPDATE conversations SET is_forum = $1, updated_at = $2 WHERE id = $3"
+		_, err := s.db.ExecContext(ctx, query, isForum, time.Now().UTC(), convID)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, query, isForumVal, time.Now().UTC(), convID)
+	return err
+}
+
+func (s *SQLStore) CreateForumTopic(ctx context.Context, topic *models.ForumTopic) error {
+	if topic.ID == "" {
+		topic.ID = "tpc_" + uuid.New().String()
+	}
+	if topic.CreatedAt.IsZero() {
+		topic.CreatedAt = time.Now().UTC()
+	}
+	if topic.Icon == "" {
+		topic.Icon = "💬"
+	}
+	if topic.Color == "" {
+		topic.Color = "#3390ec"
+	}
+	query := "INSERT INTO forum_topics (id, conversation_id, title, icon, color, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+	if s.driverName == "postgres" {
+		query = "INSERT INTO forum_topics (id, conversation_id, title, icon, color, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)"
+	}
+	_, err := s.db.ExecContext(ctx, query, topic.ID, topic.ConversationID, topic.Title, topic.Icon, topic.Color, topic.CreatedBy, topic.CreatedAt)
+	return err
+}
+
+func (s *SQLStore) GetForumTopics(ctx context.Context, convID string) ([]*models.ForumTopic, error) {
+	query := "SELECT id, conversation_id, title, icon, color, created_by, created_at FROM forum_topics WHERE conversation_id = ? ORDER BY created_at ASC"
+	if s.driverName == "postgres" {
+		query = "SELECT id, conversation_id, title, icon, color, created_by, created_at FROM forum_topics WHERE conversation_id = $1 ORDER BY created_at ASC"
+	}
+	rows, err := s.db.QueryContext(ctx, query, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var topics []*models.ForumTopic
+	for rows.Next() {
+		var t models.ForumTopic
+		if err := rows.Scan(&t.ID, &t.ConversationID, &t.Title, &t.Icon, &t.Color, &t.CreatedBy, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		topics = append(topics, &t)
+	}
+	return topics, rows.Err()
+}
+
+func (s *SQLStore) GetMessagesByTopic(ctx context.Context, convID, topicID, beforeID string, limit int) ([]*models.Message, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	query := `
+		SELECT m.id, m.conversation_id, m.sender_id, u.username, m.ciphertext, m.nonce, m.ephemeral_public_key, m.idempotency_key, COALESCE(m.reply_to_id, ''), m.edited_at, COALESCE(m.is_deleted, 0), COALESCE(m.is_pinned, 0), COALESCE(m.reactions, '{}'), m.expires_at, m.created_at
+		FROM messages m
+		JOIN users u ON m.sender_id = u.id
+		WHERE m.conversation_id = ? AND m.topic_id = ?
+		  AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)
+		ORDER BY m.created_at DESC
+		LIMIT ?
+	`
+	if s.driverName == "postgres" {
+		query = `
+			SELECT m.id, m.conversation_id, m.sender_id, u.username, m.ciphertext, m.nonce, m.ephemeral_public_key, m.idempotency_key, COALESCE(m.reply_to_id, ''), m.edited_at, COALESCE(m.is_deleted, false), COALESCE(m.is_pinned, false), COALESCE(m.reactions, '{}'), m.expires_at, m.created_at
+			FROM messages m
+			JOIN users u ON m.sender_id = u.id
+			WHERE m.conversation_id = $1 AND m.topic_id = $2
+			  AND (m.expires_at IS NULL OR m.expires_at > CURRENT_TIMESTAMP)
+			ORDER BY m.created_at DESC
+			LIMIT $3
+		`
+	}
+	rows, err := s.db.QueryContext(ctx, query, convID, topicID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []*models.Message
+	for rows.Next() {
+		var m models.Message
+		var epKey, idempKey sql.NullString
+		var editedAt, expAt sql.NullTime
+		if s.driverName == "postgres" {
+			var isDel, isPin bool
+			if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderUsername, &m.Ciphertext, &m.Nonce, &epKey, &idempKey, &m.ReplyToID, &editedAt, &isDel, &isPin, &m.Reactions, &expAt, &m.CreatedAt); err != nil {
+				return nil, err
+			}
+			m.IsDeleted = isDel
+			m.IsPinned = isPin
+		} else {
+			var isDelInt, isPinInt int
+			if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.SenderUsername, &m.Ciphertext, &m.Nonce, &epKey, &idempKey, &m.ReplyToID, &editedAt, &isDelInt, &isPinInt, &m.Reactions, &expAt, &m.CreatedAt); err != nil {
+				return nil, err
+			}
+			m.IsDeleted = (isDelInt != 0)
+			m.IsPinned = (isPinInt != 0)
+		}
+		if epKey.Valid {
+			m.EphemeralPublicKey = epKey.String
+		}
+		if idempKey.Valid {
+			m.IdempotencyKey = idempKey.String
+		}
+		if editedAt.Valid {
+			t := editedAt.Time
+			m.EditedAt = &t
+		}
+		if expAt.Valid {
+			t := expAt.Time
+			m.ExpiresAt = &t
+		}
+		m.TopicID = topicID
+		msgs = append(msgs, &m)
+	}
+	return msgs, rows.Err()
+}
+
+// ---------------------------------------------------------------------
+// Multiple Conversation Pins
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) AddConversationPin(ctx context.Context, pin *models.ConversationPin) error {
+	if pin.ID == "" {
+		pin.ID = "pin_" + uuid.New().String()
+	}
+	if pin.CreatedAt.IsZero() {
+		pin.CreatedAt = time.Now().UTC()
+	}
+	query := "INSERT INTO conversation_pins (id, conversation_id, message_id, pinned_by, created_at) VALUES (?, ?, ?, ?, ?)"
+	if s.driverName == "postgres" {
+		query = "INSERT INTO conversation_pins (id, conversation_id, message_id, pinned_by, created_at) VALUES ($1, $2, $3, $4, $5)"
+	}
+	if _, err := s.db.ExecContext(ctx, query, pin.ID, pin.ConversationID, pin.MessageID, pin.PinnedBy, pin.CreatedAt); err != nil {
+		return err
+	}
+
+	uQuery := "UPDATE conversations SET pinned_message_id = ? WHERE id = ?"
+	mQuery := "UPDATE messages SET is_pinned = 1 WHERE id = ?"
+	if s.driverName == "postgres" {
+		uQuery = "UPDATE conversations SET pinned_message_id = $1 WHERE id = $2"
+		mQuery = "UPDATE messages SET is_pinned = TRUE WHERE id = $1"
+	}
+	_, _ = s.db.ExecContext(ctx, uQuery, pin.MessageID, pin.ConversationID)
+	_, _ = s.db.ExecContext(ctx, mQuery, pin.MessageID)
+	return nil
+}
+
+func (s *SQLStore) RemoveConversationPin(ctx context.Context, convID, msgID string) error {
+	query := "DELETE FROM conversation_pins WHERE conversation_id = ? AND message_id = ?"
+	if s.driverName == "postgres" {
+		query = "DELETE FROM conversation_pins WHERE conversation_id = $1 AND message_id = $2"
+	}
+	if _, err := s.db.ExecContext(ctx, query, convID, msgID); err != nil {
+		return err
+	}
+
+	mQuery := "UPDATE messages SET is_pinned = 0 WHERE id = ?"
+	if s.driverName == "postgres" {
+		mQuery = "UPDATE messages SET is_pinned = FALSE WHERE id = $1"
+	}
+	_, _ = s.db.ExecContext(ctx, mQuery, msgID)
+	return nil
+}
+
+func (s *SQLStore) GetConversationPins(ctx context.Context, convID string) ([]*models.ConversationPin, error) {
+	query := "SELECT id, conversation_id, message_id, pinned_by, created_at FROM conversation_pins WHERE conversation_id = ? ORDER BY created_at DESC"
+	if s.driverName == "postgres" {
+		query = "SELECT id, conversation_id, message_id, pinned_by, created_at FROM conversation_pins WHERE conversation_id = $1 ORDER BY created_at DESC"
+	}
+	rows, err := s.db.QueryContext(ctx, query, convID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pins []*models.ConversationPin
+	for rows.Next() {
+		var p models.ConversationPin
+		if err := rows.Scan(&p.ID, &p.ConversationID, &p.MessageID, &p.PinnedBy, &p.CreatedAt); err != nil {
+			return nil, err
+		}
+		pins = append(pins, &p)
+	}
+	return pins, rows.Err()
+}
+
+// ---------------------------------------------------------------------
+// Media Shares & Public Streaming
+// ---------------------------------------------------------------------
+
+func (s *SQLStore) CreateMediaShare(ctx context.Context, share *models.MediaShare) error {
+	if share.ID == "" {
+		share.ID = "sh_" + uuid.New().String()
+	}
+	if share.CreatedAt.IsZero() {
+		share.CreatedAt = time.Now().UTC()
+	}
+	query := `INSERT INTO media_shares (
+		id, message_id, file_path, file_name, file_size, mime_type,
+		creator_id, creator_name, password_hash, expires_at,
+		max_downloads, download_count, views_count, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if s.driverName == "postgres" {
+		query = `INSERT INTO media_shares (
+			id, message_id, file_path, file_name, file_size, mime_type,
+			creator_id, creator_name, password_hash, expires_at,
+			max_downloads, download_count, views_count, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
+	}
+	var expVal interface{}
+	if share.ExpiresAt != nil && !share.ExpiresAt.IsZero() && share.ExpiresAt.Year() > 1970 {
+		expVal = share.ExpiresAt
+	}
+	_, err := s.db.ExecContext(ctx, query,
+		share.ID, share.MessageID, share.FilePath, share.FileName, share.FileSize, share.MimeType,
+		share.CreatorID, share.CreatorName, share.PasswordHash, expVal,
+		share.MaxDownloads, share.DownloadCount, share.ViewsCount, share.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLStore) GetMediaShareByID(ctx context.Context, id string) (*models.MediaShare, error) {
+	query := `SELECT id, message_id, file_path, file_name, file_size, mime_type,
+		creator_id, creator_name, password_hash, expires_at,
+		max_downloads, download_count, views_count, created_at
+		FROM media_shares WHERE id = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT id, message_id, file_path, file_name, file_size, mime_type,
+			creator_id, creator_name, password_hash, expires_at,
+			max_downloads, download_count, views_count, created_at
+			FROM media_shares WHERE id = $1`
+	}
+	row := s.db.QueryRowContext(ctx, query, id)
+	var share models.MediaShare
+	var expiresAt sql.NullTime
+	var msgID, creatorName, pwdHash sql.NullString
+	if err := row.Scan(
+		&share.ID, &msgID, &share.FilePath, &share.FileName, &share.FileSize, &share.MimeType,
+		&share.CreatorID, &creatorName, &pwdHash, &expiresAt,
+		&share.MaxDownloads, &share.DownloadCount, &share.ViewsCount, &share.CreatedAt,
+	); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	share.MessageID = msgID.String
+	share.CreatorName = creatorName.String
+	share.PasswordHash = pwdHash.String
+	share.HasPassword = share.PasswordHash != ""
+	if expiresAt.Valid && !expiresAt.Time.IsZero() && expiresAt.Time.Year() > 1970 {
+		share.ExpiresAt = &expiresAt.Time
+	}
+	return &share, nil
+}
+
+func (s *SQLStore) IncrementMediaShareViews(ctx context.Context, id string) error {
+	query := "UPDATE media_shares SET views_count = views_count + 1 WHERE id = ?"
+	if s.driverName == "postgres" {
+		query = "UPDATE media_shares SET views_count = views_count + 1 WHERE id = $1"
+	}
+	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (s *SQLStore) IncrementMediaShareDownloads(ctx context.Context, id string) error {
+	query := "UPDATE media_shares SET download_count = download_count + 1 WHERE id = ?"
+	if s.driverName == "postgres" {
+		query = "UPDATE media_shares SET download_count = download_count + 1 WHERE id = $1"
+	}
+	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+func (s *SQLStore) DeleteMediaShare(ctx context.Context, id string) error {
+	query := "DELETE FROM media_shares WHERE id = ?"
+	if s.driverName == "postgres" {
+		query = "DELETE FROM media_shares WHERE id = $1"
+	}
+	_, err := s.db.ExecContext(ctx, query, id)
+	return err
+}
+
+
+
+
 
