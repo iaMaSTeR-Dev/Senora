@@ -196,9 +196,6 @@ type Store interface {
 	GetServerSetting(ctx context.Context, key, defaultValue string) (string, error)
 	SetServerSetting(ctx context.Context, key, value string) error
 
-	// Admin Chat Spectating
-	CreateSpectateToken(ctx context.Context, token, conversationID, createdBy string, ttl time.Duration) (*models.SpectateToken, error)
-	GetSpectateToken(ctx context.Context, token string) (*models.SpectateToken, error)
 	GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error)
 	ListAllConversations(ctx context.Context, limit int) ([]*models.Conversation, error)
 

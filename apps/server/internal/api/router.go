@@ -333,8 +333,6 @@ func (r *Router) routes() {
 	r.mux.Handle("POST /api/v1/admin/users/{id}/unban", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminUnbanUser))))
 	r.mux.Handle("DELETE /api/v1/admin/users/{id}", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminDeleteUser))))
 	r.mux.Handle("GET /api/v1/admin/conversations", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminListConversations))))
-	r.mux.Handle("POST /api/v1/admin/conversations/spectate", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminCreateSpectateToken))))
-	r.mux.Handle("GET /api/v1/admin/conversations/{id}/spectate", apiRateMiddleware(http.HandlerFunc(r.handleAdminSpectateConversation)))
 	r.mux.Handle("POST /api/v1/admin/bot/action", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBotAction))))
 	r.mux.Handle("POST /api/v1/admin/broadcast", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminBroadcast))))
 	r.mux.Handle("PUT /api/v1/admin/settings", r.authMiddleware(apiRateMiddleware(http.HandlerFunc(r.handleAdminUpdateSettings))))
@@ -4462,20 +4460,6 @@ func (r *Router) handleAdminListConversations(w http.ResponseWriter, req *http.R
 		return
 	}
 	r.writeJSON(w, http.StatusOK, map[string]interface{}{"conversations": convs})
-}
-
-type adminCreateSpectateReq struct {
-	ConversationID string `json:"conversation_id"`
-	User1Username  string `json:"user1_username"`
-	User2Username  string `json:"user2_username"`
-}
-
-func (r *Router) handleAdminCreateSpectateToken(w http.ResponseWriter, req *http.Request) {
-	r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Chat inspection and spectator access is permanently disabled for user privacy")
-}
-
-func (r *Router) handleAdminSpectateConversation(w http.ResponseWriter, req *http.Request) {
-	r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Chat inspection and spectator access is permanently disabled for user privacy")
 }
 
 type adminBotActionReq struct {

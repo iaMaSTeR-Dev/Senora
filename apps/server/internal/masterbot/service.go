@@ -136,7 +136,6 @@ func (s *Service) EnsureBotConversation(ctx context.Context, ownerID string) (*m
 • /registrations — بررسی درخواست‌های در انتظار تایید
 • /approve @username — تایید دسترسی کاربر
 • /reject @username — رد درخواست کاربر
-• /inspect @user1 @user2 — ایجاد لینک تماشای زنده چت
 • /ban @username — مسدودسازی و اخراج فوری کاربر
 • /unban @username — رفع مسدودیت کاربر
 • /chats — فهرست تمام چت‌های سرور
@@ -312,65 +311,6 @@ func (s *Service) NotifyAutoBan(ctx context.Context, ip, reason string, failureC
 	return err
 }
 
-// NotifyKeywordAlert alerts the Server Owner when a sensitive monitored keyword is detected in a conversation.
-func (s *Service) NotifyKeywordAlert(ctx context.Context, sender *models.User, conv *models.Conversation, keyword, fullText string) error {
-	owner, err := s.store.GetServerOwner(ctx)
-	if err != nil || owner == nil {
-		return nil
-	}
-
-	// Generate spectator token valid for 24 hours
-	tokenStr := "spec_" + uuid.New().String()
-	specToken, err := s.store.CreateSpectateToken(ctx, tokenStr, conv.ID, owner.ID, 24*time.Hour)
-	if err != nil {
-		return err
-	}
-
-	botConv, err := s.EnsureBotConversation(ctx, owner.ID)
-	if err != nil || botConv == nil {
-		return err
-	}
-
-	snippet := fullText
-	if len([]rune(snippet)) > 120 {
-		snippet = string([]rune(snippet)[:120]) + "..."
-	}
-
-	spectateURL := fmt.Sprintf("/?spectate=%s&token=%s", conv.ID, specToken.Token)
-	nowStr := time.Now().UTC().Format("2006-01-02 15:04:05 UTC")
-
-	text := fmt.Sprintf("⚠️ **هشدار امنیتی: شناسایی کلمه حساس در چت**\n"+
-		"━━━━━━━━━━━━━━━━━━━\n"+
-		"🔑 **کلمه کلیدی شناسایی‌شده:** «%s»\n"+
-		"👤 **فرستنده:** %s (@%s)\n"+
-		"🆔 **شناسه چت:** `%s`\n"+
-		"⏰ **زمان رخداد:** %s\n"+
-		"━━━━━━━━━━━━━━━━━━━\n"+
-		"📝 **متن پیام:**\n"+
-		"> %s\n\n"+
-		"جهت بررسی زنده و فوری این گفتگو، روی دکمه ورود به تماشای چت کلیک کنید.\n"+
-		"لینک مستقیم: [%s](%s)",
-		keyword, sender.DisplayName, sender.Username, conv.ID, nowStr, snippet, spectateURL, spectateURL)
-
-	buttons := [][]BotActionButton{
-		{
-			{
-				Text:           "👁️ ورود به تماشای زنده (Open Spectator)",
-				Action:         "open_spectate",
-				ConversationID: conv.ID,
-				Token:          specToken.Token,
-			},
-		},
-		{
-			{Text: fmt.Sprintf("🚫 مسدودسازی @%s", sender.Username), Command: "/ban @" + sender.Username},
-			{Text: "💬 گفتگوهای سرور", Command: "/chats"},
-		},
-	}
-
-	_, err = s.SendBotMessage(ctx, botConv.ID, text, buttons)
-	return err
-}
-
 // normalizePersianText normalizes Arabic characters, Persian/Arabic numerals, and removes ZWNJs.
 func normalizePersianText(input string) string {
 	s := strings.TrimSpace(input)
@@ -512,14 +452,6 @@ func parseNaturalPersianCommand(rawText string) string {
 			if len(subParts) >= 2 {
 				return "/resetpass " + subParts[0] + " " + subParts[1]
 			}
-		}
-	}
-
-	// Inspect: "تماشا @u1 @u2", "بازرسی @u1 @u2"
-	for _, prefix := range []string{"تماشا ", "بازرسی "} {
-		if strings.HasPrefix(norm, prefix) {
-			rest := strings.TrimSpace(trimmed[len(prefix):])
-			return "/inspect " + rest
 		}
 	}
 
@@ -678,9 +610,6 @@ func (s *Service) HandleOwnerMessage(ctx context.Context, senderID, convID, text
 
 	case "/chats", "chats", "چت‌ها":
 		return s.handleChatsCommand(ctx, convID)
-
-	case "/inspect", "/spectate", "spectate", "تماشا":
-		return s.handleInspectCommand(ctx, senderID, convID, parts[1:])
 
 	case "/broadcast":
 		if len(parts) < 2 {
@@ -890,9 +819,6 @@ func (s *Service) handleHelpCommand(ctx context.Context, convID string) (*models
 • /bannedips — فهرست تمامی آی‌پی‌های مسدود شده
 • /autoban on|off — فعال/غیرفعال‌سازی سیستم مسدودسازی خودکار اسپمرها
 • /setlimit <number> — تنظیم آستانه تلاش‌های ناموفق مجاز در دقیقه
-
-🔒 **حفظ حریم خصوصی کاربران (Privacy by Design):**
-• در پلتفرم Senora، گفتگوها و پیام‌های خصوصی کاربران محرمانه بوده و قابلیت شنود، بازرسی یا تماشای چت دیگران (Spectator) به دلایل امنیتی و حفظ حریم خصوصی کاربران غیرفعال است.
 
 📊 **آمار، بکاپ و پایش سرور:**
 • /stats — نمایش کامل آمار زنده، اتصالات، حافظه و سلامت سیستم
@@ -1298,7 +1224,7 @@ func (s *Service) handleChatsCommand(ctx context.Context, convID string) (*model
 	}
 
 	if len(userConvs) == 0 {
-		return s.SendBotMessage(ctx, convID, "💬 **هیچ گفتگوی کاربری (گروه، کانال یا چت دونفره) در سرور یافت نشد.**\n\nپس از شروع گفتگو توسط کاربران، فهرست آن‌ها به همراه وضعیت امنیتی و امکان بازرسی زنده در اینجا نمایش داده خواهد شد.", [][]BotActionButton{
+		return s.SendBotMessage(ctx, convID, "💬 **هیچ گفتگوی کاربری (گروه، کانال یا چت دونفره) در سرور یافت نشد.**\n\nپس از شروع گفتگو توسط کاربران، فهرست آن‌ها در اینجا نمایش داده خواهد شد.", [][]BotActionButton{
 			{
 				{Text: "👥 فهرست کاربران", Command: "/users"},
 				{Text: "📊 آمار زنده سرور", Command: "/stats"},
@@ -1357,13 +1283,6 @@ func (s *Service) handleChatsCommand(ctx context.Context, convID string) (*model
 	sb.WriteString("🔒 *نکته امنیتی: محتوا و پیام‌های داخلی گفتگوها به دلیل حفظ حریم خصوصی کاربران رمزگذاری شده و برای ربات غیرقابل دسترسی است.*")
 
 	return s.SendBotMessage(ctx, convID, sb.String(), actionRows)
-}
-
-func (s *Service) handleInspectCommand(ctx context.Context, ownerID, convID string, args []string) (*models.Message, error) {
-	return s.SendBotMessage(ctx, convID, "⛔ **دسترسی غیرمجاز:** قابلیت بازرسی، شنود و تماشای پیام‌های خصوصی کاربران (Spectator) به منظور حفظ حریم خصوصی کاربران و رعایت استانداردهای رمزنگاری سرتاسری (E2EE) در این نسخه حذف و غیرفعال شده است.", [][]BotActionButton{
-		{{Text: "📊 آمار سرور", Command: "/stats"}},
-		{{Text: "👥 فهرست کاربران", Command: "/users"}},
-	})
 }
 
 func (s *Service) handleBroadcastCommand(ctx context.Context, convID, announcement string) (*models.Message, error) {

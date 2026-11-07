@@ -410,15 +410,6 @@ CREATE TABLE IF NOT EXISTS server_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS audit_spectate_tokens (
-    token VARCHAR(128) PRIMARY KEY,
-    conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    created_by VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_spectate_tokens_conv ON audit_spectate_tokens(conversation_id);
-
 CREATE TABLE IF NOT EXISTS banned_ips (
     ip VARCHAR(64) PRIMARY KEY,
     reason TEXT DEFAULT '',
@@ -777,15 +768,6 @@ CREATE TABLE IF NOT EXISTS server_settings (
     value TEXT NOT NULL,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
-
-CREATE TABLE IF NOT EXISTS audit_spectate_tokens (
-    token TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    created_by TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at DATETIME NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_spectate_tokens_conv ON audit_spectate_tokens(conversation_id);
 
 CREATE TABLE IF NOT EXISTS banned_ips (
     ip TEXT PRIMARY KEY,
@@ -4865,50 +4847,6 @@ func (s *SQLStore) GetStorageAnalytics(ctx context.Context) (*models.StorageAnal
 		Scan(&analytics.LocalCount, &analytics.LocalBytes)
 
 	return analytics, nil
-}
-
-// ---------------------------------------------------------------------
-// Admin Chat Spectating
-// ---------------------------------------------------------------------
-
-func (s *SQLStore) CreateSpectateToken(ctx context.Context, token, conversationID, createdBy string, ttl time.Duration) (*models.SpectateToken, error) {
-	now := time.Now().UTC()
-	expiresAt := now.Add(ttl)
-
-	query := `INSERT INTO audit_spectate_tokens (token, conversation_id, created_by, expires_at, created_at) VALUES (?, ?, ?, ?, ?)`
-	if s.driverName == "postgres" {
-		query = `INSERT INTO audit_spectate_tokens (token, conversation_id, created_by, expires_at, created_at) VALUES ($1, $2, $3, $4, $5)`
-	}
-	_, err := s.db.ExecContext(ctx, query, token, conversationID, createdBy, expiresAt, now)
-	if err != nil {
-		return nil, err
-	}
-
-	return &models.SpectateToken{
-		Token:          token,
-		ConversationID: conversationID,
-		CreatedBy:      createdBy,
-		ExpiresAt:      expiresAt,
-		CreatedAt:      now,
-	}, nil
-}
-
-func (s *SQLStore) GetSpectateToken(ctx context.Context, token string) (*models.SpectateToken, error) {
-	now := time.Now().UTC()
-	query := `SELECT token, conversation_id, created_by, expires_at, created_at FROM audit_spectate_tokens WHERE token = ? AND expires_at > ?`
-	if s.driverName == "postgres" {
-		query = `SELECT token, conversation_id, created_by, expires_at, created_at FROM audit_spectate_tokens WHERE token = $1 AND expires_at > $2`
-	}
-
-	var st models.SpectateToken
-	err := s.db.QueryRowContext(ctx, query, token, now).Scan(&st.Token, &st.ConversationID, &st.CreatedBy, &st.ExpiresAt, &st.CreatedAt)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
-		}
-		return nil, err
-	}
-	return &st, nil
 }
 
 func (s *SQLStore) GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error) {

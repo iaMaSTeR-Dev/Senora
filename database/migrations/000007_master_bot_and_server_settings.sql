@@ -1,5 +1,5 @@
 -- 000007_master_bot_and_server_settings.sql
--- Master Bot, Server Settings, Registration Approval & Chat Spectate Tokens
+-- Master Bot, Server Settings & Registration Approval
 
 -- Add user status columns if they do not exist
 ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN DEFAULT TRUE;
@@ -13,13 +13,3 @@ CREATE TABLE IF NOT EXISTS server_settings (
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
--- Audit spectate tokens for secure admin chat spectating
-CREATE TABLE IF NOT EXISTS audit_spectate_tokens (
-    token VARCHAR(128) PRIMARY KEY,
-    conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-    created_by VARCHAR(64) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE INDEX IF NOT EXISTS idx_spectate_tokens_conv ON audit_spectate_tokens(conversation_id);

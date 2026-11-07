@@ -380,14 +380,6 @@ type ServerSetting struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-type SpectateToken struct {
-	Token          string    `json:"token"`
-	ConversationID string    `json:"conversation_id"`
-	CreatedBy      string    `json:"created_by"`
-	ExpiresAt      time.Time `json:"expires_at"`
-	CreatedAt      time.Time `json:"created_at"`
-}
-
 type ServerStats struct {
 	TotalUsers         int       `json:"total_users"`
 	PendingUsers       int       `json:"pending_users"`
