@@ -1,13 +1,13 @@
-.PHONY: all test test-backend test-frontend build-backend build-frontend run-backend run-frontend clean
+.PHONY: all check check-backend check-frontend build-backend build-frontend run-backend run-frontend
 
-all: build-backend build-frontend
+all: check build-backend build-frontend
 
-test: test-backend test-frontend
+check: check-backend check-frontend
 
-test-backend:
+check-backend:
 	cd apps/server && go vet ./...
 
-test-frontend:
+check-frontend:
 	cd apps/web && npx tsc --noEmit
 
 build-backend:

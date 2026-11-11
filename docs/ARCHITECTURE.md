@@ -1,8 +1,8 @@
-# ARCHITECTURE BLUEPRINT — Senora
+# Architecture — SENORA
 
 ## 1. System Overview
 
-Senora is designed as a secure, high-throughput, self-hosted messaging platform with a modular monolith backend and a modern single-page client application.
+SENORA is designed as a secure, high-throughput, self-hosted messaging platform with a modular monolith backend and a modern single-page client application.
 
 ```text
 +---------------------------------------------------------------------------------+
@@ -10,8 +10,8 @@ Senora is designed as a secure, high-throughput, self-hosted messaging platform 
 |  +---------------------------------------------------------------------------+  |
 |  |                         React 19 + TypeScript SPA                         |  |
 |  |  +---------------------+  +--------------------+  +--------------------+  |  |
-|  |  |  Presentation Layer |  |   Zustand Store    |  |  TanStack Query    |  |  |
-|  |  |  (Telegram UX)      |  |   (Session/UI)     |  |  (Server State)    |  |  |
+|  |  |  Presentation Layer |  |   React State &    |  |  IndexedDB Store   |  |  |
+|  |  |  (Components & UI)  |  |   Custom Hooks     |  |  (Keys & Offline)  |  |  |
 |  |  +----------+----------+  +---------+----------+  +---------+----------+  |  |
 |  |             |                       |                       |             |  |
 |  |  +----------v-----------------------v-----------------------v----------+  |  |
@@ -74,7 +74,7 @@ Senora is designed as a secure, high-throughput, self-hosted messaging platform 
 
 2. **Identity & Devices (`internal/identity`)**:
    - Handles user profiles, usernames, and display names.
-   - Tracks client devices (device ID, User-Agent, push token if any, status).
+   - Tracks client devices (device ID, user agent, push token if any, status).
    - Manages device revocation.
 
 3. **Conversations (`internal/conversations`)**:
@@ -118,13 +118,12 @@ To ensure message reliability without distributed locks:
 ## 4. Frontend Architecture
 
 - **State Management**:
-  - `TanStack Query`: Server state (conversations list, user directory, messages cache).
-  - `Zustand`: Client UI state (active conversation, theme, drafts, active device identity).
+  - React component state and custom hooks coordinate active conversations, messages, presence, voice/video calls, themes, and drafts, backed by browser persistence (`localStorage` and IndexedDB).
 - **Presentation**:
-  - Telegram-inspired component hierarchy:
-    - `Sidebar`: Filter search, tabbed folders (All, Direct, Groups), active chat indicator, unread badges.
-    - `ChatView`: Chat header (status, online/offline, encryption lock), virtualized message list, typing indicators.
-    - `Composer`: Textarea with auto-resize, emoji picker trigger, attachment button, send action with optimistic UI update.
+  - Component hierarchy built around the chat workspace:
+    - `Sidebar`: Search, tabbed folders (All, Direct, Groups, Channels, Saved, Archived), unread indicators, and navigation drawer.
+    - `ChatView`: Conversation header (status, encryption lock), message timeline, inline composer, media previews, polls, and synchronized watch party player.
+    - `SettingsModal` & Feature Modals: Privacy, E2EE keys, devices, stickers, calling, and mini-games.
 - **Crypto Engine**:
-  - Decoupled `CryptoEngine` interface with Web Crypto implementation (`SubtleCrypto`).
-  - IndexedDB for local private key storage (never exported or transmitted).
+  - Decoupled `CryptoEngine` interface with Web Crypto (`SubtleCrypto`) and Signal Protocol session manager.
+  - IndexedDB for local private key and ratchet state storage (never exported or transmitted without explicit encrypted backup).

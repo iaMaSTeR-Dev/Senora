@@ -14,7 +14,9 @@
     "@fontsource/vazirmatn": "^5.3.0",
     "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
     "clsx": "^2.1.1",
+    "hls.js": "^1.7.4",
     "lucide-react": "^0.468.0",
+    "mpegts.js": "^1.8.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "tailwind-merge": "^2.5.5"
@@ -27,7 +29,7 @@
     "postcss": "^8.4.49",
     "tailwindcss": "^3.4.16",
     "typescript": "^5.7.2",
-    "vite": "^6.0.3",
+    "vite": "^6.4.5",
     "vitest": "^5.0.3"
   },
   "overrides": {

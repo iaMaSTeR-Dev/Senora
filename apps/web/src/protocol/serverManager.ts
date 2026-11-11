@@ -1,5 +1,5 @@
 // serverManager.ts
-// Multi-Server Architecture, Strict Endpoint Validation & Discovery for Senora
+// Multi-Server Architecture, Strict Endpoint Validation & Discovery for SENORA
 
 export interface ServerCapabilities {
   auth_methods: string[];
@@ -155,7 +155,7 @@ class ServerManager {
     const val = validateServerUrl(defaultOrigin);
     const def: SavedServer = {
       id: 'default',
-      name: 'Senora Official',
+      name: 'SENORA Official',
       url: val.normalizedUrl || defaultOrigin,
       wsUrl: val.normalizedWsUrl || `${defaultOrigin.replace('http', 'ws')}/api/v1/ws`,
       isDefault: true,
@@ -174,7 +174,13 @@ class ServerManager {
     try {
       const raw = localStorage.getItem(STORAGE_SERVERS_KEY);
       if (!raw) return [];
-      return JSON.parse(raw) as SavedServer[];
+      const servers = JSON.parse(raw) as SavedServer[];
+      for (const server of servers) {
+        if (server.isDefault && server.name === 'Senora Official') {
+          server.name = 'SENORA Official';
+        }
+      }
+      return servers;
     } catch {
       return [];
     }
@@ -187,7 +193,7 @@ class ServerManager {
     return (
       this.activeServer || {
         id: 'default',
-        name: 'Senora Official',
+        name: 'SENORA Official',
         url: this.getDefaultOrigin(),
         wsUrl: `${this.getDefaultOrigin().replace('http', 'ws')}/api/v1/ws`,
       }
@@ -234,7 +240,7 @@ class ServerManager {
           latencyMs,
           discovery: {
             server_id: 'legacy',
-            name: 'Senora Server',
+            name: 'SENORA Server',
             version: '1.0.0',
             api_version: 'v1',
             protocol_version: '1.0.0',

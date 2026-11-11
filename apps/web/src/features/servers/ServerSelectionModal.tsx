@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import {
   Server,
@@ -31,6 +32,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
   onClose,
   onServerSwitched,
 }) => {
+  const uiLang = useUILanguage();
   const [servers, setServers] = useState<SavedServer[]>([]);
   const [activeServer, setActiveServer] = useState<SavedServer>(serverManager.getActiveServer());
   const [selectedDetailsServer, setSelectedDetailsServer] = useState<SavedServer | null>(null);
@@ -117,7 +119,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
   const handleDeleteServer = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (servers.length <= 1) {
-      alert('Cannot delete the last configured server.');
+      alert(uiText("Cannot delete the last configured server.", uiLang));
       return;
     }
     if (
@@ -158,18 +160,14 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
               <Server className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white tracking-wide">
-                Senora Server Network
-              </h2>
-              <p className="text-xs text-gray-400">
-                Choose or add independently hosted Senora servers
-              </p>
+              <h2 className="text-lg font-bold text-white tracking-wide">{uiText("SENORA Server Network", uiLang)}</h2>
+              <p className="text-xs text-gray-400">{uiText("Choose or add independently hosted SENORA servers", uiLang)}</p>
             </div>
           </div>
           <button
             onClick={onClose}
             className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700/50 transition"
-            title="Close"
+            title={uiText("Close", uiLang)}
           >
             <X className="w-5 h-5" />
           </button>
@@ -185,9 +183,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                 <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
               </span>
               <div>
-                <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">
-                  Active Connected Server
-                </span>
+                <span className="text-xs font-semibold text-blue-400 uppercase tracking-wider">{uiText("Active Connected Server", uiLang)}</span>
                 <h3 className="text-base font-bold text-white">{activeServer.name}</h3>
                 <p className="text-xs font-mono text-gray-400">{activeServer.url}</p>
               </div>
@@ -195,7 +191,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
             <div className="text-right">
               <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 <Wifi className="w-3 h-3 mr-1" />
-                {activeServer.latencyMs ? `${activeServer.latencyMs} ms` : 'Connected'}
+                {activeServer.latencyMs ? `${activeServer.latencyMs} ms` : uiText("Connected", uiLang)}
               </span>
             </div>
           </div>
@@ -203,8 +199,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
           {/* Saved Servers List */}
           <div>
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">
-                Saved Servers ({servers.length})
+              <h4 className="text-xs font-semibold text-gray-400 uppercase tracking-wider">{uiText("Saved Servers (", uiLang)}{servers.length})
               </h4>
               <button
                 onClick={() => {
@@ -215,7 +210,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                 className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition shadow-sm"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>Add Server</span>
+                <span>{uiText("Add Server", uiLang)}</span>
               </button>
             </div>
 
@@ -280,14 +275,10 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                               {s.name}
                             </span>
                             {s.isDefault && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">
-                                Default
-                              </span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-gray-700 text-gray-300">{uiText("Default", uiLang)}</span>
                             )}
                             {isActive && (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400 border border-blue-500/30">
-                                Active
-                              </span>
+                              <span className="px-1.5 py-0.5 rounded text-[10px] bg-blue-500/20 text-blue-400 border border-blue-500/30">{uiText("Active", uiLang)}</span>
                             )}
                           </div>
                         )}
@@ -305,7 +296,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                           );
                         }}
                         className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700/50 transition"
-                        title="Server details"
+                        title={uiText("Server details", uiLang)}
                       >
                         <Info className="w-4 h-4" />
                       </button>
@@ -313,7 +304,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                       <button
                         onClick={(e) => startRename(s, e)}
                         className="p-1.5 rounded-lg text-gray-400 hover:text-white hover:bg-gray-700/50 transition"
-                        title="Rename"
+                        title={uiText("Rename", uiLang)}
                       >
                         <Edit2 className="w-4 h-4" />
                       </button>
@@ -322,7 +313,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                         <button
                           onClick={(e) => handleDeleteServer(s.id, e)}
                           className="p-1.5 rounded-lg text-gray-400 hover:text-red-400 hover:bg-red-500/10 transition"
-                          title="Remove server"
+                          title={uiText("Remove server", uiLang)}
                         >
                           <Trash2 className="w-4 h-4" />
                         </button>
@@ -341,33 +332,28 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                 <div className="flex items-center space-x-2">
                   <Info className="w-4 h-4 text-blue-400" />
                   <h4 className="text-sm font-bold text-white">
-                    {selectedDetailsServer.name} Specifications
-                  </h4>
+                    {selectedDetailsServer.name}{uiText("Specifications", uiLang)}</h4>
                 </div>
                 <button
                   onClick={() => setSelectedDetailsServer(null)}
                   className="text-xs text-gray-400 hover:text-white"
-                >
-                  Close
-                </button>
+                >{uiText("Close", uiLang)}</button>
               </div>
 
               <div className="grid grid-cols-2 gap-2 text-xs">
                 <div className="p-2.5 rounded-lg bg-gray-900/60 border border-gray-800">
-                  <span className="text-gray-400 block mb-0.5">REST API Origin</span>
+                  <span className="text-gray-400 block mb-0.5">{uiText("REST API Origin", uiLang)}</span>
                   <span className="text-white font-mono break-all">{selectedDetailsServer.url}</span>
                 </div>
                 <div className="p-2.5 rounded-lg bg-gray-900/60 border border-gray-800">
-                  <span className="text-gray-400 block mb-0.5">WebSocket Gateway</span>
+                  <span className="text-gray-400 block mb-0.5">{uiText("WebSocket Gateway", uiLang)}</span>
                   <span className="text-white font-mono break-all">{selectedDetailsServer.wsUrl}</span>
                 </div>
               </div>
 
               {selectedDetailsServer.capabilities && (
                 <div>
-                  <span className="text-xs font-medium text-gray-400 block mb-1.5">
-                    Verified Capabilities
-                  </span>
+                  <span className="text-xs font-medium text-gray-400 block mb-1.5">{uiText("Verified Capabilities", uiLang)}</span>
                   <div className="flex flex-wrap gap-1.5">
                     {selectedDetailsServer.capabilities.encryption_modes?.map((m) => (
                       <span
@@ -389,8 +375,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                     ))}
                     {selectedDetailsServer.capabilities.max_upload_bytes && (
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
-                        <HardDrive className="w-3 h-3 mr-1" />
-                        Max {Math.round(selectedDetailsServer.capabilities.max_upload_bytes / (1024 * 1024))}MB
+                        <HardDrive className="w-3 h-3 mr-1" />{uiText("Max", uiLang)}{Math.round(selectedDetailsServer.capabilities.max_upload_bytes / (1024 * 1024))}MB
                       </span>
                     )}
                   </div>
@@ -405,39 +390,33 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-bold text-white flex items-center space-x-2">
                   <Server className="w-4 h-4 text-blue-400" />
-                  <span>Connect to Self-Hosted Senora Server</span>
+                  <span>{uiText("Connect to Self-Hosted SENORA Server", uiLang)}</span>
                 </h4>
                 <button
                   onClick={() => setShowAddForm(false)}
                   className="text-xs text-gray-400 hover:text-white"
-                >
-                  Cancel
-                </button>
+                >{uiText("Cancel", uiLang)}</button>
               </div>
 
               <div className="space-y-3">
                 <div>
-                  <label className="block text-xs font-medium text-gray-300 mb-1">
-                    Server Address (HTTPS required for remote)
-                  </label>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">{uiText("Server Address (HTTPS required for remote)", uiLang)}</label>
                   <input
                     type="url"
                     value={newUrl}
                     onChange={(e) => setNewUrl(e.target.value)}
-                    placeholder="https://chat.mycompany.com or http://localhost:8080"
+                    placeholder={uiText("https://chat.mycompany.com or http://localhost:8080", uiLang)}
                     className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 font-mono"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-medium text-gray-300 mb-1">
-                    Display Name (Optional)
-                  </label>
+                  <label className="block text-xs font-medium text-gray-300 mb-1">{uiText("Display Name (Optional)", uiLang)}</label>
                   <input
                     type="text"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
-                    placeholder="e.g. My Private Node"
+                    placeholder={uiText("e.g. My Private Node", uiLang)}
                     className="w-full px-3 py-2 text-sm bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
                   />
                 </div>
@@ -454,14 +433,12 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                     <div className="flex items-center justify-between font-semibold">
                       <span className="flex items-center space-x-1">
                         <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                        <span>Connected successfully ({testResult.latencyMs} ms)</span>
+                        <span>{uiText("Connected successfully (", uiLang)}{testResult.latencyMs}{uiText(" ms)", uiLang)}</span>
                       </span>
                       <span>v{testResult.discovery?.version || '1.0'}</span>
                     </div>
                     {testResult.discovery?.capabilities && (
-                      <div className="text-[11px] text-gray-400">
-                        Capabilities verified: E2EE Signal, WebRTC Calling, Channels, Outbox Replay
-                      </div>
+                      <div className="text-[11px] text-gray-400">{uiText("Capabilities verified: E2EE Signal, WebRTC Calling, Channels, Outbox Replay", uiLang)}</div>
                     )}
                   </div>
                 )}
@@ -475,12 +452,12 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                     {isTesting ? (
                       <>
                         <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                        <span>Testing...</span>
+                        <span>{uiText("Testing...", uiLang)}</span>
                       </>
                     ) : (
                       <>
                         <Wifi className="w-3.5 h-3.5" />
-                        <span>Test Connection</span>
+                        <span>{uiText("Test Connection", uiLang)}</span>
                       </>
                     )}
                   </button>
@@ -489,9 +466,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
                     onClick={handleSaveAndAdd}
                     disabled={!newUrl.trim() || isTesting}
                     className="px-4 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition disabled:opacity-50"
-                  >
-                    Save Server
-                  </button>
+                  >{uiText("Save Server", uiLang)}</button>
                 </div>
               </div>
             </div>
@@ -505,7 +480,7 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
             >
               <div className="flex items-center space-x-2">
                 <Info className="w-4 h-4 text-blue-400" />
-                <span>How to host your own Senora messaging server</span>
+                <span>{uiText("How to host your own SENORA messaging server", uiLang)}</span>
               </div>
               {showInstructions ? (
                 <ChevronDown className="w-4 h-4" />
@@ -516,20 +491,14 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
 
             {showInstructions && (
               <div className="p-4 border-t border-gray-800 text-xs text-gray-400 space-y-2 bg-gray-900/40">
-                <p>
-                  Senora is 100% self-hosted with complete data ownership. To deploy an independent
-                  server node:
-                </p>
+                <p>{uiText("SENORA is 100% self-hosted with complete data ownership. To deploy an independent server node:", uiLang)}</p>
                 <ol className="list-decimal list-inside space-y-1 pl-1">
-                  <li>Deploy the backend using Docker Compose in <code className="text-gray-200">deployments/compose/docker-compose.yml</code>.</li>
-                  <li>Configure your domain name and automatic TLS with Caddy or Nginx.</li>
-                  <li>Ensure ports 80 and 443 are open for HTTP and WebSocket connections.</li>
-                  <li>Enter your server URL above and click <strong>Test Connection</strong>.</li>
+                  <li>{uiText("Deploy the backend using Docker Compose in ", uiLang)}<code className="text-gray-200">deployments/compose/docker-compose.yml</code>.</li>
+                  <li>{uiText("Configure your domain name and automatic TLS with Caddy or Nginx.", uiLang)}</li>
+                  <li>{uiText("Ensure ports 80 and 443 are open for HTTP and WebSocket connections.", uiLang)}</li>
+                  <li>{uiText("Enter your server URL above and click ", uiLang)}<strong>{uiText("Test Connection", uiLang)}</strong>.</li>
                 </ol>
-                <p className="text-[11px] text-gray-500 pt-1">
-                  All account credentials, encryption keys, and message caches remain strictly
-                  isolated to each server.
-                </p>
+                <p className="text-[11px] text-gray-500 pt-1">{uiText("All account credentials, encryption keys, and message caches remain strictly isolated to each server.", uiLang)}</p>
               </div>
             )}
           </div>
@@ -537,13 +506,11 @@ export const ServerSelectionModal: React.FC<ServerSelectionModalProps> = ({
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-gray-700/50 bg-[#161b22] flex items-center justify-between text-xs text-gray-400">
-          <span>Client: Senora Multi-Platform v1.0.0</span>
+          <span>{uiText("Client: SENORA Multi-Platform v1.0.0", uiLang)}</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-lg bg-gray-800 hover:bg-gray-700 text-white font-medium transition"
-          >
-            Done
-          </button>
+          >{uiText("Done", uiLang)}</button>
         </div>
       </div>
     </div>

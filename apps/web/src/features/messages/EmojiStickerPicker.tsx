@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useMemo } from 'react';
 import { api } from '../../protocol/api';
 import { GIFItem, Sticker, StickerPack } from '../../app/types';
@@ -62,6 +63,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
   onClose,
   isRtl,
 }) => {
+  const uiLang = useUILanguage();
   const [activeTab, setActiveTab] = useState<'emoji' | 'stickers' | 'gifs'>('emoji');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSkinTone, setSelectedSkinTone] = useState('');
@@ -135,13 +137,13 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
         setCopiedPackId(pack.id);
         setTimeout(() => setCopiedPackId(null), 2500);
       } else {
-        prompt('لینک اشتراک‌گذاری پک استیکر:', link);
+        prompt(uiText("لینک اشتراک‌گذاری پک استیکر:", uiLang), link);
       }
     } catch (err: any) {
       console.error('Error preparing pack for share:', err);
       const code = pack.share_code || pack.id;
       const link = `${window.location.origin}/?pack=${encodeURIComponent(code)}`;
-      prompt('لینک اشتراک‌گذاری پک استیکر:', link);
+      prompt(uiText("لینک اشتراک‌گذاری پک استیکر:", uiLang), link);
     } finally {
       setSharingPackId(null);
     }
@@ -444,7 +446,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             }`}
           >
             <Smile size={14} />
-            <span>Emojis</span>
+            <span>{uiText("Emojis", uiLang)}</span>
           </button>
           <button
             onClick={() => setActiveTab('stickers')}
@@ -455,7 +457,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             }`}
           >
             <StickerIcon size={14} />
-            <span>Stickers</span>
+            <span>{uiText("Stickers", uiLang)}</span>
           </button>
           <button
             onClick={() => setActiveTab('gifs')}
@@ -466,7 +468,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             }`}
           >
             <Film size={14} />
-            <span>GIFs</span>
+            <span>{uiText("GIFs", uiLang)}</span>
           </button>
         </div>
 
@@ -487,7 +489,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
               <Search className="absolute left-2.5 top-2.5 text-[#7f91a4]" size={13} />
               <input
                 type="text"
-                placeholder="Search emoji..."
+                placeholder={uiText("Search emoji...", uiLang)}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-8 pr-3 py-1 text-xs bg-[#101921] border border-[#242f3d] rounded-xl text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
@@ -496,7 +498,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
 
             {/* Skin tone pills */}
             <div className="flex items-center gap-1 pt-0.5 overflow-x-auto no-scrollbar">
-              <span className="text-[10px] text-[#7f91a4] font-medium mr-1">Tone:</span>
+              <span className="text-[10px] text-[#7f91a4] font-medium mr-1">{uiText("Tone:", uiLang)}</span>
               {SKIN_TONES.map((tone) => (
                 <button
                   key={tone.id}
@@ -517,9 +519,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
           <div className="flex-1 overflow-y-auto p-3 space-y-3">
             {recentEmojis.length > 0 && !searchQuery && (
               <div>
-                <span className="text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider block mb-1">
-                  Recently Used
-                </span>
+                <span className="text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider block mb-1">{uiText("Recently Used", uiLang)}</span>
                 <div className="grid grid-cols-8 gap-1">
                   {recentEmojis.map((emoji, idx) => (
                     <button
@@ -537,7 +537,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             {filteredCategories.map((category) => (
               <div key={category.id}>
                 <span className="text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider block mb-1">
-                  {category.name}
+                  {uiText(category.name, uiLang)}
                 </span>
                 <div className="grid grid-cols-8 gap-1">
                   {category.emojis.map((emoji, idx) => (
@@ -557,7 +557,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
       )}
 
       {/* STICKERS TAB */}
-      {activeTab === 'stickers' && (
+      {activeTab === uiText("stickers", uiLang) && (
         <div className="flex flex-col flex-1 overflow-hidden">
           {/* Pack Selection Bar */}
           <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#242f3d] bg-[#101921]/50">
@@ -581,24 +581,22 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
               <button
                 onClick={() => setShowStickerStudio(true)}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-xl bg-gradient-to-r from-[#24A1DE] to-[#1d82b3] hover:from-[#208fc4] hover:to-[#176a92] text-white text-[11px] font-bold shadow-md shadow-[#24A1DE]/20 transition cursor-pointer"
-                title="Create custom sticker from image"
+                title={uiText("Create custom sticker from image", uiLang)}
               >
                 <Sparkles size={12} />
-                <span>Create Sticker</span>
+                <span>{uiText("Create Sticker", uiLang)}</span>
               </button>
               <button
                 onClick={() => setShowCreatorModal(true)}
                 className="p-1 rounded-lg bg-[#24A1DE]/15 hover:bg-[#24A1DE]/25 text-[#24A1DE] transition cursor-pointer"
-                title="Create / Share Custom Sticker Pack"
+                title={uiText("Create / Share Custom Sticker Pack", uiLang)}
               >
                 <Plus size={14} />
               </button>
               <button
                 onClick={openCatalog}
                 className="text-[11px] font-bold text-[#24A1DE] hover:underline px-1 cursor-pointer"
-              >
-                Catalog
-              </button>
+              >{uiText("Catalog", uiLang)}</button>
             </div>
           </div>
 
@@ -607,9 +605,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             {/* Recently Used Stickers */}
             {recentStickers.length > 0 && (
               <div>
-                <span className="text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider block mb-1">
-                  Recently Used
-                </span>
+                <span className="text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider block mb-1">{uiText("Recently Used", uiLang)}</span>
                 <div className="grid grid-cols-4 gap-2">
                   {recentStickers.slice(0, 8).map((stk) => (
                     <div key={stk.id} className="relative group/recent flex flex-col items-center justify-center">
@@ -630,7 +626,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                         ) : (
                           <img
                             src={stk.asset_url}
-                            alt={stk.emoji || 'Sticker'}
+                            alt={stk.emoji || uiText("Sticker", uiLang)}
                             className="w-14 h-14 object-contain pointer-events-none drop-shadow-md"
                             loading="lazy"
                           />
@@ -642,7 +638,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                           handleRemoveRecentSticker(stk.id);
                         }}
                         className="absolute top-1 right-1 p-1 rounded-full bg-black/70 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover/recent:opacity-100 transition cursor-pointer z-10 shadow"
-                        title="Remove from recents"
+                        title={uiText("Remove from recents", uiLang)}
                       >
                         <X size={10} />
                       </button>
@@ -653,9 +649,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             )}
 
             {loadingStickers ? (
-              <div className="flex items-center justify-center py-12 text-[#7f91a4] text-xs">
-                Loading stickers...
-              </div>
+              <div className="flex items-center justify-center py-12 text-[#7f91a4] text-xs">{uiText("Loading stickers...", uiLang)}</div>
             ) : activePack && activePack.stickers && activePack.stickers.length > 0 ? (
               <div>
                 <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#242f3d]/60">
@@ -672,7 +666,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                       onClick={() => handleSharePack(activePack)}
                       disabled={sharingPackId === activePack.id}
                       className="flex items-center gap-1 px-2.5 py-0.5 text-[11px] text-[#24A1DE] hover:text-[#52bcf5] hover:bg-[#24A1DE]/10 disabled:opacity-50 rounded-lg border border-[#24A1DE]/30 transition cursor-pointer"
-                      title="اشتراک‌گذاری پک استیکر (کپی لینک) / Share Sticker Pack"
+                      title={uiText("اشتراک‌گذاری پک استیکر (کپی لینک) / Share Sticker Pack", uiLang)}
                     >
                       {sharingPackId === activePack.id ? (
                         <span className="text-[10px]">⏳</span>
@@ -683,19 +677,19 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                       )}
                       <span>
                         {sharingPackId === activePack.id
-                          ? 'در حال اشتراک...'
+                          ? uiText("در حال اشتراک...", uiLang)
                           : copiedPackId === activePack.id
-                          ? 'کپی شد!'
-                          : 'اشتراک‌گذاری'}
+                          ? uiText("کپی شد!", uiLang)
+                          : uiText("اشتراک‌گذاری", uiLang)}
                       </span>
                     </button>
                     <button
                       onClick={() => handleUninstallPack(activePack.id)}
                       className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg border border-red-500/30 transition cursor-pointer"
-                      title={activePack.is_builtin ? "حذف از لیست منو" : "حذف کامل این پک استیکر"}
+                      title={activePack.is_builtin ? uiText("حذف از لیست منو", uiLang) : uiText("حذف کامل این پک استیکر", uiLang)}
                     >
                       <Trash2 size={11} />
-                      <span>{activePack.is_builtin ? 'حذف از منو' : 'حذف کامل پک'}</span>
+                      <span>{activePack.is_builtin ? uiText("حذف از منو", uiLang) : uiText("حذف کامل پک", uiLang)}</span>
                     </button>
                   </div>
                 </div>
@@ -736,7 +730,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                             handleDeleteCustomSticker(activePack.id, stk.id);
                           }}
                           className="absolute top-1 right-1 p-1 rounded-full bg-black/70 hover:bg-red-500 text-white/70 hover:text-white opacity-0 group-hover/stk:opacity-100 transition cursor-pointer z-10 shadow"
-                          title="Delete sticker"
+                          title={uiText("Delete sticker", uiLang)}
                         >
                           <Trash2 size={10} />
                         </button>
@@ -748,21 +742,19 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             ) : (
               <div className="flex flex-col items-center justify-center py-10 space-y-3 text-center">
                 <StickerIcon className="text-[#7f91a4]" size={36} />
-                <p className="text-xs text-[#7f91a4]">No sticker packs installed</p>
+                <p className="text-xs text-[#7f91a4]">{uiText("No sticker packs installed", uiLang)}</p>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => setShowStickerStudio(true)}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-[#24A1DE] hover:bg-[#208fc4] text-white rounded-xl text-xs font-semibold shadow cursor-pointer"
                   >
                     <Sparkles size={13} />
-                    <span>Create Sticker</span>
+                    <span>{uiText("Create Sticker", uiLang)}</span>
                   </button>
                   <button
                     onClick={openCatalog}
                     className="px-3 py-1.5 bg-[#242f3d] hover:bg-[#2f3d4f] text-white rounded-xl text-xs font-semibold shadow cursor-pointer"
-                  >
-                    Sticker Catalog
-                  </button>
+                  >{uiText("Sticker Catalog", uiLang)}</button>
                 </div>
               </div>
             )}
@@ -770,7 +762,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
         </div>
       )}
 
-      {/* GIFS TAB (Track F) */}
+      {/* GIFS TAB */}
       {activeTab === 'gifs' && (
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className="p-2 border-b border-[#242f3d] flex items-center gap-2">
@@ -778,7 +770,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
               <Search className="absolute left-2.5 top-2.5 text-[#7f91a4]" size={13} />
               <input
                 type="text"
-                placeholder="Search GIFs (e.g. clap, excited, dancing)..."
+                placeholder={uiText("Search GIFs (e.g. clap, excited, dancing)...", uiLang)}
                 value={gifQuery}
                 onChange={(e) => setGifQuery(e.target.value)}
                 className="w-full pl-8 pr-3 py-1 text-xs bg-[#101921] border border-[#242f3d] rounded-xl text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
@@ -786,7 +778,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             </div>
             <label
               className="p-1.5 rounded-xl bg-[#242f3d] hover:bg-[#208fc4] hover:text-white text-[#7f91a4] transition cursor-pointer flex-shrink-0"
-              title="Upload animated WebM, WebP, or GIF"
+              title={uiText("Upload animated WebM, WebP, or GIF", uiLang)}
             >
               <Upload size={14} />
               <input
@@ -817,9 +809,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
 
           <div className="flex-1 overflow-y-auto p-2">
             {loadingGIFs ? (
-              <div className="flex items-center justify-center py-12 text-[#7f91a4] text-xs">
-                Searching GIFs...
-              </div>
+              <div className="flex items-center justify-center py-12 text-[#7f91a4] text-xs">{uiText("Searching GIFs...", uiLang)}</div>
             ) : gifs.length > 0 ? (
               <div className="grid grid-cols-2 gap-2">
                 {gifs.map((gif) => (
@@ -861,8 +851,8 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             ) : (
               <div className="flex flex-col items-center justify-center py-12 text-[#7f91a4] text-center">
                 <Film size={32} className="opacity-40 mb-2" />
-                <p className="text-xs">No animated GIFs found for "{gifQuery}"</p>
-                <p className="text-[10px] text-[#7f91a4]/70 mt-1">Try another search term or click the upload icon above</p>
+                <p className="text-xs">{uiText("No animated GIFs found for \"", uiLang)}{gifQuery}"</p>
+                <p className="text-[10px] text-[#7f91a4]/70 mt-1">{uiText("Try another search term or click the upload icon above", uiLang)}</p>
               </div>
             )}
           </div>
@@ -876,7 +866,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
             <div className="flex items-center justify-between p-4 border-b border-[#242f3d]">
               <h3 className="text-sm font-bold text-white flex items-center gap-2">
                 <StickerIcon className="text-[#24A1DE]" size={16} />
-                <span>Sticker Pack Catalog</span>
+                <span>{uiText("Sticker Pack Catalog", uiLang)}</span>
               </h3>
               <button
                 onClick={() => setShowCatalogModal(false)}
@@ -902,9 +892,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                       />
                       <div>
                         <h4 className="text-xs font-bold text-white">{pack.title}</h4>
-                        <p className="text-[11px] text-[#7f91a4]">
-                          by @{pack.author} • {pack.sticker_count} stickers
-                        </p>
+                        <p className="text-[11px] text-[#7f91a4]">{uiText("by @", uiLang)}{pack.author} • {pack.sticker_count}{uiText("stickers", uiLang)}</p>
                       </div>
                     </div>
 
@@ -912,10 +900,10 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                       <button
                         onClick={() => handleUninstallPack(pack.id)}
                         className="flex items-center gap-1 px-3 py-1.5 text-xs text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg border border-red-500/30 transition cursor-pointer"
-                        title={pack.is_builtin ? "حذف از منو" : "حذف کامل پک"}
+                        title={pack.is_builtin ? uiText("حذف از منو", uiLang) : uiText("حذف کامل پک", uiLang)}
                       >
                         <Trash2 size={13} />
-                        <span>{pack.is_builtin ? 'Remove' : 'Delete'}</span>
+                        <span>{pack.is_builtin ? uiText("Remove", uiLang) : uiText("Delete", uiLang)}</span>
                       </button>
                     ) : (
                       <button
@@ -923,7 +911,7 @@ export const EmojiStickerPicker: React.FC<EmojiStickerPickerProps> = ({
                         className="flex items-center gap-1 px-3 py-1.5 text-xs bg-[#24A1DE] hover:bg-[#208fc4] text-white font-semibold rounded-lg shadow transition cursor-pointer"
                       >
                         <Download size={13} />
-                        <span>Add</span>
+                        <span>{uiText("Add", uiLang)}</span>
                       </button>
                     )}
                   </div>

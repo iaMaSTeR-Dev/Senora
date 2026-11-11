@@ -22,16 +22,16 @@ import (
 func main() {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatalf("[Senora Server] Configuration error: %v", err)
+		log.Fatalf("[SENORA Server] Configuration error: %v", err)
 	}
 
-	log.Printf("[Senora Server] Environment: %s, Database: %s (%s)", cfg.Environment, cfg.Driver, cfg.RedactedDatabaseURL())
+	log.Printf("[SENORA Server] Environment: %s, Database: %s (%s)", cfg.Environment, cfg.Driver, cfg.RedactedDatabaseURL())
 	store, err := cfg.InitStorage()
 	if err != nil {
-		log.Fatalf("[Senora Server] Fatal: Failed to initialize storage: %v", err)
+		log.Fatalf("[SENORA Server] Fatal: Failed to initialize storage: %v", err)
 	}
 	defer store.Close()
-	log.Printf("[Senora Server] Storage initialized and migrations verified.")
+	log.Printf("[SENORA Server] Storage initialized and migrations verified.")
 
 	// Initialize domain services
 	sessionService := auth.NewSessionService(store, 30*24*time.Hour)
@@ -69,21 +69,25 @@ func main() {
 	// Command-line flag: migration of local storage to ArvanCloud S3
 	for _, arg := range os.Args[1:] {
 		if arg == "--migrate-to-s3" || arg == "-migrate-to-s3" || arg == "--sync-s3" || arg == "-sync-s3" {
-			log.Printf("[Senora Server] Starting local storage to ArvanCloud S3 migration...")
+			log.Printf("[SENORA Server] Starting local storage to ArvanCloud S3 migration...")
 			report, mErr := router.FileStore().MigrateLocalFilesToS3(ctx, store)
 			if mErr != nil {
-				log.Fatalf("[Senora Server] Migration to ArvanCloud S3 failed: %v", mErr)
+				log.Fatalf("[SENORA Server] Migration to ArvanCloud S3 failed: %v", mErr)
 			}
-			log.Printf("[Senora Server] S3 Migration Finished Successfully in %s!", report.Duration)
-			log.Printf("[Senora Server] Summary: Scanned=%d, Migrated=%d, Skipped=%d, Failed=%d, Bytes Freed=%.2f MB",
+			log.Printf("[SENORA Server] S3 Migration Finished Successfully in %s!", report.Duration)
+			log.Printf("[SENORA Server] Summary: Scanned=%d, Migrated=%d, Skipped=%d, Failed=%d, Bytes Freed=%.2f MB",
 				report.TotalScanned, report.MigratedCount, report.SkippedCount, report.FailedCount, float64(report.BytesFreed)/(1024*1024))
 			if len(report.Errors) > 0 {
-				log.Printf("[Senora Server] Warnings: %v", report.Errors)
+				log.Printf("[SENORA Server] Warnings: %v", report.Errors)
 			}
 			return
 		}
 	}
 
+	if os.Getenv("SENORA_BACKGROUND_TASKS") != "false" {
+		go msgService.RunScheduledTasks(ctx)
+		go router.RunBotWebhooks(ctx)
+	}
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
@@ -97,14 +101,14 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		log.Printf("[Senora Server] Listening on http://localhost:%s", cfg.Port)
+		log.Printf("[SENORA Server] Listening on http://localhost:%s", cfg.Port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server error: %v", err)
 		}
 	}()
 
 	<-stop
-	log.Println("[Senora Server] Shutting down gracefully...")
+	log.Println("[SENORA Server] Shutting down gracefully...")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
@@ -113,5 +117,5 @@ func main() {
 		log.Printf("Server shutdown warning: %v", err)
 	}
 
-	log.Println("[Senora Server] Exited.")
+	log.Println("[SENORA Server] Exited.")
 }

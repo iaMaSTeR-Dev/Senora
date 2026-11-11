@@ -127,7 +127,7 @@ export async function buildNotificationData(
     }
   }
   if (!senderName) {
-    senderName = lang === 'fa' ? 'کاربر سنورا' : 'Senora User';
+    senderName = lang === 'fa' ? 'کاربر SENORA' : 'SENORA User';
   }
 
   const senderAvatarUrl = msg.sender_avatar_url || conv?.avatar_url || undefined;

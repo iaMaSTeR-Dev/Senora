@@ -61,16 +61,10 @@ func DefaultArvanConfig() Config {
 	if accessKey == "" {
 		accessKey = os.Getenv("S3_ACCESS_KEY")
 	}
-	if accessKey == "" {
-		accessKey = "ab340fe2-5350-4ab4-83e0-52800b7c5b83"
-	}
 
 	secretKey := os.Getenv("ARVAN_S3_SECRET_KEY")
 	if secretKey == "" {
 		secretKey = os.Getenv("S3_SECRET_KEY")
-	}
-	if secretKey == "" {
-		secretKey = "1ccba76b9b3cdf908fb5048a5d9dcd751bd93a797430c87f4b0c3acd75af1741"
 	}
 
 	publicURL := os.Getenv("ARVAN_S3_PUBLIC_URL")
@@ -109,24 +103,25 @@ type SavedFileInfo struct {
 
 // StorageStatus contains diagnostic information about the storage subsystem.
 type StorageStatus struct {
-	ActiveEngine          string        `json:"active_engine"`           // "arvan_s3" or "local_fallback"
-	S3Healthy             bool          `json:"s3_healthy"`
-	S3Configured          bool          `json:"s3_configured"`
-	Endpoint              string        `json:"endpoint"`
-	Bucket                string        `json:"bucket"`
-	Region                string        `json:"region"`
-	LastProbeTime         *time.Time    `json:"last_probe_time,omitempty"`
-	LastLatencyMs         int64         `json:"last_latency_ms"`
-	LastError             string        `json:"last_error,omitempty"`
-	TotalS3Uploads        int64         `json:"total_s3_uploads"`
-	TotalLocalUploads     int64         `json:"total_local_uploads"`
-	TotalFallbackSwitches int64         `json:"total_fallback_switches"`
+	ActiveEngine          string     `json:"active_engine"` // "arvan_s3" or "local_fallback"
+	S3Healthy             bool       `json:"s3_healthy"`
+	S3Configured          bool       `json:"s3_configured"`
+	Endpoint              string     `json:"endpoint"`
+	Bucket                string     `json:"bucket"`
+	Region                string     `json:"region"`
+	LastProbeTime         *time.Time `json:"last_probe_time,omitempty"`
+	LastLatencyMs         int64      `json:"last_latency_ms"`
+	LastError             string     `json:"last_error,omitempty"`
+	TotalS3Uploads        int64      `json:"total_s3_uploads"`
+	TotalLocalUploads     int64      `json:"total_local_uploads"`
+	TotalFallbackSwitches int64      `json:"total_fallback_switches"`
 }
 
 // StorageManager manages dual-engine file persistence with automatic failover and recovery.
 type StorageManager struct {
-	cfg        Config
-	httpClient *http.Client
+	cfg          Config
+	httpClient   *http.Client
+	streamClient *http.Client
 
 	mu                    sync.RWMutex
 	s3Healthy             bool
@@ -154,10 +149,9 @@ func NewStorageManager(cfg Config) *StorageManager {
 	}
 
 	sm := &StorageManager{
-		cfg: cfg,
-		httpClient: &http.Client{
-			Timeout: 12 * time.Second,
-		},
+		cfg:          cfg,
+		httpClient:   &http.Client{Timeout: 12 * time.Second},
+		streamClient: &http.Client{Transport: &http.Transport{DisableCompression: true, Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: 15 * time.Second, TLSHandshakeTimeout: 10 * time.Second, IdleConnTimeout: 90 * time.Second}},
 		s3Healthy:    hasS3Keys,
 		activeEngine: initialEngine,
 	}
@@ -311,7 +305,7 @@ func (sm *StorageManager) SaveFile(ctx context.Context, subfolder, filename, con
 	}
 
 	sm.mu.RLock()
-	canTryS3 := sm.s3Healthy && sm.cfg.AccessKey != "" && sm.cfg.SecretKey != ""
+	canTryS3 := subfolder != "avatars" && sm.s3Healthy && sm.cfg.AccessKey != "" && sm.cfg.SecretKey != ""
 	sm.mu.RUnlock()
 
 	// 1. Attempt streaming upload to ArvanCloud S3 if enabled with real credentials (zero RAM buffering)
@@ -384,7 +378,7 @@ func (sm *StorageManager) UploadFileToS3(ctx context.Context, s3Key, contentType
 
 	sm.signRequest(req, nil) // UNSIGNED-PAYLOAD for streaming
 
-	resp, err := sm.httpClient.Do(req)
+	resp, err := sm.streamClient.Do(req)
 	if err != nil {
 		return SavedFileInfo{}, err
 	}
@@ -424,7 +418,7 @@ func (sm *StorageManager) MoveFile(ctx context.Context, subfolder, filename, con
 	}
 
 	sm.mu.RLock()
-	canTryS3 := sm.s3Healthy && sm.cfg.AccessKey != "" && sm.cfg.SecretKey != ""
+	canTryS3 := subfolder != "avatars" && sm.s3Healthy && sm.cfg.AccessKey != "" && sm.cfg.SecretKey != ""
 	sm.mu.RUnlock()
 
 	// 1. If ArvanCloud S3 is active, stream directly to S3 and delete local file!
@@ -722,13 +716,31 @@ func IsS3URL(pathOrURL string) bool {
 	return strings.HasPrefix(pathOrURL, "http://") || strings.HasPrefix(pathOrURL, "https://")
 }
 
+// StreamAvatarObject streams an avatar object from S3 storage.
+func (sm *StorageManager) StreamAvatarObject(ctx context.Context, filename string) (*http.Response, error) {
+	if filename != filepath.Base(filename) || strings.ContainsAny(filename, "/\\") {
+		return nil, fmt.Errorf("invalid avatar filename")
+	}
+	target := strings.TrimSuffix(sm.cfg.Endpoint, "/") + "/" + url.PathEscape(sm.cfg.Bucket) + "/avatars/" + url.PathEscape(filename)
+	return sm.StreamS3Object(ctx, target, "")
+}
+
 // StreamS3Object sends a GET request to an S3 object URL, signs it with SigV4 credentials (if configured),
 // forwards Range header, and returns the *http.Response for zero-disk, zero-RAM streaming.
+
 func (sm *StorageManager) StreamS3Object(ctx context.Context, targetURL, rangeHeader string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	return sm.StreamS3ObjectMethod(ctx, http.MethodGet, targetURL, rangeHeader)
+}
+
+func (sm *StorageManager) StreamS3ObjectMethod(ctx context.Context, method, targetURL, rangeHeader string) (*http.Response, error) {
+	if method != http.MethodGet && method != http.MethodHead {
+		return nil, fmt.Errorf("unsupported media method")
+	}
+	req, err := http.NewRequestWithContext(ctx, method, targetURL, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept-Encoding", "identity")
 	if rangeHeader != "" {
 		req.Header.Set("Range", rangeHeader)
 	}
@@ -741,7 +753,7 @@ func (sm *StorageManager) StreamS3Object(ctx context.Context, targetURL, rangeHe
 		sm.signRequest(req, nil)
 	}
 
-	resp, err := sm.httpClient.Do(req)
+	resp, err := sm.streamClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -753,19 +765,21 @@ func (sm *StorageManager) StreamS3Object(ctx context.Context, targetURL, rangeHe
 			_ = resp.Body.Close()
 			cleanPath := strings.TrimPrefix(u.Path, "/")
 			pathStyleURL := fmt.Sprintf("%s/%s/%s", strings.TrimSuffix(sm.cfg.Endpoint, "/"), sm.cfg.Bucket, cleanPath)
-			retryReq, retryErr := http.NewRequestWithContext(ctx, http.MethodGet, pathStyleURL, nil)
+			retryReq, retryErr := http.NewRequestWithContext(ctx, method, pathStyleURL, nil)
 			if retryErr == nil {
 				if rangeHeader != "" {
 					retryReq.Header.Set("Range", rangeHeader)
 				}
+				retryReq.Header.Set("Accept-Encoding", "identity")
 				sm.signRequest(retryReq, nil)
-				retryResp, retryErr2 := sm.httpClient.Do(retryReq)
-				if retryErr2 == nil && (retryResp.StatusCode == http.StatusOK || retryResp.StatusCode == http.StatusPartialContent) {
+				retryResp, retryErr2 := sm.streamClient.Do(retryReq)
+				if retryErr2 == nil {
 					return retryResp, nil
 				}
 				if retryResp != nil {
 					_ = retryResp.Body.Close()
 				}
+				return nil, retryErr2
 			}
 		}
 	}

@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { Conversation, User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -17,6 +18,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
   onConversationCreated,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const [type, setType] = useState<'group' | 'channel'>('group');
   const [title, setTitle] = useState('');
   const [channelUsername, setChannelUsername] = useState('');
@@ -80,7 +82,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
       onConversationCreated(conv);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to create conversation');
+      setError(err.message || uiText("Failed to create conversation", uiLang));
     } finally {
       setCreating(false);
     }
@@ -142,7 +144,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
 
           <div>
             <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">
-              {type === 'group' ? 'Group Name' : 'Channel Name'} *
+              {type === 'group' ? uiText("Group Name", uiLang) : uiText("Channel Name", uiLang)} *
             </label>
             <input
               type="text"
@@ -156,9 +158,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
 
           {type === 'channel' && (
             <div>
-              <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">
-                Channel Username / آیدی عمومی کانال (اختیاری)
-              </label>
+              <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">{uiText("Channel Username / آیدی عمومی کانال (اختیاری)", uiLang)}</label>
               <div className="relative">
                 <span className="absolute left-3.5 top-2.5 text-xs text-[#7f91a4]">@</span>
                 <input
@@ -169,14 +169,12 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
                   className="w-full rounded-xl bg-[#242f3d] pl-8 pr-3.5 py-2.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
                 />
               </div>
-              <p className="text-[10px] text-[#7f91a4] mt-1">
-                تنها با وارد کردن دقیق این آیدی، دیگران می‌توانند کانال شما را باز و عضو شوند.
-              </p>
+              <p className="text-[10px] text-[#7f91a4] mt-1">{uiText("تنها با وارد کردن دقیق این آیدی، دیگران می‌توانند کانال شما را باز و عضو شوند.", uiLang)}</p>
             </div>
           )}
 
           <div>
-            <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">Description (Optional)</label>
+            <label className="block text-xs font-medium text-[#7f91a4] mb-1.5">{uiText("Description (Optional)", uiLang)}</label>
             <textarea
               value={description}
               onChange={(e) => setDescription(e.target.value)}
@@ -190,10 +188,9 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
           {type === 'group' && (
             <div className="space-y-3 pt-2 border-t border-[#242f3d]">
               <div className="flex items-center justify-between">
-                <label className="text-xs font-medium text-[#7f91a4]">Add Members</label>
+                <label className="text-xs font-medium text-[#7f91a4]">{uiText("Add Members", uiLang)}</label>
                 <span className="text-[11px] text-[#24A1DE] font-semibold">
-                  {selectedMembers.length} selected
-                </span>
+                  {selectedMembers.length}{uiText("selected", uiLang)}</span>
               </div>
 
               {/* Selected Pills */}
@@ -204,7 +201,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
                       key={m.id}
                       onClick={() => toggleSelectMember(m)}
                       className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-[#24A1DE]/20 text-[#24A1DE] text-[11px] font-medium cursor-pointer hover:bg-red-500/20 hover:text-red-400 transition"
-                      title="Click to remove"
+                      title={uiText("Click to remove", uiLang)}
                     >
                       <span>{m.display_name}</span>
                       <X className="h-3 w-3" />
@@ -220,7 +217,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Enter exact username (e.g. @alice)..."
+                  placeholder={uiText("Enter exact username (e.g. @alice)...", uiLang)}
                   className="w-full rounded-xl bg-[#242f3d] py-2 pl-8 pr-3 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
                 />
               </div>
@@ -264,7 +261,7 @@ export const NewGroupOrChannelModal: React.FC<NewGroupOrChannelModalProps> = ({
               className="w-full py-2.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white transition disabled:opacity-40 cursor-pointer shadow-lg shadow-[#24A1DE]/25 flex items-center justify-center gap-2"
             >
               <Shield className="h-4 w-4" />
-              <span>{creating ? 'Creating...' : type === 'group' ? 'Create Group' : 'Create Channel'}</span>
+              <span>{creating ? uiText("Creating...", uiLang) : type === 'group' ? uiText("Create Group", uiLang) : uiText("Create Channel", uiLang)}</span>
             </button>
           </div>
         </form>

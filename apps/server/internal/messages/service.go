@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
-	"time"
 
 	"senora/server/internal/conversations"
 	"senora/server/internal/events"
@@ -20,7 +18,7 @@ var (
 	ErrNormalMessageInE2EE        = errors.New("cannot submit unencrypted normal message to an e2ee_active conversation")
 	ErrMalformedEncryptedEnvelope = errors.New("malformed encrypted envelope")
 	ErrUnsupportedEnvelopeVersion = errors.New("unsupported envelope version")
-	ErrMissingEncryptionMetadata = errors.New("missing required encryption metadata")
+	ErrMissingEncryptionMetadata  = errors.New("missing required encryption metadata")
 	ErrSenderMismatch             = errors.New("envelope sender does not match authenticated user")
 )
 
@@ -31,7 +29,7 @@ type e2eeEnvelopeHeader struct {
 	Devices      map[string]interface{} `json:"devices"`
 }
 
-func validateE2EEEnvelope(ciphertext, senderID string) error {
+func ValidateEncryptedEnvelope(ciphertext, senderID string) error {
 	var env e2eeEnvelopeHeader
 	if err := json.Unmarshal([]byte(ciphertext), &env); err != nil {
 		return ErrMalformedEncryptedEnvelope
@@ -86,6 +84,7 @@ type SubmitMessageParams struct {
 	IdempotencyKey     string
 	ReplyToID          string
 	TopicID            string
+	AttachmentIDs      []string
 }
 
 func (s *Service) SubmitMessage(ctx context.Context, p SubmitMessageParams) (*models.Message, error) {
@@ -105,11 +104,17 @@ func (s *Service) SubmitMessage(ctx context.Context, p SubmitMessageParams) (*mo
 		return nil, err
 	}
 
+	if conv.Type == "channel" {
+		role, err := s.store.GetMemberRole(ctx, p.ConversationID, p.SenderID)
+		if err != nil || (role != "admin" && role != "owner") {
+			return nil, storage.ErrUnauthorized
+		}
+	}
 	if conv.SecurityMode == "e2ee_active" {
 		if p.Nonce == "normal" {
 			return nil, ErrNormalMessageInE2EE
 		}
-		if err := validateE2EEEnvelope(p.Ciphertext, p.SenderID); err != nil {
+		if err := ValidateEncryptedEnvelope(p.Ciphertext, p.SenderID); err != nil {
 			return nil, err
 		}
 	}
@@ -129,6 +134,7 @@ func (s *Service) SubmitMessage(ctx context.Context, p SubmitMessageParams) (*mo
 		IdempotencyKey:     p.IdempotencyKey,
 		ReplyToID:          p.ReplyToID,
 		TopicID:            p.TopicID,
+		AttachmentIDs:      p.AttachmentIDs,
 	}
 
 	savedMsg, outboxEvents, err := s.store.CreateMessageWithOutbox(ctx, msg, memberIDs)
@@ -147,7 +153,14 @@ func (s *Service) GetMessages(ctx context.Context, conversationID, userID, befor
 	if err := s.convs.ValidateMembership(ctx, conversationID, userID); err != nil {
 		return nil, err
 	}
-	return s.store.GetMessagesForUser(ctx, conversationID, userID, beforeID, limit)
+	result, err := s.store.GetMessagesForUser(ctx, conversationID, userID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+	for _, msg := range result {
+		msg.Ciphertext = storage.RedactLegacyWhisper(ctx, s.store, msg.Ciphertext, msg.SenderID, userID)
+	}
+	return result, nil
 }
 
 func (s *Service) EditMessage(ctx context.Context, convID, msgID, senderID, ciphertext string) error {
@@ -175,30 +188,17 @@ func (s *Service) EditMessage(ctx context.Context, convID, msgID, senderID, ciph
 	}
 
 	if conv.SecurityMode == "e2ee_active" || msg.Nonce != "normal" {
-		if err := validateE2EEEnvelope(ciphertext, senderID); err != nil {
+		if err := ValidateEncryptedEnvelope(ciphertext, senderID); err != nil {
 			return err
 		}
 	}
 
-	updatedMsg, err := s.store.UpdateMessageCiphertext(ctx, msgID, ciphertext, msg.Nonce)
+	_, events, err := s.store.MutateMessageWithOutbox(ctx, convID, msgID, senderID, "message.updated", ciphertext, msg.Nonce)
 	if err != nil {
 		return err
 	}
-
-	payloadBytes, _ := json.Marshal(map[string]interface{}{
-		"message_id":      msgID,
-		"conversation_id": convID,
-		"ciphertext":      ciphertext,
-		"edited_at":       updatedMsg.CreatedAt.Format(time.RFC3339Nano),
-	})
-	members, _ := s.convs.GetMembers(ctx, convID)
-	for _, m := range members {
-		s.hub.PublishEvent(&models.EventOutbox{
-			EventType:       "message.updated",
-			ConversationID:  convID,
-			RecipientUserID: m,
-			Payload:         string(payloadBytes),
-		})
+	for _, event := range events {
+		s.hub.PublishEvent(event)
 	}
 	return nil
 }
@@ -208,81 +208,50 @@ func (s *Service) DeleteMessage(ctx context.Context, convID, msgID, senderID str
 }
 
 func (s *Service) DeleteMessageForMe(ctx context.Context, convID, msgID, userID string) error {
-	if err := s.convs.ValidateMembership(ctx, convID, userID); err != nil {
+	_, events, err := s.store.MutateMessageWithOutbox(ctx, convID, msgID, userID, "message.deleted_for_me", "", "")
+	if err != nil {
 		return err
 	}
-	if err := s.store.DeleteMessageForMe(ctx, userID, msgID); err != nil {
-		return err
+	for _, event := range events {
+		s.hub.PublishEvent(event)
 	}
-	s.hub.PublishEvent(&models.EventOutbox{
-		EventType:       "message.deleted_for_me",
-		ConversationID:  convID,
-		RecipientUserID: userID,
-		Payload:         fmt.Sprintf(`{"message_id":"%s","conversation_id":"%s"}`, msgID, convID),
-	})
 	return nil
 }
 
-func (s *Service) DeleteMessageForEveryone(ctx context.Context, convID, msgID, senderID string) error {
-	if err := s.convs.ValidateMembership(ctx, convID, senderID); err != nil {
+func (s *Service) DeleteMessageForEveryone(ctx context.Context, convID, msgID, senderID string, attachmentIDs ...string) error {
+	data, _ := json.Marshal(attachmentIDs)
+	_, events, err := s.store.MutateMessageWithOutbox(ctx, convID, msgID, senderID, "message.deleted", string(data), "")
+	if err != nil {
 		return err
 	}
-
-	if err := s.store.DeleteMessageForEveryone(ctx, convID, msgID, senderID); err != nil {
-		return err
-	}
-
-	members, _ := s.convs.GetMembers(ctx, convID)
-	for _, m := range members {
-		s.hub.PublishEvent(&models.EventOutbox{
-			EventType:       "message.deleted",
-			ConversationID:  convID,
-			RecipientUserID: m,
-			Payload:         fmt.Sprintf(`{"message_id":"%s","conversation_id":"%s","scope":"everyone"}`, msgID, convID),
-		})
+	for _, event := range events {
+		s.hub.PublishEvent(event)
 	}
 	return nil
 }
 
 func (s *Service) AddReaction(ctx context.Context, convID, msgID, userID, emoji string) (string, error) {
-	if err := s.convs.ValidateMembership(ctx, convID, userID); err != nil {
-		return "", err
-	}
-
-	reactionsJSON, err := s.store.AddMessageReaction(ctx, msgID, userID, emoji)
+	msg, events, err := s.store.MutateMessageWithOutbox(ctx, convID, msgID, userID, "message.reaction", emoji, "")
 	if err != nil {
 		return "", err
 	}
-
-	members, _ := s.convs.GetMembers(ctx, convID)
-	for _, m := range members {
-		s.hub.PublishEvent(&models.EventOutbox{
-			EventType:       "message.reaction",
-			ConversationID:  convID,
-			RecipientUserID: m,
-			Payload:         fmt.Sprintf(`{"message_id":"%s","conversation_id":"%s","reactions":%s}`, msgID, convID, reactionsJSON),
-		})
+	for _, event := range events {
+		s.hub.PublishEvent(event)
 	}
-	return reactionsJSON, nil
+	return msg.Reactions, nil
 }
 
 func (s *Service) PinMessage(ctx context.Context, convID, msgID, userID string, isPinned bool) error {
-	if err := s.convs.ValidateMembership(ctx, convID, userID); err != nil {
+	value := "false"
+	if isPinned {
+		value = "true"
+	}
+	_, events, err := s.store.MutateMessageWithOutbox(ctx, convID, msgID, userID, "message.pinned", value, "")
+	if err != nil {
 		return err
 	}
-
-	if err := s.store.PinMessage(ctx, convID, msgID, isPinned); err != nil {
-		return err
-	}
-
-	members, _ := s.convs.GetMembers(ctx, convID)
-	for _, m := range members {
-		s.hub.PublishEvent(&models.EventOutbox{
-			EventType:       "message.pinned",
-			ConversationID:  convID,
-			RecipientUserID: m,
-			Payload:         fmt.Sprintf(`{"message_id":"%s","conversation_id":"%s","is_pinned":%t}`, msgID, convID, isPinned),
-		})
+	for _, event := range events {
+		s.hub.PublishEvent(event)
 	}
 	return nil
 }

@@ -1,6 +1,12 @@
+import { clampVideoSeek } from './videoSeeking';
+import { VideoTimeline } from './VideoTimeline';
+import { formatMediaTime } from './mediaTime';
+import { StreamingVideo } from './StreamingVideo';
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef } from 'react';
 import { MediaShare } from '../../app/types';
 import { api } from '../../protocol/api';
+import { mediaPlaybackError } from './mediaPlaybackError';
 import {
   Play,
   Pause,
@@ -21,6 +27,7 @@ interface StandaloneWebPlayerProps {
 }
 
 export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareId }) => {
+  const uiLang = useUILanguage();
   const [share, setShare] = useState<MediaShare | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,9 +61,9 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
         }
       } catch (err: any) {
         if (err.message && err.message.includes('410')) {
-          setError('این لینک استریم منقضی شده است یا به سقف دانلود رسیده است.');
+          setError(uiText("این لینک استریم منقضی شده است یا به سقف دانلود رسیده است.", uiLang));
         } else {
-          setError('فایل یا لینک استریم مورد نظر یافت نشد.');
+          setError(uiText("فایل یا لینک استریم مورد نظر یافت نشد.", uiLang));
         }
       } finally {
         setLoading(false);
@@ -91,10 +98,10 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
         setIsMuted(v.muted);
       } else if (e.key === 'ArrowRight') {
         e.preventDefault();
-        v.currentTime = Math.min(v.duration, v.currentTime + 5);
+        v.currentTime = clampVideoSeek(v, v.currentTime + 5);
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault();
-        v.currentTime = Math.max(0, v.currentTime - 5);
+        v.currentTime = clampVideoSeek(v, v.currentTime - 5);
       }
     };
     window.addEventListener('keydown', handleKey);
@@ -103,7 +110,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
 
   const togglePlay = () => {
     const v = videoRef.current;
-    if (!v) return;
+    if (!v || v.readyState === 0) return;
     if (v.paused) {
       v.play().catch(() => {});
       setIsPlaying(true);
@@ -136,12 +143,11 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
     }
   };
 
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const target = Number(e.target.value);
+  const handleSeek = (target: number) => {
     const v = videoRef.current;
     if (v) {
-      v.currentTime = target;
-      setCurrentTime(target);
+      v.currentTime = clampVideoSeek(v, target);
+      setCurrentTime(v.currentTime);
     }
   };
 
@@ -167,12 +173,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
     setIsUnlocked(true);
   };
 
-  const formatTime = (secs: number) => {
-    if (isNaN(secs) || secs < 0) return '00:00';
-    const m = Math.floor(secs / 60);
-    const s = Math.floor(secs % 60);
-    return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
-  };
+  const formatTime = formatMediaTime;
 
   const streamSrc = share
     ? `/api/v1/s/${share.id}${password ? `?pwd=${encodeURIComponent(password)}` : ''}`
@@ -187,7 +188,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
       <div className="min-h-screen bg-[#090d16] flex items-center justify-center p-4">
         <div className="flex flex-col items-center gap-3">
           <div className="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
-          <span className="text-slate-400 text-sm font-medium">در حال آماده‌سازی استریم...</span>
+          <span className="text-slate-400 text-sm font-medium">{uiText("در حال آماده‌سازی استریم...", uiLang)}</span>
         </div>
       </div>
     );
@@ -200,13 +201,13 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
           <div className="w-12 h-12 rounded-full bg-red-500/10 text-red-400 flex items-center justify-center mx-auto border border-red-500/20">
             <AlertCircle className="w-6 h-6" />
           </div>
-          <h2 className="text-lg font-bold text-white">خطا در بارگذاری استریم</h2>
-          <p className="text-sm text-slate-400 leading-relaxed">{error || 'فایل مورد نظر یافت نشد.'}</p>
+          <h2 className="text-lg font-bold text-white">{uiText("خطا در بارگذاری استریم", uiLang)}</h2>
+          <p className="text-sm text-slate-400 leading-relaxed">{error || uiText("فایل مورد نظر یافت نشد.", uiLang)}</p>
           <a
             href="/"
             className="inline-flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition"
           >
-            <span>ورود به پیام‌رسان</span>
+            <span>{uiText("ورود به پیام‌رسان", uiLang)}</span>
             <ArrowRight className="w-4 h-4 rotate-180" />
           </a>
         </div>
@@ -223,15 +224,13 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
             <Lock className="w-7 h-7" />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-white">استریم محافظت‌شده</h1>
-            <p className="text-xs text-slate-400 mt-1 truncate">
-              برای مشاهده <strong>{share.file_name}</strong> رمز عبور را وارد کنید.
-            </p>
+            <h1 className="text-lg font-bold text-white">{uiText("استریم محافظت‌شده", uiLang)}</h1>
+            <p className="text-xs text-slate-400 mt-1 truncate">{uiText("برای مشاهده", uiLang)}<strong>{share.file_name}</strong>{uiText("رمز عبور را وارد کنید.", uiLang)}</p>
           </div>
           <form onSubmit={handlePasswordSubmit} className="space-y-3.5">
             <input
               type="password"
-              placeholder="رمز عبور فایل..."
+              placeholder={uiText("رمز عبور فایل...", uiLang)}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-3 bg-slate-950 border border-slate-700/80 rounded-xl text-sm text-white placeholder-slate-500 text-center focus:outline-none focus:border-indigo-500"
@@ -242,9 +241,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
             <button
               type="submit"
               className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-sm transition shadow-lg shadow-indigo-600/30 cursor-pointer"
-            >
-              ورود و شروع پخش
-            </button>
+            >{uiText("ورود و شروع پخش", uiLang)}</button>
           </form>
         </div>
       </div>
@@ -277,7 +274,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
             <div className="text-[11px] text-slate-400 flex items-center gap-2">
               <span>{(share.file_size / (1024 * 1024)).toFixed(2)} MB</span>
               <span>•</span>
-              <span className="text-indigo-400 font-medium">Senora Stream Player</span>
+              <span className="text-indigo-400 font-medium">{uiText("SENORA Stream Player", uiLang)}</span>
             </div>
           </div>
         </div>
@@ -287,17 +284,15 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
             href={downloadSrc}
             download={share.file_name}
             className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1.5 transition"
-            title="دانلود فایل مستقیم"
+            title={uiText("دانلود فایل مستقیم", uiLang)}
           >
             <Download className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">دانلود مستقیم</span>
+            <span className="hidden sm:inline">{uiText("دانلود مستقیم", uiLang)}</span>
           </a>
           <a
             href="/"
             className="px-3 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 text-xs font-semibold transition"
-          >
-            ورود به چت
-          </a>
+          >{uiText("ورود به چت", uiLang)}</a>
         </div>
       </header>
 
@@ -306,23 +301,31 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
         onDoubleClick={toggleFullscreen}
         className="relative flex-1 bg-black flex items-center justify-center overflow-hidden"
       >
-        <video
+        <StreamingVideo
           ref={videoRef}
           src={streamSrc}
           className="w-full h-full object-contain cursor-pointer"
           playsInline
+          preload="metadata"
           onClick={togglePlay}
           onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
           onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
+            onDurationChange={() => videoRef.current && setDuration(videoRef.current.duration)}
           onPlay={() => setIsPlaying(true)}
           onPause={() => setIsPlaying(false)}
-          onError={() => {
+          onError={async () => {
+            const mediaError = videoRef.current?.error;
             if (share.has_password) {
-              setPasswordError('رمز عبور نادرست است یا امکان رمزگشایی جریان وجود ندارد.');
-              setIsUnlocked(false);
-            } else {
-              setError('خطا در پخش استریم. لطفاً اتصال اینترنت خود را بررسی کنید.');
+              try {
+                const response = await fetch(streamSrc, { method: 'HEAD', cache: 'no-store' });
+                if (response.status === 401 || response.status === 403) {
+                  setPasswordError(uiLang === 'fa' ? 'رمز عبور نادرست است یا دسترسی به فایل مجاز نیست.' : 'Incorrect password or access denied.');
+                  setIsUnlocked(false);
+                  return;
+                }
+              } catch { /* The media error below describes the interrupted transfer. */ }
             }
+            setError(mediaPlaybackError(mediaError, uiLang));
           }}
         />
 
@@ -348,19 +351,11 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
         >
           {/* Progress Slider */}
           <div className="flex items-center gap-3">
-            <span className="text-[11px] font-mono text-slate-300 shrink-0 w-12 text-left">
+            <span className="text-[11px] font-mono text-slate-300 shrink-0 min-w-[4rem] text-left">
               {formatTime(currentTime)}
             </span>
-            <input
-              type="range"
-              min={0}
-              max={duration || 100}
-              step={0.1}
-              value={currentTime}
-              onChange={handleSeek}
-              className="flex-1 h-1.5 bg-slate-700/80 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-            />
-            <span className="text-[11px] font-mono text-slate-400 shrink-0 w-12">
+            <VideoTimeline videoRef={videoRef} currentTime={currentTime} onSeek={handleSeek} />
+            <span className="text-[11px] font-mono text-slate-400 shrink-0 min-w-[4rem]">
               {formatTime(duration)}
             </span>
           </div>
@@ -432,7 +427,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
                 <button
                   onClick={togglePiP}
                   className="p-2 rounded-lg hover:bg-white/10 text-white transition cursor-pointer"
-                  title="تصویر در تصویر (PiP)"
+                  title={uiText("تصویر در تصویر (PiP)", uiLang)}
                 >
                   <Tv className="w-5 h-5" />
                 </button>
@@ -442,7 +437,7 @@ export const StandaloneWebPlayer: React.FC<StandaloneWebPlayerProps> = ({ shareI
               <button
                 onClick={toggleFullscreen}
                 className="p-2 rounded-lg hover:bg-white/10 text-white transition cursor-pointer"
-                title="تمام‌صفحه (F)"
+                title={uiText("تمام‌صفحه (F)", uiLang)}
               >
                 {isFullscreen ? <Minimize2 className="w-5 h-5" /> : <Maximize2 className="w-5 h-5" />}
               </button>

@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import { uiText, useUILanguage } from "./language";
+import React, { useState, useEffect, useRef } from 'react';
 import { Conversation, User, AuthSession } from './types';
 import { api } from '../protocol/api';
 import { wsManager } from '../protocol/ws';
@@ -8,24 +9,32 @@ import { Sidebar } from '../features/conversations/Sidebar';
 import { ChatView } from '../features/messages/ChatView';
 import { AuthModal } from '../features/auth/AuthModal';
 import { SettingsModal, SettingsTab } from '../features/settings/SettingsModal';
-import { loadSettings, applySettingsToDOM, syncSettingsFromBackend, resetSettings } from '../features/settings/settingsModel';
+import { loadSettings, saveSettings, applySettingsToDOM, syncSettingsFromBackend, resetSettings } from '../features/settings/settingsModel';
 import { PasscodeLockScreen } from '../features/settings/PasscodeLockScreen';
 import { soundManager } from '../features/calls/soundManager';
 import { webrtcManager, CallSession } from '../features/calls/webrtcManager';
 import { CallModal } from '../features/calls/CallModal';
 import { buildNotificationData } from '../features/messages/notificationHelper';
+import { MessageNotificationGate } from '../features/messages/notificationGate';
 import { InAppNotificationBanner, InAppNotification } from '../components/InAppNotificationBanner';
 import { StickerPackModal } from '../features/messages/StickerPackModal';
 import { Language, translations } from './i18n';
 import { Shield } from 'lucide-react';
 import { StandaloneWebPlayer } from '../features/messages/StandaloneWebPlayer';
+import { LanguageContext } from './language';
 
 export const App: React.FC = () => {
+  const [lang, setLang] = useState<Language>(() => loadSettings().language);
+  return <LanguageContext.Provider value={lang}><AppContent lang={lang} setLang={setLang} /></LanguageContext.Provider>;
+};
+
+const AppContent: React.FC<{ lang: Language; setLang: (language: Language) => void }> = ({ lang, setLang }) => {
+  const notificationGate = useRef(new MessageNotificationGate());
+  const uiLang = useUILanguage(lang);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<Conversation | null>(null);
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-  const [lang, setLang] = useState<Language>('en');
   const [loading, setLoading] = useState(true);
   const [settingsModalTab, setSettingsModalTab] = useState<SettingsTab | null>(null);
   const [appSettings, setAppSettings] = useState(() => loadSettings());
@@ -88,7 +97,7 @@ export const App: React.FC = () => {
     const s = loadSettings();
     applySettingsToDOM(s);
     if (s.theme === 'light') setTheme('light');
-    if (s.language === 'fa') setLang('fa');
+    setLang(s.language);
 
     // Register Service Worker for PWA & push notifications
     if (typeof window !== 'undefined' && 'serviceWorker' in navigator && process.env.NODE_ENV !== 'test') {
@@ -122,7 +131,7 @@ export const App: React.FC = () => {
         (navigator as any).clearAppBadge().catch(() => {});
       }
     }
-    document.title = totalUnread > 0 ? `(${totalUnread}) Senora` : 'Senora — Secure Self-Hosted Messaging';
+    document.title = totalUnread > 0 ? `(${totalUnread}) SENORA` : 'SENORA — Secure Self-Hosted Messaging';
   }, [conversations]);
 
   // Global Desktop Keyboard Shortcuts (Alt+Up/Down for chat switching, Ctrl+F for search, Esc)
@@ -178,7 +187,7 @@ export const App: React.FC = () => {
           syncSettingsFromBackend().then((s) => {
             applySettingsToDOM(s);
             if (s.theme === 'light') setTheme('light');
-            if (s.language === 'fa') setLang('fa');
+            setLang(s.language);
           });
 
           // Initialize Signal Protocol Manager with IndexedDB store
@@ -188,13 +197,7 @@ export const App: React.FC = () => {
             console.warn('Signal protocol init warning on restore:', err);
           }
 
-          // Register device keypair scoped to user and device
-          try {
-            const kp = await cryptoEngine.getOrCreateDeviceKeyPair(user.id, deviceId);
-            await api.registerKeys(deviceId, kp.publicKeyBase64);
-          } catch (err) {
-            console.warn('Auto key registration on restore:', err);
-          }
+
         })
         .catch((err) => {
           if (err?.status === 401 || err?.message?.includes('401') || err?.message?.includes('Unauthorized') || err?.message?.includes('INVALID_TOKEN')) {
@@ -247,6 +250,11 @@ export const App: React.FC = () => {
 
   // Subscribe to real-time events over WebSocket
   useEffect(() => {
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = () => {
+      if (refreshTimer !== undefined) return;
+      refreshTimer = setTimeout(() => { refreshTimer = undefined; loadConversations(); }, 100);
+    };
     const unsubscribe = wsManager.subscribe((event) => {
       if (
         event.type === 'message.created' ||
@@ -256,9 +264,9 @@ export const App: React.FC = () => {
         event.type === 'conversation.created' ||
         event.type === 'conversation.read'
       ) {
-        loadConversations();
+        refresh();
 
-        if (event.type === 'message.created') {
+        if (notificationGate.current.shouldNotify(event, currentUser?.id || '')) {
           const rawMsg = event.payload;
           if (rawMsg && rawMsg.sender_id !== currentUser?.id) {
             buildNotificationData(rawMsg, conversations, currentUser, appSettings, lang).then((notifData) => {
@@ -312,7 +320,7 @@ export const App: React.FC = () => {
         }
       }
     });
-    return unsubscribe;
+    return () => { unsubscribe(); clearTimeout(refreshTimer); };
   }, [currentUser, activeConversation?.id, conversations, appSettings, lang]);
 
   // Load Invite Preview if URL has /join/:code
@@ -366,11 +374,14 @@ export const App: React.FC = () => {
     webrtcManager.init();
     webrtcManager.setUserId(session.user.id);
 
+    const syncedSettings = await syncSettingsFromBackend();
+    setAppSettings(syncedSettings);
+    setLang(syncedSettings.language);
+    applySettingsToDOM(syncedSettings);
+
     if (session.device_id && session.token) {
       try {
         await signalManager.initialize(session.user.id, session.device_id, session.token);
-        const kp = await cryptoEngine.getOrCreateDeviceKeyPair(session.user.id, session.device_id);
-        await api.registerKeys(session.device_id, kp.publicKeyBase64);
       } catch (e) {
         console.warn('Signal manager init error on login:', e);
       }
@@ -385,12 +396,19 @@ export const App: React.FC = () => {
     webrtcManager.setUserId('');
     cryptoEngine.resetCache();
     localStorage.removeItem('senora_device_id');
-    resetSettings();
-    setAppSettings(loadSettings());
+    const defaults = resetSettings();
+    setAppSettings(defaults);
+    setLang(defaults.language);
     setIsLocked(false);
     setCurrentUser(null);
     setActiveConversation(null);
     setConversations([]);
+  };
+
+  const handleToggleLang = () => {
+    const language = lang === 'en' ? 'fa' : 'en';
+    setAppSettings(saveSettings({ language }));
+    setLang(language);
   };
 
   if (standaloneWatchId) {
@@ -402,14 +420,14 @@ export const App: React.FC = () => {
       <div className="h-screen w-screen flex items-center justify-center bg-[#0e1621] text-white">
         <div className="flex flex-col items-center gap-3">
           <div className="h-10 w-10 border-2 border-[#24A1DE] border-t-transparent rounded-full animate-spin" />
-          <p className="text-xs text-[#7f91a4]">Initializing Senora...</p>
+          <p className="text-xs text-[#7f91a4]">{uiText("Initializing SENORA...", uiLang)}</p>
         </div>
       </div>
     );
   }
 
   if (!currentUser) {
-    return <AuthModal onSuccess={handleAuthSuccess} lang={lang} />;
+    return <AuthModal onSuccess={handleAuthSuccess} lang={lang} onToggleLang={handleToggleLang} />;
   }
 
   if (isLocked && appSettings.passcodeLockEnabled && appSettings.passcodeHash) {
@@ -445,7 +463,7 @@ export const App: React.FC = () => {
           onOpenSettings={(tab) => setSettingsModalTab((tab as SettingsTab) || 'profile')}
           onLogout={handleLogout}
           lang={lang}
-          onToggleLang={() => setLang(lang === 'en' ? 'fa' : 'en')}
+          onToggleLang={handleToggleLang}
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
         />
@@ -484,7 +502,7 @@ export const App: React.FC = () => {
             {loadingInvitePreview ? (
               <div className="py-6 text-xs text-[#7f91a4] flex items-center gap-2">
                 <div className="h-4 w-4 border-2 border-[#24A1DE] border-t-transparent rounded-full animate-spin" />
-                <span>Checking invite link...</span>
+                <span>{uiText("Checking invite link...", uiLang)}</span>
               </div>
             ) : inviteError ? (
               <div className="space-y-3 my-2 w-full">
@@ -493,16 +511,14 @@ export const App: React.FC = () => {
                   type="button"
                   onClick={handleDismissInvite}
                   className="w-full py-2 rounded-xl bg-[#242f3d] hover:bg-[#2c3846] text-xs font-bold text-white transition cursor-pointer"
-                >
-                  Close
-                </button>
+                >{uiText("Close", uiLang)}</button>
               </div>
             ) : invitePreview ? (
               <div className="space-y-4 my-2 w-full">
                 <div>
                   <h3 className="text-base font-bold text-white">{invitePreview.title}</h3>
                   <p className="text-xs text-[#7f91a4] mt-0.5 capitalize">
-                    {invitePreview.type} • {invitePreview.participant_count} {invitePreview.type === 'channel' ? 'subscribers' : 'members'}
+                    {uiText(invitePreview.type === 'channel' ? 'Channel' : 'Group', uiLang)} • {invitePreview.participant_count} {invitePreview.type === 'channel' ? uiText("subscribers", uiLang) : uiText("members", uiLang)}
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -510,16 +526,14 @@ export const App: React.FC = () => {
                     type="button"
                     onClick={handleDismissInvite}
                     className="flex-1 py-2 rounded-xl bg-[#242f3d] hover:bg-[#2c3846] text-xs font-bold text-white transition cursor-pointer"
-                  >
-                    Cancel
-                  </button>
+                  >{uiText("Cancel", uiLang)}</button>
                   <button
                     type="button"
                     disabled={joiningInvite}
                     onClick={handleJoinInvite}
                     className="flex-1 py-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white transition cursor-pointer disabled:opacity-50"
                   >
-                    {joiningInvite ? 'Joining...' : `Join ${invitePreview.type === 'channel' ? 'Channel' : 'Group'}`}
+                    {joiningInvite ? uiText("Joining...", uiLang) : uiText(invitePreview.type === 'channel' ? 'Join Channel' : 'Join Group', uiLang)}
                   </button>
                 </div>
               </div>
@@ -538,7 +552,7 @@ export const App: React.FC = () => {
           }}
           onUpdateUser={(updated) => setCurrentUser(updated)}
           lang={lang}
-          onToggleLang={() => setLang(lang === 'en' ? 'fa' : 'en')}
+          onToggleLang={handleToggleLang}
           theme={theme}
           onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
           initialTab={settingsModalTab}
@@ -553,6 +567,8 @@ export const App: React.FC = () => {
 
       {/* Global WebRTC Incoming / Active Call Modal Overlay */}
       {callSession && <CallModal session={callSession} lang={lang} />}
+
+
 
       {/* Shared Sticker Pack Preview Modal (?pack=...) */}
       {pendingStickerPackCode && (

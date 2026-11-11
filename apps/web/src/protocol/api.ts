@@ -1,5 +1,4 @@
 import { Attachment, AuthSession, CallLog, Conversation, ConversationInvite, ConversationMemberDetail, ConversationPin, Device, ForumTopic, GIFItem, IceServerConfig, MediaShare, Message, MessageReader, Poll, ScheduledMessage, ServerStats, Sticker, StickerPack, StorageStatus, Story, User, UserKeyPackage, UserPresence, VoiceChatParticipant, VoiceChatRoom, WatchPartySession } from '../app/types';
-import { migrateBrowserStorage } from './storageMigration';
 import { serverManager } from './serverManager';
 
 class ApiClient {
@@ -16,34 +15,40 @@ class ApiClient {
 
   getToken(): string | null {
     if (!this.token) {
-      migrateBrowserStorage();
       this.token = localStorage.getItem('senora_token');
     }
     return this.token;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  endpointURL(endpoint: string): string {
+    const base = serverManager.getActiveServer().url || (typeof window !== 'undefined' ? window.location?.origin : '') || 'http://localhost';
+    const target = new URL(endpoint, base);
+    if (target.origin !== new URL(base).origin) throw new Error('API endpoint must belong to the active server');
+    return target.toString();
+  }
+
+  avatarURL(value?: string): string {
+    if (!value) return '';
+    const base = serverManager.getActiveServer().url || (typeof window !== 'undefined' ? window.location?.origin : '') || 'http://localhost';
+    const target = new URL(value, base);
+    if (target.origin === new URL(base).origin && target.pathname.startsWith('/api/v1/attachments/avatar/')) {
+      const token = this.getToken(); if (token) target.searchParams.set('auth', token);
+    }
+    return target.toString();
+  }
+
+  private async request<T>(endpoint: string, options: RequestInit = {}, tokenOverride?: string): Promise<T> {
     const headers = new Headers(options.headers || {});
     if (!headers.has('Content-Type') && !(options.body instanceof FormData)) {
       headers.set('Content-Type', 'application/json');
     }
 
-    const token = this.getToken();
+    const token = tokenOverride || this.getToken();
     if (token) {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const activeServer = serverManager.getActiveServer();
-    let url = endpoint;
-    if (!endpoint.startsWith('http')) {
-      const base = activeServer.url ? activeServer.url.replace(/\/+$/, '') : '';
-      const path = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
-      if (base && typeof window !== 'undefined' && window.location && !base.includes(window.location.host)) {
-        url = `${base}${path}`;
-      } else {
-        url = path;
-      }
-    }
+    const url = this.endpointURL(endpoint);
 
     const res = await fetch(url, {
       ...options,
@@ -52,8 +57,10 @@ class ApiClient {
 
     if (!res.ok) {
       let errorMsg = `HTTP Error ${res.status}`;
+      let errorCode: string | undefined;
       try {
         const errJson = await res.json();
+        errorCode = errJson?.error?.code;
         if (errJson?.error?.message) {
           errorMsg = errJson.error.message;
         }
@@ -62,6 +69,7 @@ class ApiClient {
       }
       const error: any = new Error(errorMsg);
       error.status = res.status;
+      error.code = errorCode;
       throw error;
     }
 
@@ -136,7 +144,7 @@ class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const res = await fetch('/api/v1/users/avatar', {
+    const res = await fetch(this.endpointURL('/api/v1/users/avatar'), {
       method: 'POST',
       headers,
       body: formData,
@@ -155,8 +163,8 @@ class ApiClient {
     });
   }
 
-  async listDevices(): Promise<Device[]> {
-    return this.request<Device[]>('/api/v1/users/devices');
+  async listDevices(tokenOverride?: string): Promise<Device[]> {
+    return this.request<Device[]>('/api/v1/users/devices', {}, tokenOverride);
   }
 
   async revokeDevice(deviceId: string): Promise<{ status: string }> {
@@ -284,7 +292,7 @@ class ApiClient {
 
   async submitMessage(
     conversationId: string,
-    data: { ciphertext: string; nonce: string; idempotency_key?: string; reply_to_id?: string; topic_id?: string }
+    data: { ciphertext: string; attachment_ids?: string[]; nonce: string; idempotency_key?: string; reply_to_id?: string; topic_id?: string }
   ): Promise<Message> {
     return this.request<Message>(`/api/v1/conversations/${conversationId}/messages`, {
       method: 'POST',
@@ -299,9 +307,10 @@ class ApiClient {
     });
   }
 
-  async deleteMessage(conversationId: string, messageId: string, scope: 'me' | 'everyone' = 'everyone'): Promise<{ status: string }> {
+  async deleteMessage(conversationId: string, messageId: string, scope: 'me' | 'everyone' = 'everyone', attachmentIds: string[] = []): Promise<{ status: string }> {
     return this.request<{ status: string }>(`/api/v1/conversations/${conversationId}/messages/${messageId}?scope=${scope}`, {
       method: 'DELETE',
+      body: JSON.stringify({ attachment_ids: attachmentIds }),
     });
   }
 
@@ -339,7 +348,7 @@ class ApiClient {
       }
 
       const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/v1/attachments');
+      xhr.open('POST', this.endpointURL('/api/v1/attachments'));
 
       const token = this.getToken();
       if (token) {
@@ -404,7 +413,7 @@ class ApiClient {
       headers.set('Authorization', `Bearer ${token}`);
     }
 
-    const res = await fetch(`/api/v1/attachments/${attachmentId}`, {
+    const res = await fetch(this.endpointURL(`/api/v1/attachments/${encodeURIComponent(attachmentId)}`), {
       method: 'GET',
       headers,
     });
@@ -413,6 +422,23 @@ class ApiClient {
       throw new Error(`Download failed: HTTP ${res.status}`);
     }
     return res.blob();
+  }
+
+  attachmentStreamURL(attachmentId: string): string {
+    const url = new URL(this.endpointURL(`/api/v1/attachments/${encodeURIComponent(attachmentId)}`), window.location.origin);
+    const token = this.getToken();
+    if (token) url.searchParams.set('auth', token);
+    return url.toString();
+  }
+
+  openBotFather(): Promise<Conversation> {
+    return this.request<Conversation>('/api/v1/botfather/open', { method: 'POST' });
+  }
+
+  invokeBotCallback(conversationId: string, messageId: string, data: string): Promise<{id: string}> {
+    return this.request(`/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/bot-callback`, {
+      method: 'POST', body: JSON.stringify({data}),
+    });
   }
 
   // Signal & Legacy Crypto keys
@@ -433,15 +459,15 @@ class ApiClient {
     registration_id: number;
     signed_pre_key: string;
     pre_keys: string[];
-  }): Promise<{ status: string }> {
+  }, tokenOverride?: string): Promise<{ status: string }> {
     return this.request<{ status: string }>('/api/v1/crypto/keys', {
       method: 'POST',
       body: JSON.stringify(params),
-    });
+    }, tokenOverride);
   }
 
-  async getUserKeys(userId: string): Promise<UserKeyPackage> {
-    return this.request<UserKeyPackage>(`/api/v1/crypto/keys/${userId}`);
+  async getUserKeys(userId: string, tokenOverride?: string): Promise<UserKeyPackage> {
+    return this.request<UserKeyPackage>(`/api/v1/crypto/keys/${encodeURIComponent(userId)}`, {}, tokenOverride);
   }
 
   // Stickers
@@ -534,8 +560,8 @@ class ApiClient {
   }
 
   // Link Previews
-  async getLinkPreview(url: string): Promise<{ url: string; title?: string; description?: string; image?: string; site_name?: string }> {
-    return this.request(`/api/v1/links/preview?url=${encodeURIComponent(url)}`);
+  async getLinkPreview(url: string, signal?: AbortSignal): Promise<{ url: string; title?: string; description?: string; image?: string; site_name?: string }> {
+    return this.request(`/api/v1/links/preview?url=${encodeURIComponent(url)}`, { signal });
   }
 
   // Group Slow Mode
@@ -554,7 +580,7 @@ class ApiClient {
     });
   }
 
-  // Voice Chat (Track B)
+  // Voice Chat
   async startOrJoinVoiceChat(conversationId: string): Promise<{ room: VoiceChatRoom; participants: VoiceChatParticipant[] }> {
     return this.request<{ room: VoiceChatRoom; participants: VoiceChatParticipant[] }>(`/api/v1/conversations/${conversationId}/voice-chat`, {
       method: 'POST',
@@ -584,12 +610,12 @@ class ApiClient {
     });
   }
 
-  // GIFs (Track F)
+  // GIFs
   async searchGIFs(query = ''): Promise<{ gifs: GIFItem[] }> {
     return this.request<{ gifs: GIFItem[] }>(`/api/v1/media/gifs?q=${encodeURIComponent(query)}`);
   }
 
-  // Polls (Phase 12)
+  // Polls
   async createPoll(conversationId: string, params: {
     question: string;
     options: string[];
@@ -622,7 +648,7 @@ class ApiClient {
     });
   }
 
-  // Stories (Phase 15)
+  // Stories
   async createStory(params: {
     media_url: string;
     media_type?: 'photo' | 'video';
@@ -644,7 +670,7 @@ class ApiClient {
     });
   }
 
-  // Scheduled Messages (Phase 15)
+  // Scheduled Messages
   async createScheduledMessage(conversationId: string, params: {
     ciphertext: string;
     nonce?: string;
@@ -676,12 +702,12 @@ class ApiClient {
     });
   }
 
-  // Conversation Member Role (Phase 12/13)
+  // Conversation Member Role
   async getConversationRole(conversationId: string): Promise<{ role: string }> {
     return this.request<{ role: string }>(`/api/v1/conversations/${conversationId}/role`);
   }
 
-  // Phase 16: Read Receipts & Read State
+  // Read Receipts & Read State
   async markConversationRead(conversationId: string, messageId?: string): Promise<{ status: string }> {
     return this.request<{ status: string }>(`/api/v1/conversations/${conversationId}/read`, {
       method: 'POST',
@@ -689,7 +715,7 @@ class ApiClient {
     });
   }
 
-  // Phase 16: Role Management (Promote/Demote Admins)
+  // Role Management (Promote/Demote Admins)
   async updateMemberRole(conversationId: string, userId: string, role: 'admin' | 'member'): Promise<{ status: string; role: string }> {
     return this.request<{ status: string; role: string }>(`/api/v1/conversations/${conversationId}/members/${userId}/role`, {
       method: 'PUT',
@@ -697,7 +723,7 @@ class ApiClient {
     });
   }
 
-  // Phase 16: Authentic Token-Based Invites
+  // Authentic Token-Based Invites
   async createConversationInvite(conversationId: string, params?: { max_uses?: number; expires_in_hours?: number }): Promise<ConversationInvite> {
     return this.request<ConversationInvite>(`/api/v1/conversations/${conversationId}/invites`, {
       method: 'POST',
@@ -734,14 +760,14 @@ class ApiClient {
     });
   }
 
-  // Phase 16: Message Views
+  // Message Views
   async recordMessageView(conversationId: string, messageId: string): Promise<{ views_count: number }> {
     return this.request<{ views_count: number }>(`/api/v1/conversations/${conversationId}/messages/${messageId}/view`, {
       method: 'POST',
     });
   }
 
-  // Phase 16: Disappearing Messages (TTL)
+  // Disappearing Messages (TTL)
   async setConversationTTL(conversationId: string, ttl: number): Promise<{ status: string; ttl: number }> {
     return this.request<{ status: string; ttl: number }>(`/api/v1/conversations/${conversationId}/ttl`, {
       method: 'PUT',
@@ -756,7 +782,7 @@ class ApiClient {
     });
   }
 
-  // Telegram-style Exact ID & Username Resolver (User, Channel, Group)
+  // Exact ID & Username Resolver (User, Channel, Group)
   async resolveIdentifier(identifier: string): Promise<{
     type: 'user' | 'channel' | 'group';
     user?: User;
@@ -767,7 +793,7 @@ class ApiClient {
     return this.request(`/api/v1/resolve/${encodeURIComponent(clean)}`);
   }
 
-  // Phase 16: Global Search (Exact ID Lookup)
+  // Global Search (Exact ID Lookup)
   async globalSearch(query: string): Promise<{
     channels: Array<{ id: string; type: string; title: string; description: string; avatar_url: string; username?: string }>;
     users: User[];
@@ -776,7 +802,7 @@ class ApiClient {
     return this.request(`/api/v1/search?q=${encodeURIComponent(query)}`);
   }
 
-  // Phase 16: User Presence & Last Seen
+  // User Presence & Last Seen
   async getUserPresence(userId: string): Promise<UserPresence> {
     return this.request<UserPresence>(`/api/v1/presence/${userId}`);
   }
@@ -789,12 +815,12 @@ class ApiClient {
     });
   }
 
-  // Phase 16: WebRTC Dynamic ICE Servers (STUN/TURN)
+  // WebRTC Dynamic ICE Servers (STUN/TURN)
   async getIceServers(): Promise<IceServerConfig[]> {
     return this.request<IceServerConfig[]>('/api/v1/webrtc/ice-servers');
   }
 
-  // Phase 16 & 17: Readers & Message-level Receipts
+  // Readers & Message-level Receipts
   async getMessageReaders(conversationId: string, messageId: string): Promise<MessageReader[]> {
     return this.request<MessageReader[]>(`/api/v1/conversations/${conversationId}/messages/${messageId}/readers`);
   }
@@ -892,6 +918,8 @@ class ApiClient {
   async listAdminConversations(): Promise<{ conversations: Conversation[] }> {
     return this.request('/api/v1/admin/conversations');
   }
+
+
 
   async executeBotAction(params: {
     action: string;

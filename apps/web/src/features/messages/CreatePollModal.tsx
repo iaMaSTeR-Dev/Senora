@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { X, Plus, Trash2, HelpCircle } from 'lucide-react';
 
@@ -20,6 +21,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
   onSubmit,
   submitting,
 }) => {
+  const uiLang = useUILanguage();
   const [question, setQuestion] = useState('');
   const [options, setOptions] = useState<string[]>(['', '']);
   const [isAnonymous, setIsAnonymous] = useState(true);
@@ -56,11 +58,11 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
     const cleanOptions = options.map((o) => o.trim()).filter((o) => o.length > 0);
 
     if (!cleanQuestion) {
-      alert('Poll question is required');
+      alert(uiText("Poll question is required", uiLang));
       return;
     }
     if (cleanOptions.length < 2) {
-      alert('At least 2 non-empty options are required');
+      alert(uiText("At least 2 non-empty options are required", uiLang));
       return;
     }
 
@@ -79,7 +81,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-xs p-2 sm:p-4 animate-fadeIn select-none">
       <div className="w-full max-w-md bg-[#17212b] border border-[#2b5278] rounded-2xl p-4 sm:p-6 shadow-2xl animate-scaleUp max-h-[92vh] overflow-y-auto">
         <div className="flex items-center justify-between pb-3 border-b border-[#242f3d]">
-          <h3 className="text-base font-bold text-white">Create New Poll</h3>
+          <h3 className="text-base font-bold text-white">{uiText("Create New Poll", uiLang)}</h3>
           <button id="poll-close-btn" onClick={onClose} className="text-[#7f91a4] hover:text-white cursor-pointer">
             <X size={18} />
           </button>
@@ -88,14 +90,12 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           {/* Question */}
           <div>
-            <label className="block text-xs font-semibold text-[#7f91a4] uppercase tracking-wider mb-1">
-              Poll Question
-            </label>
+            <label className="block text-xs font-semibold text-[#7f91a4] uppercase tracking-wider mb-1">{uiText("Poll Question", uiLang)}</label>
             <input
               id="poll-question-input"
               type="text"
               required
-              placeholder="Ask a question..."
+              placeholder={uiText("Ask a question...", uiLang)}
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               className="w-full px-3 py-2 bg-[#242f3d] border border-[#101921] rounded-xl text-white text-xs placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
@@ -104,9 +104,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
 
           {/* Options */}
           <div>
-            <label className="block text-xs font-semibold text-[#7f91a4] uppercase tracking-wider mb-1">
-              Options (2-10)
-            </label>
+            <label className="block text-xs font-semibold text-[#7f91a4] uppercase tracking-wider mb-1">{uiText("Options (2-10)", uiLang)}</label>
             <div className="space-y-2">
               {options.map((opt, i) => (
                 <div key={i} className="flex items-center gap-2">
@@ -118,14 +116,14 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                       checked={correctOption === i}
                       onChange={() => setCorrectOption(i)}
                       className="text-[#24A1DE] focus:ring-0 cursor-pointer"
-                      title="Mark as correct answer"
+                      title={uiText("Mark as correct answer", uiLang)}
                     />
                   )}
                   <input
                     id={'poll-option-input-' + i}
                     type="text"
                     required
-                    placeholder={`Option ${i + 1}`}
+                    placeholder={`${uiText('Option', uiLang)} ${i + 1}`}
                     value={opt}
                     onChange={(e) => handleOptionChange(i, e.target.value)}
                     className="flex-1 px-3 py-2 bg-[#242f3d] border border-[#101921] rounded-xl text-white text-xs placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
@@ -150,8 +148,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                 onClick={handleAddOption}
                 className="mt-2 text-xs font-semibold text-[#24A1DE] hover:text-[#1b8bc2] flex items-center gap-1 cursor-pointer"
               >
-                <Plus size={14} /> Add Option
-              </button>
+                <Plus size={14} />{uiText("Add Option", uiLang)}</button>
             )}
           </div>
 
@@ -165,7 +162,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                 onChange={(e) => setIsAnonymous(e.target.checked)}
                 className="rounded border-[#7f91a4] text-[#24A1DE] focus:ring-0"
               />
-              <span>Anonymous Voting</span>
+              <span>{uiText("Anonymous Voting", uiLang)}</span>
             </label>
 
             {!isQuiz && (
@@ -177,7 +174,7 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                   onChange={(e) => setAllowsMultiple(e.target.checked)}
                   className="rounded border-[#7f91a4] text-[#24A1DE] focus:ring-0"
                 />
-                <span>Multiple Answers</span>
+                <span>{uiText("Multiple Answers", uiLang)}</span>
               </label>
             )}
 
@@ -190,21 +187,18 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
                 className="rounded border-[#7f91a4] text-purple-500 focus:ring-0"
               />
               <span className="flex items-center gap-1 font-semibold">
-                <HelpCircle size={12} /> Quiz Mode (Has 1 Correct Answer)
-              </span>
+                <HelpCircle size={12} />{uiText("Quiz Mode (Has 1 Correct Answer)", uiLang)}</span>
             </label>
           </div>
 
           {/* Quiz Explanation */}
           {isQuiz && (
             <div className="animate-fadeIn">
-              <label className="block text-xs font-semibold text-purple-300 uppercase tracking-wider mb-1">
-                Quiz Explanation (Optional)
-              </label>
+              <label className="block text-xs font-semibold text-purple-300 uppercase tracking-wider mb-1">{uiText("Quiz Explanation (Optional)", uiLang)}</label>
               <textarea
                 id="poll-explanation-textarea"
                 rows={2}
-                placeholder="Explain why the selected option is correct..."
+                placeholder={uiText("Explain why the selected option is correct...", uiLang)}
                 value={explanation}
                 onChange={(e) => setExplanation(e.target.value)}
                 className="w-full px-3 py-2 bg-[#242f3d] border border-purple-500/30 rounded-xl text-white text-xs placeholder-[#7f91a4] focus:outline-none focus:border-purple-400"
@@ -219,16 +213,14 @@ export const CreatePollModal: React.FC<CreatePollModalProps> = ({
               type="button"
               onClick={onClose}
               className="px-4 py-2 text-xs font-semibold text-[#7f91a4] hover:text-white transition cursor-pointer"
-            >
-              Cancel
-            </button>
+            >{uiText("Cancel", uiLang)}</button>
             <button
               id="poll-submit-btn"
               type="submit"
               disabled={submitting}
               className="px-5 py-2 text-xs font-semibold bg-[#24A1DE] hover:bg-[#1b8bc2] text-white rounded-xl transition disabled:opacity-50 cursor-pointer shadow-md"
             >
-              {submitting ? 'Creating...' : isQuiz ? 'Create Quiz' : 'Create Poll'}
+              {submitting ? uiText("Creating...", uiLang) : isQuiz ? uiText("Create Quiz", uiLang) : uiText("Create Poll", uiLang)}
             </button>
           </div>
         </form>

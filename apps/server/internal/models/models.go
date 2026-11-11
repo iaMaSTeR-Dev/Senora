@@ -5,19 +5,20 @@ import (
 )
 
 type User struct {
-	ID           string    `json:"id"`
-	Username     string    `json:"username"`
-	DisplayName  string    `json:"display_name"`
-	Bio          string    `json:"bio,omitempty"`
-	AvatarURL    string    `json:"avatar_url,omitempty"`
-	PasswordHash string    `json:"-"`
-	IsApproved   bool      `json:"is_approved"`
-	IsOwner      bool      `json:"is_owner"`
-	IsBanned       bool      `json:"is_banned"`
-	RegistrationIP string    `json:"registration_ip,omitempty"`
-	SelfDestructMonths int   `json:"self_destruct_months"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                  string    `json:"id"`
+	Username            string    `json:"username"`
+	DisplayName         string    `json:"display_name"`
+	Bio                 string    `json:"bio,omitempty"`
+	AvatarURL           string    `json:"avatar_url,omitempty"`
+	PasswordHash        string    `json:"-"`
+	IsApproved          bool      `json:"is_approved"`
+	IsOwner             bool      `json:"is_owner"`
+	IsBanned            bool      `json:"is_banned"`
+	RegistrationIP      string    `json:"registration_ip,omitempty"`
+	SelfDestructMonths  int       `json:"self_destruct_months"`
+	SelfDestructEnabled bool      `json:"self_destruct_enabled"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type Device struct {
@@ -50,7 +51,7 @@ type Conversation struct {
 	PinnedMessageID string    `json:"pinned_message_id,omitempty"`
 	SecurityMode    string    `json:"security_mode"` // "normal", "e2ee_initializing", "e2ee_active", "e2ee_failed"
 	UnreadCount     int       `json:"unread_count"`
-	DisappearingTTL int       `json:"disappearing_ttl"` // TTL in seconds (0 = disabled)
+	DisappearingTTL int       `json:"disappearing_ttl"`  // TTL in seconds (0 = disabled)
 	SlowModeSeconds int       `json:"slow_mode_seconds"` // 0 = disabled, 10, 30, 60, 300
 	IsForum         bool      `json:"is_forum"`          // Topic-based Supergroup Forum
 	CreatedAt       time.Time `json:"created_at"`
@@ -123,6 +124,7 @@ type Message struct {
 	SenderID           string     `json:"sender_id"`
 	SenderUsername     string     `json:"sender_username,omitempty"`
 	Ciphertext         string     `json:"ciphertext"`
+	AttachmentIDs      []string   `json:"attachment_ids,omitempty"`
 	Nonce              string     `json:"nonce"`
 	EphemeralPublicKey string     `json:"ephemeral_public_key,omitempty"`
 	IdempotencyKey     string     `json:"idempotency_key,omitempty"`
@@ -295,7 +297,7 @@ type Poll struct {
 	IsAnonymous    bool          `json:"is_anonymous"`
 	AllowsMultiple bool          `json:"allows_multiple"`
 	IsQuiz         bool          `json:"is_quiz"`
-	CorrectOption  int           `json:"correct_option,omitempty"`
+	CorrectOption  int           `json:"correct_option"`
 	Explanation    string        `json:"explanation,omitempty"`
 	IsClosed       bool          `json:"is_closed"`
 	CreatedAt      time.Time     `json:"created_at"`
@@ -332,6 +334,7 @@ type Story struct {
 }
 
 type ScheduledMessage struct {
+	DeliveryError  string    `json:"delivery_error,omitempty"`
 	ID             string    `json:"id"`
 	ConversationID string    `json:"conversation_id"`
 	SenderID       string    `json:"sender_id"`
@@ -451,10 +454,8 @@ type WatchPartySession struct {
 	MediaTitle     string    `json:"media_title"`
 	LeaderID       string    `json:"leader_id"`
 	LeaderName     string    `json:"leader_name"`
-	State          string    `json:"state"` // "playing", "paused", "buffering"
+	State          string    `json:"state"`        // "playing", "paused", "buffering"
 	CurrentTime    float64   `json:"current_time"` // in seconds
 	PlaybackRate   float64   `json:"playback_rate"`
 	LastSyncedAt   time.Time `json:"last_synced_at"`
 }
-
-

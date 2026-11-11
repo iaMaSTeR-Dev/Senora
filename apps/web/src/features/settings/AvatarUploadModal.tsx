@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useRef, useEffect } from 'react';
 import { User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -23,6 +24,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
   onClose,
   onSuccess,
 }) => {
+  const uiLang = useUILanguage();
   const [imageSrc, setImageSrc] = useState<string | null>(null);
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -40,7 +42,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
       if (!file.type.startsWith('image/')) {
-        setError('Please select a valid image file (PNG, JPG, WebP).');
+        setError(uiText("Please select a valid image file (PNG, JPG, WebP).", uiLang));
         return;
       }
       const reader = new FileReader();
@@ -127,7 +129,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
 
     canvas.toBlob(async (blob) => {
       if (!blob) {
-        setError('Could not process avatar image.');
+        setError(uiText("Could not process avatar image.", uiLang));
         setSaving(false);
         return;
       }
@@ -137,7 +139,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
         onSuccess(updated);
         onClose();
       } catch (err: any) {
-        setError(err.message || 'Avatar upload failed.');
+        setError(err.message || uiText("Avatar upload failed.", uiLang));
       } finally {
         setSaving(false);
       }
@@ -146,7 +148,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
 
   // Remove Avatar
   const handleDeleteAvatar = async () => {
-    if (!confirm('Are you sure you want to remove your avatar?')) return;
+    if (!confirm(uiText("Are you sure you want to remove your avatar?", uiLang))) return;
     setSaving(true);
     setError(null);
     try {
@@ -154,7 +156,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
       onSuccess(updated);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to remove avatar.');
+      setError(err.message || uiText("Failed to remove avatar.", uiLang));
     } finally {
       setSaving(false);
     }
@@ -170,8 +172,8 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
               <Camera className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold">Profile Avatar</h3>
-              <p className="text-[11px] text-[#7f91a4]">Crop, reposition, and update your photo</p>
+              <h3 className="text-sm font-bold">{uiText("Profile Avatar", uiLang)}</h3>
+              <p className="text-[11px] text-[#7f91a4]">{uiText("Crop, reposition, and update your photo", uiLang)}</p>
             </div>
           </div>
           <button
@@ -185,7 +187,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
         {error && (
           <div className="mt-4 p-3 rounded-2xl bg-red-950/80 border border-red-800 text-red-300 text-xs flex items-center gap-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            <span>{error}</span>
+            <span>{uiText(error, uiLang)}</span>
           </div>
         )}
 
@@ -222,14 +224,14 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
                 />
                 <ZoomIn className="h-4 w-4 text-[#7f91a4]" />
               </div>
-              <span className="text-[10px] text-[#7f91a4]">Drag to reposition image</span>
+              <span className="text-[10px] text-[#7f91a4]">{uiText("Drag to reposition image", uiLang)}</span>
             </div>
           ) : (
             <div className="flex flex-col items-center gap-4">
               <div className="relative">
                 {currentUser.avatar_url ? (
                   <img
-                    src={currentUser.avatar_url}
+                    src={api.avatarURL(currentUser.avatar_url)}
                     alt={currentUser.display_name}
                     className="h-36 w-36 rounded-full object-cover border-4 border-[#24A1DE] shadow-xl"
                   />
@@ -239,7 +241,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
                   </div>
                 )}
               </div>
-              <p className="text-xs text-[#7f91a4]">Select a new image from your device</p>
+              <p className="text-xs text-[#7f91a4]">{uiText("Select a new image from your device", uiLang)}</p>
             </div>
           )}
 
@@ -263,7 +265,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
                 className="flex-1 py-2.5 px-4 rounded-2xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-lg"
               >
                 <Check className="h-4 w-4" />
-                <span>{saving ? 'Saving...' : 'Set New Avatar'}</span>
+                <span>{saving ? uiText("Saving...", uiLang) : uiText("Set New Avatar", uiLang)}</span>
               </button>
 
               <button
@@ -273,9 +275,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
                 }}
                 disabled={saving}
                 className="py-2.5 px-4 rounded-2xl bg-[#242f3d] hover:bg-[#202b36] text-[#7f91a4] hover:text-white font-semibold text-xs transition cursor-pointer"
-              >
-                Cancel
-              </button>
+              >{uiText("Cancel", uiLang)}</button>
             </div>
           ) : (
             <button
@@ -284,7 +284,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
               className="w-full py-2.5 px-4 rounded-2xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-lg"
             >
               <Upload className="h-4 w-4" />
-              <span>Choose Photo from Device</span>
+              <span>{uiText("Choose Photo from Device", uiLang)}</span>
             </button>
           )}
 
@@ -296,7 +296,7 @@ export const AvatarUploadModal: React.FC<AvatarUploadModalProps> = ({
               className="w-full py-2 px-4 rounded-2xl bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold text-xs flex items-center justify-center gap-2 transition cursor-pointer border border-red-500/20"
             >
               <Trash2 className="h-3.5 w-3.5" />
-              <span>Remove Current Photo</span>
+              <span>{uiText("Remove Current Photo", uiLang)}</span>
             </button>
           )}
         </div>

@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { Conversation, User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -81,6 +82,7 @@ const ConversationListItem: React.FC<ConversationListItemProps> = ({
   draft,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const peer = c.type === 'direct' && c.participants ? (c.participants.find((p) => p.id !== currentUser.id) || c.participants[0]) : null;
   const isMasterBot = c.id.includes('masterbot') || title.includes('Master Bot') || peer?.id === 'usr_senoramasterbot';
   const avatarSrc = isSaved ? null : (c.avatar_url || peer?.avatar_url);
@@ -136,23 +138,21 @@ const ConversationListItem: React.FC<ConversationListItemProps> = ({
             {isSaved && <Bookmark className="h-3 w-3 text-[#24A1DE] flex-shrink-0" />}
             <h3 className="text-xs font-semibold truncate">{title}</h3>
             {isMasterBot && (
-              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/25 text-purple-300 border border-purple-400/30 shrink-0">
-                BOT
-              </span>
+              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/25 text-purple-300 border border-purple-400/30 shrink-0">{uiText("BOT", uiLang)}</span>
             )}
           </div>
           <div className="flex items-center gap-1 flex-shrink-0 ml-1">
             {isMuted && <BellOff className="h-3 w-3 text-[#7f91a4]" />}
             {isPinned && <Pin className="h-3 w-3 text-[#24A1DE]" />}
             <span className="text-[10px] text-[#7f91a4]">
-              {new Date(c.updated_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {new Date(c.updated_at).toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
             </span>
           </div>
         </div>
         <div className="flex items-center justify-between mt-0.5">
           {draft && draft.trim() ? (
             <p className="text-[11px] truncate flex-1 pr-1">
-              <span className="text-red-400 font-semibold">Draft: </span>
+              <span className="text-red-400 font-semibold">{uiText("Draft: ", uiLang)}</span>
               <span className="text-slate-300">{draft}</span>
             </p>
           ) : (
@@ -234,6 +234,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   theme,
   onToggleTheme,
 }) => {
+  const uiLang = useUILanguage(lang);
   const [activeTab, setActiveTab] = useState<CategoryTab>('all');
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [showNewModal, setShowNewModal] = useState(false);
@@ -330,7 +331,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     saveCustomFolders(updated);
   };
 
-  // Pin, Mute, Archive state (Phase 10.7)
+  // Pin, Mute, Archive state
   const [pinnedIds, setPinnedIds] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem('senora_pinned_convs') || '[]');
@@ -773,7 +774,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     return t.start_chat;
   };
 
-  // Filter conversations according to category tab and archive status (Phase 10.7)
+  // Filter conversations according to category tab and archive status
   const filteredConversations = conversations.filter((c) => {
     // Master Bot must NEVER be shown to non-owners
     const isBot = c.id.includes('masterbot') || c.participants?.some((p) => p.id === 'usr_senoramasterbot');
@@ -830,15 +831,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <button
               onClick={() => setDrawerOpen(true)}
               className="p-2 rounded-xl text-[#7f91a4] hover:text-white hover:bg-[#202b36] transition cursor-pointer"
-              title="Open Menu"
+              title={uiText("Open Menu", uiLang)}
             >
               <Menu className="h-5 w-5" />
             </button>
             <div className="flex items-center gap-2">
               <span className="font-bold text-sm tracking-wide text-white">{t.app_title}</span>
-              <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold tracking-wider">
-                SIGNAL E2EE
-              </span>
+              <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-[9px] font-bold tracking-wider">{uiText("SIGNAL E2EE", uiLang)}</span>
             </div>
           </div>
 
@@ -875,7 +874,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </div>
 
-        {/* Stories Bar (Phase 15) */}
+        {/* Stories Bar */}
         {searchQuery.trim() === '' && <StoriesBar currentUser={currentUser} />}
 
         {/* Category Tabs (All, Direct, Groups, Channels, Saved Messages, Archived) */}
@@ -975,7 +974,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   : 'border-transparent text-[#7f91a4] hover:text-white'
                 }`}
             >
-              {lang === 'fa' ? 'پوشه آرشیو' : 'Archived'} ({archivedIds.length})
+              {lang === "fa" ? 'پوشه آرشیو' : 'Archived'} ({archivedIds.length})
             </button>
           </div>
         )}
@@ -986,17 +985,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           {searchQuery.trim() !== '' && (
             <div className="mb-3 space-y-3">
               {searching ? (
-                <div className="p-4 text-center text-xs text-[#7f91a4]">Searching across Senora...</div>
+                <div className="p-4 text-center text-xs text-[#7f91a4]">{uiText("Searching across SENORA...", uiLang)}</div>
               ) : searchResults.conversations.length === 0 && searchResults.channels.length === 0 && searchResults.users.length === 0 ? (
                 <div className="p-4 rounded-2xl bg-[#1c2733] border border-[#242f3d] text-center space-y-2 my-2 select-none">
                   <div className="h-10 w-10 mx-auto rounded-full bg-[#24A1DE]/15 flex items-center justify-center text-[#24A1DE]">
                     <Search className="h-5 w-5" />
                   </div>
                   <p className="text-xs font-bold text-white">
-                    {lang === 'fa' ? 'نتیجه‌ای با این شناسه یافت نشد' : 'No exact match found'}
+                    {lang === "fa" ? 'نتیجه‌ای با این شناسه یافت نشد' : 'No exact match found'}
                   </p>
                   <p className="text-[11px] text-[#7f91a4] leading-relaxed max-w-xs mx-auto">
-                    {lang === 'fa'
+                    {lang === "fa"
                       ? 'جستجوی آزاد یوزرنیم و کانال غیرفعال است. جهت باز کردن گفتگو، کانال یا گروه، آیدی دقیق را وارد کنید (مانند username@ یا شناسه دقیق).'
                       : 'Public search is disabled. Enter the exact @username, channel handle, or conversation ID to open.'}
                   </p>
@@ -1007,7 +1006,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   {searchResults.conversations.length > 0 && (
                     <div>
                       <div className="px-2 py-1 text-[11px] font-semibold text-[#7f91a4] uppercase tracking-wider">
-                        {lang === 'fa' ? 'گفتگوهای شما' : 'Chats'}
+                        {lang === "fa" ? 'گفتگوهای شما' : 'Chats'}
                       </div>
                       {searchResults.conversations.map((c) => {
                         const title = getConversationTitle(c);
@@ -1060,7 +1059,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   {searchResults.channels.length > 0 && (
                     <div>
                       <div className="px-2 py-1 text-[11px] font-semibold text-[#7f91a4] uppercase tracking-wider">
-                        {lang === 'fa' ? 'کانال‌ها و گروه‌ها' : 'Channels & Groups'}
+                        {lang === "fa" ? 'کانال‌ها و گروه‌ها' : 'Channels & Groups'}
                       </div>
                       {searchResults.channels.map((ch) => {
                         const isChannel = ch.type === 'channel';
@@ -1083,7 +1082,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                   onConversationCreated(conv);
                                   onSelectConversation(conv);
                                 } catch (e: any) {
-                                  alert(e?.message || 'Could not open conversation');
+                                  alert(e?.message || uiText("Could not open conversation", uiLang));
                                 }
                               }
                               setSearchQuery('');
@@ -1107,11 +1106,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                                     isChannel ? 'bg-purple-500/20 text-purple-300' : 'bg-amber-500/20 text-amber-300'
                                   }`}
                                 >
-                                  {isChannel ? (lang === 'fa' ? 'کانال' : 'Channel') : (lang === 'fa' ? 'گروه' : 'Group')}
+                                  {isChannel ? (lang === "fa" ? uiText("کانال", uiLang) : uiText("Channel", uiLang)) : (lang === "fa" ? uiText("گروه", uiLang) : uiText("Group", uiLang))}
                                 </span>
                               </div>
                               <p className="text-xs text-[#7f91a4] truncate">
-                                {ch.username ? `@${ch.username}` : ch.description || (isChannel ? 'Public channel' : 'Group')}
+                                {ch.username ? `@${ch.username}` : ch.description || (isChannel ? uiText("Public channel", uiLang) : uiText("Group", uiLang))}
                               </p>
                             </div>
                           </button>
@@ -1124,7 +1123,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   {searchResults.users.length > 0 && (
                     <div>
                       <div className="px-2 py-1 text-[11px] font-semibold text-[#7f91a4] uppercase tracking-wider">
-                        {lang === 'fa' ? 'کاربران' : t.users_found}
+                        {lang === "fa" ? 'کاربران' : t.users_found}
                       </div>
                       {searchResults.users.map((user) => (
                         <button
@@ -1134,7 +1133,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         >
                           <div className="h-10 w-10 rounded-full bg-gradient-to-tr from-[#3ca9e2] to-[#24A1DE] flex items-center justify-center font-bold text-white shadow-sm overflow-hidden flex-shrink-0">
                             {user.avatar_url ? (
-                              <img src={user.avatar_url} alt={user.display_name} className="h-full w-full object-cover" />
+                              <img src={api.avatarURL(user.avatar_url)} alt={user.display_name} className="h-full w-full object-cover" />
                             ) : (
                               user.display_name.charAt(0).toUpperCase()
                             )}
@@ -1143,7 +1142,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-medium text-white truncate">{user.display_name}</p>
                               <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-[#24A1DE]/20 text-[#24A1DE]">
-                                {lang === 'fa' ? 'کاربر' : 'User'}
+                                {lang === "fa" ? 'کاربر' : 'User'}
                               </span>
                             </div>
                             <p className="text-xs text-[#7f91a4] truncate">@{user.username}</p>
@@ -1173,16 +1172,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </div>
               <p className="text-xs font-semibold text-white mb-1">
                 {activeTab === 'groups'
-                  ? 'No Groups Yet'
+                  ? uiText("No Groups Yet", uiLang)
                   : activeTab === 'channels'
-                    ? 'No Channels Yet'
+                    ? uiText("No Channels Yet", uiLang)
                     : t.no_conversations}
               </p>
               <p className="text-[11px] text-[#7f91a4] max-w-[200px]">
                 {activeTab === 'groups'
-                  ? 'Create a group to chat with multiple peers'
+                  ? uiText("Create a group to chat with multiple peers", uiLang)
                   : activeTab === 'channels'
-                    ? 'Create a channel to broadcast updates'
+                    ? uiText("Create a channel to broadcast updates", uiLang)
                     : t.start_chat}
               </p>
             </div>
@@ -1229,12 +1228,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 setInspectedProfileUser(currentUser);
               }}
               className="p-5 pt-[max(1.25rem,env(safe-area-inset-top,0px))] bg-[#1f2b38] border-b border-[#242f3d] cursor-pointer hover:bg-[#233140] transition flex-shrink-0"
-              title="View Profile"
+              title={uiText("View Profile", uiLang)}
             >
               <div className="flex items-center justify-between mb-3">
                 <div className="h-14 w-14 rounded-full bg-gradient-to-tr from-[#24A1DE] to-[#60a5fa] flex items-center justify-center font-bold text-white text-xl shadow-md overflow-hidden">
                   {currentUser.avatar_url ? (
-                    <img src={currentUser.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                    <img src={api.avatarURL(currentUser.avatar_url)} alt={uiText("Avatar", uiLang)} className="h-full w-full object-cover" />
                   ) : (
                     currentUser.display_name.charAt(0).toUpperCase()
                   )}
@@ -1269,20 +1268,33 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         onSelectConversation(res.conversation);
                       }
                     } catch (err: any) {
-                      alert(err?.message || 'Failed to open Master Bot');
+                      alert(err?.message || uiText("Failed to open Master Bot", uiLang));
                     }
                   }}
                   className="w-full flex items-center justify-between px-3 py-2.5 rounded-xl bg-gradient-to-r from-purple-900/40 to-[#24A1DE]/20 hover:from-purple-900/60 hover:to-[#24A1DE]/40 border border-purple-500/30 transition text-left text-xs font-semibold text-white cursor-pointer shadow-sm mb-1.5"
                 >
                   <div className="flex items-center gap-3.5">
                     <Bot className="h-4 w-4 text-purple-400" />
-                    <span>🤖 Senora Master Bot</span>
+                    <span>{uiText("🤖 SENORA Master Bot", uiLang)}</span>
                   </div>
-                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/30 text-purple-200 border border-purple-400/30">
-                    OWNER
-                  </span>
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-500/30 text-purple-200 border border-purple-400/30">{uiText("OWNER", uiLang)}</span>
                 </button>
               )}
+
+              <button
+                onClick={async () => {
+                  setDrawerOpen(false);
+                  try {
+                    const conv = await api.openBotFather();
+                    onConversationCreated(conv);
+                    onSelectConversation(conv);
+                  } catch (error) { alert(error instanceof Error ? error.message : 'Could not open BotFather'); }
+                }}
+                className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl hover:bg-[#202b36] transition text-left text-xs font-semibold text-white cursor-pointer"
+              >
+                <Bot className="h-4 w-4 text-emerald-400" />
+                <span>{lang === 'fa' ? 'ساخت و مدیریت ربات‌ها · BotFather' : 'Create and manage bots · BotFather'}</span>
+              </button>
 
               <button
                 onClick={handleOpenSavedMessages}
@@ -1322,7 +1334,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 className="w-full flex items-center gap-3.5 px-3 py-2.5 rounded-xl hover:bg-[#202b36] transition text-left text-xs font-semibold text-white cursor-pointer"
               >
                 <AtSign className="h-4 w-4 text-[#24A1DE]" />
-                <span>{lang === 'fa' ? 'باز کردن با شناسه یا آیدی' : 'Open by ID / Handle'}</span>
+                <span>{lang === "fa" ? 'باز کردن با شناسه یا آیدی' : 'Open by ID / Handle'}</span>
               </button>
 
               <button
@@ -1345,7 +1357,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               >
                 <div className="flex items-center gap-3.5">
                   <Server className="h-4 w-4 text-blue-400" />
-                  <span>Server Network</span>
+                  <span>{uiText("Server Network", uiLang)}</span>
                 </div>
                 <span className="h-2 w-2 rounded-full bg-emerald-400"></span>
               </button>
@@ -1371,18 +1383,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <button
                   onClick={onToggleTheme}
                   className="px-2.5 py-1 rounded-lg bg-[#242f3d] hover:bg-[#2b5278] text-white text-[11px] font-medium transition cursor-pointer"
-                >
-                  Toggle
-                </button>
+                >{uiText("Toggle", uiLang)}</button>
               </div>
 
               <div className="flex items-center justify-between px-3 py-2 text-xs text-[#7f91a4]">
-                <span>Language</span>
+                <span>{uiText("Language", uiLang)}</span>
                 <button
                   onClick={onToggleLang}
+                  aria-label={lang === 'fa' ? 'تغییر زبان به انگلیسی' : 'Switch language to Persian'}
                   className="px-2.5 py-1 rounded-lg bg-[#242f3d] hover:bg-emerald-600 text-white text-[11px] font-bold transition cursor-pointer"
                 >
-                  {lang === 'en' ? 'FA (فارسی)' : 'EN (English)'}
+                  {lang === "en" ? 'FA (فارسی)' : 'EN (English)'}
                 </button>
               </div>
 
@@ -1401,7 +1412,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       )}
 
-      {/* Conversation Right-Click Context Menu (Phase 10.7) */}
+      {/* Conversation Right-Click Context Menu */}
       {contextMenu && (
         <div
           className="fixed inset-0 z-50 select-none"
@@ -1424,21 +1435,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
               className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-[#202b36] text-left cursor-pointer transition"
             >
               <Pin size={14} className={pinnedIds.includes(contextMenu.convId) ? 'text-[#24A1DE]' : 'text-[#7f91a4]'} />
-              <span>{pinnedIds.includes(contextMenu.convId) ? 'Unpin from Top' : 'Pin to Top'}</span>
+              <span>{pinnedIds.includes(contextMenu.convId) ? uiText("Unpin from Top", uiLang) : uiText("Pin to Top", uiLang)}</span>
             </button>
             <button
               onClick={() => toggleMute(contextMenu.convId)}
               className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-[#202b36] text-left cursor-pointer transition"
             >
               <BellOff size={14} className={mutedIds.includes(contextMenu.convId) ? 'text-amber-400' : 'text-[#7f91a4]'} />
-              <span>{mutedIds.includes(contextMenu.convId) ? 'Unmute' : 'Mute Notifications'}</span>
+              <span>{mutedIds.includes(contextMenu.convId) ? uiText("Unmute", uiLang) : uiText("Mute Notifications", uiLang)}</span>
             </button>
             <button
               onClick={() => toggleArchive(contextMenu.convId)}
               className="w-full flex items-center gap-2.5 px-3.5 py-2 hover:bg-[#202b36] text-left cursor-pointer transition"
             >
               <Archive size={14} className={archivedIds.includes(contextMenu.convId) ? 'text-[#24A1DE]' : 'text-[#7f91a4]'} />
-              <span>{lang === 'fa' ? (archivedIds.includes(contextMenu.convId) ? 'خروج از آرشیو' : 'انتقال به آرشیو') : (archivedIds.includes(contextMenu.convId) ? 'Unarchive Chat' : 'Archive Chat')}</span>
+              <span>{lang === "fa" ? (archivedIds.includes(contextMenu.convId) ? 'خروج از آرشیو' : 'انتقال به آرشیو') : (archivedIds.includes(contextMenu.convId) ? 'Unarchive Chat' : 'Archive Chat')}</span>
             </button>
             <div className="border-t border-[#242f3d] my-1" />
             <button
@@ -1481,7 +1492,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         />
       )}
 
-      {/* Telegram-style User Profile Modal */}
+      {/* User Profile Modal */}
       {inspectedProfileUser && (
         <UserProfileModal
           user={inspectedProfileUser}
@@ -1547,8 +1558,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="py-4 space-y-2 max-h-60 overflow-y-auto">
               {customFolders.length === 0 ? (
                 <div className="text-center py-6 text-xs text-[#7f91a4]">
-                  <p>هنوز پوشه‌ای ایجاد نکرده‌اید.</p>
-                  <p className="text-[11px] mt-1">با ایجاد پوشه گفتگوهای خود را دسته‌بندی کنید.</p>
+                  <p>{uiText("هنوز پوشه‌ای ایجاد نکرده‌اید.", uiLang)}</p>
+                  <p className="text-[11px] mt-1">{uiText("با ایجاد پوشه گفتگوهای خود را دسته‌بندی کنید.", uiLang)}</p>
                 </div>
               ) : (
                 customFolders.map((f) => {
@@ -1600,9 +1611,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 type="button"
                 onClick={() => setAddToFolderModalConvId(null)}
                 className="px-4 py-1.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-xs font-semibold text-white transition cursor-pointer"
-              >
-                بستن
-              </button>
+              >{uiText("بستن", uiLang)}</button>
             </div>
           </div>
         </div>
@@ -1643,7 +1652,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   type="text"
                   value={folderNameInput}
                   onChange={(e) => setFolderNameInput(e.target.value)}
-                  placeholder="مثلاً: کاری، خانواده، VIP"
+                  placeholder={uiText("مثلاً: کاری، خانواده، VIP", uiLang)}
                   autoFocus
                   className="w-full bg-[#242f3d] border border-[#242f3d] rounded-xl px-3 py-2 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
                 />

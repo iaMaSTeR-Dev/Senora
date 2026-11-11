@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { StickerPack } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -21,6 +22,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
   onClose,
   onPackCreatedOrInstalled,
 }) => {
+  const uiLang = useUILanguage();
   const [tab, setTab] = useState<'create' | 'import'>('create');
 
   // Create state
@@ -105,7 +107,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
   const handleCreatePack = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!title.trim() || stickers.length === 0) {
-      setError('Please provide a title and at least one sticker.');
+      setError(uiText("Please provide a title and at least one sticker.", uiLang));
       return;
     }
     setError(null);
@@ -137,7 +139,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
       setCreatedPack(pack);
       onPackCreatedOrInstalled(pack);
     } catch (err: any) {
-      setError(err.message || 'Failed to create sticker pack');
+      setError(err.message || uiText("Failed to create sticker pack", uiLang));
     } finally {
       setSaving(false);
     }
@@ -159,7 +161,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
       const pack = await api.getStickerPackByShareCode(code);
       setInspectedPack(pack);
     } catch (err: any) {
-      setError(err.message || 'Sticker pack not found with this code');
+      setError(err.message || uiText("Sticker pack not found with this code", uiLang));
     } finally {
       setInspecting(false);
     }
@@ -174,7 +176,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
       onPackCreatedOrInstalled(inspectedPack);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to install sticker pack');
+      setError(err.message || uiText("Failed to install sticker pack", uiLang));
     } finally {
       setInstalling(false);
     }
@@ -198,8 +200,8 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
               <Sparkles className="h-5 w-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold">Custom Sticker Packs</h3>
-              <p className="text-[11px] text-[#7f91a4]">Create, publish, and share sticker packs</p>
+              <h3 className="text-sm font-bold">{uiText("Custom Sticker Packs", uiLang)}</h3>
+              <p className="text-[11px] text-[#7f91a4]">{uiText("Create, publish, and share sticker packs", uiLang)}</p>
             </div>
           </div>
           <button
@@ -218,24 +220,20 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
             className={`flex-1 py-1.5 text-xs font-semibold rounded-xl transition cursor-pointer ${
               tab === 'create' ? 'bg-[#24A1DE] text-white shadow' : 'text-[#7f91a4] hover:text-white'
             }`}
-          >
-            Create Pack
-          </button>
+          >{uiText("Create Pack", uiLang)}</button>
           <button
             type="button"
             onClick={() => setTab('import')}
             className={`flex-1 py-1.5 text-xs font-semibold rounded-xl transition cursor-pointer ${
               tab === 'import' ? 'bg-[#24A1DE] text-white shadow' : 'text-[#7f91a4] hover:text-white'
             }`}
-          >
-            Import via Share Code
-          </button>
+          >{uiText("Import via Share Code", uiLang)}</button>
         </div>
 
         {error && (
           <div className="mb-4 p-3 rounded-2xl bg-red-950/80 border border-red-800 text-red-300 text-xs flex items-center gap-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            <span>{error}</span>
+            <span>{uiText(error, uiLang)}</span>
           </div>
         )}
 
@@ -248,16 +246,12 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                   <Check className="h-8 w-8" />
                 </div>
                 <div>
-                  <h4 className="text-base font-bold text-white">{createdPack.title} Published!</h4>
-                  <p className="text-xs text-[#7f91a4] mt-1">
-                    Your sticker pack is now active and ready to share.
-                  </p>
+                  <h4 className="text-base font-bold text-white">{createdPack.title}{uiText(" Published!", uiLang)}</h4>
+                  <p className="text-xs text-[#7f91a4] mt-1">{uiText("Your sticker pack is now active and ready to share.", uiLang)}</p>
                 </div>
 
                 <div className="w-full bg-[#101921] p-3 rounded-2xl border border-[#242f3d] text-left">
-                  <span className="text-[10px] text-[#7f91a4] uppercase font-semibold block mb-1">
-                    Share Code
-                  </span>
+                  <span className="text-[10px] text-[#7f91a4] uppercase font-semibold block mb-1">{uiText("Share Code", uiLang)}</span>
                   <div className="flex items-center justify-between font-mono text-sm text-[#24A1DE] font-bold">
                     <span>{createdPack.share_code}</span>
                     <button
@@ -266,7 +260,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                       className="px-3 py-1 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-white text-xs font-sans font-semibold flex items-center gap-1.5 transition cursor-pointer"
                     >
                       {copiedShare ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-                      <span>{copiedShare ? 'Copied' : 'Copy Link'}</span>
+                      <span>{copiedShare ? uiText("Copied", uiLang) : uiText("Copy Link", uiLang)}</span>
                     </button>
                   </div>
                 </div>
@@ -275,35 +269,29 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                   type="button"
                   onClick={onClose}
                   className="w-full py-2.5 rounded-2xl bg-[#242f3d] hover:bg-[#202b36] text-white text-xs font-semibold cursor-pointer"
-                >
-                  Done
-                </button>
+                >{uiText("Done", uiLang)}</button>
               </div>
             ) : (
               <form onSubmit={handleCreatePack} className="space-y-4">
                 <div>
-                  <label className="text-xs font-semibold text-[#7f91a4] block mb-1">
-                    Pack Title *
-                  </label>
+                  <label className="text-xs font-semibold text-[#7f91a4] block mb-1">{uiText("Pack Title *", uiLang)}</label>
                   <input
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
-                    placeholder="e.g. Neon Kittens"
+                    placeholder={uiText("e.g. Neon Kittens", uiLang)}
                     className="w-full bg-[#101921] border border-[#242f3d] rounded-2xl px-3.5 py-2 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
                     required
                   />
                 </div>
 
                 <div>
-                  <label className="text-xs font-semibold text-[#7f91a4] block mb-1">
-                    Short Identifier (Optional)
-                  </label>
+                  <label className="text-xs font-semibold text-[#7f91a4] block mb-1">{uiText("Short Identifier (Optional)", uiLang)}</label>
                   <input
                     type="text"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="e.g. neon_kittens"
+                    placeholder={uiText("e.g. neon_kittens", uiLang)}
                     className="w-full bg-[#101921] border border-[#242f3d] rounded-2xl px-3.5 py-2 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
                   />
                 </div>
@@ -311,8 +299,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                 {/* Stickers List */}
                 <div>
                   <div className="flex items-center justify-between mb-2">
-                    <label className="text-xs font-semibold text-[#7f91a4]">
-                      Stickers ({stickers.length})
+                    <label className="text-xs font-semibold text-[#7f91a4]">{uiText("Stickers (", uiLang)}{stickers.length})
                     </label>
                     <button
                       type="button"
@@ -320,7 +307,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                       className="flex items-center gap-1.5 text-xs font-semibold text-[#24A1DE] hover:underline cursor-pointer"
                     >
                       <Plus size={13} />
-                      <span>Batch Upload Photos / WebM / WebP</span>
+                      <span>{uiText("Batch Upload Photos / WebM / WebP", uiLang)}</span>
                     </button>
                     <input
                       ref={fileInputRef}
@@ -381,7 +368,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                   {uploadingBatch && (
                     <div className="text-[11px] text-[#24A1DE] mt-1 flex items-center gap-1">
                       <Upload size={12} className="animate-bounce" />
-                      <span>Processing uploaded media...</span>
+                      <span>{uiText("Processing uploaded media...", uiLang)}</span>
                     </div>
                   )}
                 </div>
@@ -392,23 +379,21 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                     type="text"
                     value={newEmoji}
                     onChange={(e) => setNewEmoji(e.target.value)}
-                    placeholder="Emoji"
+                    placeholder={uiText("Emoji", uiLang)}
                     className="w-14 bg-[#101921] border border-[#242f3d] rounded-xl px-2 py-1.5 text-center text-sm"
                   />
                   <input
                     type="text"
                     value={newAssetUrl}
                     onChange={(e) => setNewAssetUrl(e.target.value)}
-                    placeholder="Custom Image URL, WebM URL, or SVG"
+                    placeholder={uiText("Custom Image URL, WebM URL, or SVG", uiLang)}
                     className="flex-1 bg-[#101921] border border-[#242f3d] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none"
                   />
                   <button
                     type="button"
                     onClick={handleAddSticker}
                     className="py-1.5 px-3 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-semibold text-xs transition cursor-pointer"
-                  >
-                    Add
-                  </button>
+                  >{uiText("Add", uiLang)}</button>
                 </div>
 
                 <button
@@ -416,7 +401,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                   disabled={saving}
                   className="w-full py-3 rounded-2xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-bold text-xs shadow-lg transition cursor-pointer"
                 >
-                  {saving ? 'Creating Pack...' : 'Publish & Install Sticker Pack'}
+                  {saving ? uiText("Creating Pack...", uiLang) : uiText("Publish & Install Sticker Pack", uiLang)}
                 </button>
               </form>
             )}
@@ -431,7 +416,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                 type="text"
                 value={shareInput}
                 onChange={(e) => setShareInput(e.target.value)}
-                placeholder="Paste Share Code (e.g. stk_...) or Share Link"
+                placeholder={uiText("Paste Share Code (e.g. stk_...) or Share Link", uiLang)}
                 className="flex-1 bg-[#101921] border border-[#242f3d] rounded-2xl px-3.5 py-2 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
               />
               <button
@@ -440,7 +425,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                 disabled={inspecting}
                 className="py-2 px-4 rounded-2xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-semibold text-xs transition cursor-pointer"
               >
-                {inspecting ? 'Inspecting...' : 'Find Pack'}
+                {inspecting ? uiText("Inspecting...", uiLang) : uiText("Find Pack", uiLang)}
               </button>
             </div>
 
@@ -449,9 +434,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                 <div className="flex items-center justify-between">
                   <div>
                     <h4 className="text-sm font-bold text-white">{inspectedPack.title}</h4>
-                    <p className="text-[11px] text-[#7f91a4]">
-                      By @{inspectedPack.author} • {inspectedPack.sticker_count} stickers
-                    </p>
+                    <p className="text-[11px] text-[#7f91a4]">{uiText("By @", uiLang)}{inspectedPack.author} • {inspectedPack.sticker_count}{uiText("stickers", uiLang)}</p>
                   </div>
                   <button
                     type="button"
@@ -460,7 +443,7 @@ export const StickerPackCreatorModal: React.FC<StickerPackCreatorModalProps> = (
                     className="py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-md"
                   >
                     <Download className="h-3.5 w-3.5" />
-                    <span>{installing ? 'Installing...' : 'Install'}</span>
+                    <span>{installing ? uiText("Installing...", uiLang) : uiText("Install", uiLang)}</span>
                   </button>
                 </div>
 

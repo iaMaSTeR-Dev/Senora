@@ -815,7 +815,7 @@ class WebRTCManager {
     this.notify();
   }
 
-  // Screen sharing toggle (Phase 14 & 17: Video + Background Audio)
+  // Screen sharing toggle
   async toggleScreenShare(): Promise<void> {
     if (!this.currentSession || !this.peerConnection) return;
 

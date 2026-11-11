@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { StreamingVideo } from './StreamingVideo';
+import { uiText, useUILanguage } from "../../app/language";
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Conversation, Message, User, Sticker, StickerPack, GIFItem, ConversationMemberDetail, BotActionButton, ForumTopic, WatchPartySession, Attachment } from '../../app/types';
 import { StickerPackModal } from './StickerPackModal';
 import { WhisperMessageCard } from './WhisperMessageCard';
@@ -13,6 +15,11 @@ import { translations, Language } from '../../app/i18n';
 import { webrtcManager } from '../calls/webrtcManager';
 import { mediaDeviceManager } from '../calls/mediaDeviceManager';
 import { loadSettings, WALLPAPERS } from '../settings/settingsModel';
+import { useSettings, shouldAutoDownload } from '../settings/useSettings';
+import { MotionImage, MotionVideo } from './MotionImage';
+import { GameAction, GameEvent } from './gameRules';
+import { DiceResult, newDiceResult, parseDiceResult } from './dice';
+import { encryptWhisper } from '../../crypto/whisperCrypto';
 import { GroupVoiceChatModal } from '../calls/GroupVoiceChatModal';
 import { EmojiStickerPicker } from './EmojiStickerPicker';
 import { MediaLightbox, LightboxMediaItem } from './MediaLightbox';
@@ -90,12 +97,22 @@ import {
   Reply
 } from 'lucide-react';
 
+function normalizeBotActions(value: unknown): BotActionButton[][] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows = value
+    .filter(Array.isArray)
+    .map((row) => row.filter((button): button is BotActionButton => Boolean(button) && typeof button === 'object' && typeof (button as BotActionButton).text === 'string'))
+    .filter((row) => row.length > 0);
+  return rows.length ? rows : undefined;
+}
+
 interface CircularVideoNotePlayerProps {
   src: string;
   onDownload?: () => void;
 }
 
 const CircularVideoNotePlayer: React.FC<CircularVideoNotePlayerProps> = ({ src, onDownload }) => {
+  const uiLang = useUILanguage();
   const videoRef = useRef<HTMLVideoElement>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -258,7 +275,7 @@ const CircularVideoNotePlayer: React.FC<CircularVideoNotePlayerProps> = ({ src, 
                 onDownload();
               }}
               className="p-1 rounded-full bg-black/60 text-white backdrop-blur-sm hover:bg-black/80 transition"
-              title="Download Video Note"
+              title={uiText("Download Video Note", uiLang)}
             >
               <Download className="h-3 w-3" />
             </button>
@@ -267,7 +284,7 @@ const CircularVideoNotePlayer: React.FC<CircularVideoNotePlayerProps> = ({ src, 
             type="button"
             onClick={toggleMute}
             className="p-1 rounded-full bg-black/60 text-white backdrop-blur-sm hover:bg-black/80 transition"
-            title={isMuted ? 'Unmute' : 'Mute'}
+            title={isMuted ? uiText("Unmute", uiLang) : uiText("Mute", uiLang)}
           >
             {isMuted ? <VolumeX className="h-3 w-3" /> : <Volume2 className="h-3 w-3" />}
           </button>
@@ -298,6 +315,7 @@ const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
   onSpeedCycle,
   onDownload,
 }) => {
+  const uiLang = useUILanguage();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [duration, setDuration] = useState<number>(0);
   const [currentTime, setCurrentTime] = useState<number>(0);
@@ -430,7 +448,7 @@ const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
         <div
           onClick={handleSeek}
           className="flex items-center gap-[2.5px] h-7 cursor-pointer py-1"
-          title="Click to seek"
+          title={uiText("Click to seek", uiLang)}
         >
           {waveformBars.map((height, i) => {
             const isPlayed = i <= currentBarIndex;
@@ -450,7 +468,7 @@ const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
 
         <div className="flex items-center justify-between text-[10px] text-[#7f91a4] mt-0.5 font-mono">
           <span>{formatTime(currentTime > 0 ? currentTime : duration)}</span>
-          <span className="text-[9px]">E2EE Voice</span>
+          <span className="text-[9px]">{uiText("E2EE Voice", uiLang)}</span>
         </div>
       </div>
 
@@ -459,7 +477,7 @@ const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
         type="button"
         onClick={onSpeedCycle}
         className="px-1.5 py-0.5 rounded-lg bg-[#242f3d] hover:bg-[#202b36] text-[10px] font-bold text-[#24A1DE] border border-[#24A1DE]/30 transition cursor-pointer flex-shrink-0"
-        title="Playback Speed"
+        title={uiText("Playback Speed", uiLang)}
       >
         {playbackSpeed}x
       </button>
@@ -473,7 +491,7 @@ const VoiceNotePlayer: React.FC<VoiceNotePlayerProps> = ({
             onDownload();
           }}
           className="p-1.5 rounded-lg bg-[#242f3d] hover:bg-[#202b36] text-[#7f91a4] hover:text-[#24A1DE] transition cursor-pointer flex-shrink-0"
-          title="Download Voice Note"
+          title={uiText("Download Voice Note", uiLang)}
         >
           <Download className="h-3.5 w-3.5" />
         </button>
@@ -584,11 +602,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
   onSelectConversation,
   lang,
 }) => {
+  const mediaSettings = useSettings();
+  const uiLang = useUILanguage(lang);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const isSendingRef = useRef(false);
   const [peerPublicKey, setPeerPublicKey] = useState<string | null>(null);
+  const [peerVerificationKey, setPeerVerificationKey] = useState<string | null>(null);
   const [safetyNumber, setSafetyNumber] = useState<string | null>(null);
   const [showSecurityModal, setShowSecurityModal] = useState(false);
   const [verificationState, setVerificationState] = useState<'verified' | 'unverified' | 'key_changed' | 'unavailable'>('unavailable');
@@ -661,7 +682,18 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setShowStickerPackModal(true);
   };
 
-  const handleBotButtonClick = async (btn: BotActionButton) => {
+  const handleBotButtonClick = async (btn: BotActionButton, messageId?: string) => {
+    if (btn.url) {
+      const url = new URL(btn.url);
+      if (url.protocol === 'https:' || url.protocol === 'http:') window.open(url.toString(), '_blank', 'noopener,noreferrer');
+      return;
+    }
+    if (btn.callback_data && messageId) {
+      try { await api.invokeBotCallback(conversation.id, messageId, btn.callback_data); }
+      catch (error) { alert(error instanceof Error ? error.message : 'Callback failed'); }
+      return;
+    }
+
     if (btn.action === 'download' || (btn.command && btn.command.includes('/api/v1/admin/backup/download'))) {
       const token = api.getToken() || '';
       const separator = (btn.command || '').includes('?') ? '&' : '?';
@@ -683,12 +715,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
           idempotency_key: `cmd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         });
       } catch (err: any) {
-        alert(err?.message || 'Failed to execute command');
+        alert(err?.message || uiText("Failed to execute command", uiLang));
       }
     }
   };
 
-  // Telegram-style mention suggestions
+  // Mention suggestions
   const [mentionSuggestions, setMentionSuggestions] = useState<User[]>([]);
   const [showMentionSuggestions, setShowMentionSuggestions] = useState(false);
   const [mentionQueryRange, setMentionQueryRange] = useState<{ start: number; end: number } | null>(null);
@@ -806,7 +838,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         pool.push(currentUser);
       }
 
-      // Strictly filter only this conversation's participants and inline bots (Telegram-style)
+      // Strictly filter only this conversation's participants and inline bots
       // Never query the global user database across the platform
       const filtered = pool.filter((u) =>
         (u.username && u.username.toLowerCase().includes(q)) ||
@@ -901,7 +933,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   const [chatSearchQuery, setChatSearchQuery] = useState('');
   const [searchMatchIndex, setSearchMatchIndex] = useState(0);
 
-  // Phase 9 States
+  // Conversation mode & modal states
   const [securityMode, setSecurityMode] = useState<string>(conversation.security_mode || 'normal');
   const [showModeModal, setShowModeModal] = useState(false);
   const [activatingE2EE, setActivatingE2EE] = useState(false);
@@ -914,7 +946,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     setSecurityMode(conversation.security_mode || 'normal');
   }, [conversation.id, conversation.security_mode]);
 
-  // Phase 10–15 Platform States
+  // Selection, poll, scheduling & interactive states
   const [forwardingMessages, setForwardingMessages] = useState<Message[] | null>(null);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedMsgIds, setSelectedMsgIds] = useState<Set<string>>(new Set());
@@ -1154,6 +1186,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ciphertext: finalCiphertext,
           nonce: finalNonce,
           idempotency_key: idempotencyKey,
+          attachment_ids: msg.attachmentMeta?.id ? [msg.attachmentMeta.id] : [],
         });
       }
       setForwardingMessages(null);
@@ -1197,14 +1230,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
       let pollIvBase64: string | undefined = undefined;
 
       if (isE2EE) {
-        const encryptedPoll = await signalManager.encryptPollData(params.question, params.options);
+        const encryptedPoll = await signalManager.encryptPollData(params.question, params.options, params.explanation);
         pollKeyBase64 = encryptedPoll.keyBase64;
         pollIvBase64 = encryptedPoll.ivBase64;
         pollCreationParams = {
           ...params,
           question: encryptedPoll.encryptedQuestion,
           options: encryptedPoll.encryptedOptions,
-          explanation: params.explanation ? (await signalManager.encryptPollData(params.explanation, [])).encryptedQuestion : undefined,
+          explanation: encryptedPoll.encryptedExplanation,
         };
       }
 
@@ -1250,12 +1283,23 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const text = input.trim();
     if (!text || !scheduledDateStr) return;
     try {
+      let ciphertext = text;
+      let nonce = 'normal';
+      const whisperCommand = text.match(/^(@whisper|\/whisper)\s+@?([a-zA-Z0-9_\-.]+)\s+([\s\S]+)$/i);
+      if (whisperCommand) {
+        const secret = await encryptWhisper({ target_username: whisperCommand[2], secret_text: whisperCommand[3], sender_id: currentUser.id, sender_username: currentUser.username }, await getEncryptionTargets(), conversation.id, currentUser.id);
+        ciphertext = JSON.stringify({ type: 'whisper', ...secret });
+      }
+      if (securityMode === 'e2ee_active') {
+        const encrypted = await signalManager.encryptMultiDevice(ciphertext, await getEncryptionTargets(), conversation.id, api.getToken() || undefined);
+        ciphertext = encrypted.ciphertext; nonce = encrypted.nonce;
+      }
       await api.scheduleMessage(conversation.id, {
-        ciphertext: text,
+        ciphertext, nonce,
         scheduled_for: new Date(scheduledDateStr).toISOString(),
         is_silent: isSilentSend,
       });
-      alert('Message scheduled successfully!');
+      alert(uiText("Message scheduled successfully!", uiLang));
       setShowScheduleModal(false);
       setInput('');
       localStorage.removeItem('senora_draft_' + conversation.id);
@@ -1343,7 +1387,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     : conversation.title || peerUser?.display_name || peerUser?.username || 'Chat';
   const activeAvatarUrl = isSaved ? undefined : (conversation.avatar_url || peerUser?.avatar_url);
 
-  // Members state for group/channel inspection modal (Issue 3)
+  // Group/channel member list state
   const [conversationMembers, setConversationMembers] = useState<ConversationMemberDetail[]>([]);
   const [loadingMembers, setLoadingMembers] = useState(false);
   const [membersError, setMembersError] = useState<string | null>(null);
@@ -1411,21 +1455,21 @@ export const ChatView: React.FC<ChatViewProps> = ({
       const inv = await api.createConversationInvite(conversation.id, { expires_in_hours: 48 });
       setActiveInviteCode(inv.invite_code);
     } catch (err: any) {
-      alert(err.message || 'Failed to generate invite');
+      alert(err.message || uiText("Failed to generate invite", uiLang));
     } finally {
       setInviteLoading(false);
     }
   };
 
   const handleRevokeInvite = async (code: string) => {
-    if (!confirm('Revoke this invite link? Users with this link will no longer be able to join.')) return;
+    if (!confirm(uiText("Revoke this invite link? Users with this link will no longer be able to join.", uiLang))) return;
     setInviteLoading(true);
     try {
       await api.revokeConversationInvite(conversation.id, code);
       setActiveInviteCode(null);
       await loadInvites();
     } catch (err: any) {
-      alert(err.message || 'Failed to revoke invite');
+      alert(err.message || uiText("Failed to revoke invite", uiLang));
     } finally {
       setInviteLoading(false);
     }
@@ -1437,7 +1481,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       await api.updateMemberRole(conversation.id, targetUserId, newRole);
       await loadMembers();
     } catch (err: any) {
-      alert(err.message || 'Failed to update member role');
+      alert(err.message || uiText("Failed to update member role", uiLang));
     } finally {
       setUpdatingRoleUserId(null);
     }
@@ -1450,7 +1494,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       setConversationTTL(ttl);
       conversation.disappearing_ttl = ttl;
     } catch (err: any) {
-      alert(err.message || 'Failed to update disappearing timer');
+      alert(err.message || uiText("Failed to update disappearing timer", uiLang));
     } finally {
       setUpdatingTTL(false);
     }
@@ -1481,10 +1525,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
           if (pkg.devices && pkg.devices.length > 0) {
             const firstKey = pkg.devices[0].identity_public_key;
             if (firstKey) {
+              const verificationKey = pkg.devices[0].signed_pre_key ? (JSON.parse(pkg.devices[0].signed_pre_key).identityKey || firstKey) : firstKey;
               setPeerPublicKey(firstKey);
+              setPeerVerificationKey(verificationKey);
               // Compute safety number using Signal identity
               try {
-                const sn = await signalManager.calculateSafetyNumber(firstKey);
+                const sn = await signalManager.calculateSafetyNumber(verificationKey);
                 setSafetyNumber(sn);
               } catch (err) {
                 console.warn('Safety number computation error:', err);
@@ -1494,7 +1540,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               const savedKey = localStorage.getItem('verified_key_' + peerUser.id);
               if (!savedKey) {
                 setVerificationState('unverified');
-              } else if (savedKey === firstKey) {
+              } else if (savedKey === verificationKey) {
                 setVerificationState('verified');
               } else {
                 setVerificationState('key_changed');
@@ -1509,12 +1555,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
   }, [conversation.id, peerUser?.id]);
 
   const toggleVerification = () => {
-    if (!peerUser || !peerPublicKey) return;
+    if (!peerUser || !peerVerificationKey) return;
     if (verificationState === 'verified') {
       localStorage.removeItem('verified_key_' + peerUser.id);
       setVerificationState('unverified');
     } else {
-      localStorage.setItem('verified_key_' + peerUser.id, peerPublicKey);
+      localStorage.setItem('verified_key_' + peerUser.id, peerVerificationKey);
       setVerificationState('verified');
     }
   };
@@ -1528,11 +1574,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     pollIv?: string;
     isForwarded?: boolean;
     forwardFromName?: string;
+    gameAction?: GameAction;
+    diceResult?: DiceResult;
     botActions?: BotActionButton[][];
     whisper?: {
       target_username: string;
       target_id?: string;
       secret_text: string;
+      encrypted_secret?: string;
+      secret_nonce?: string;
       sender_username?: string;
       sender_id?: string;
     };
@@ -1555,6 +1605,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
     if (plaintext.startsWith('{') && plaintext.endsWith('}')) {
       try {
         const parsed: any = JSON.parse(plaintext);
+        if (parsed.type === 'game_action' && typeof parsed.game_id === 'string') return { displayText: '', gameAction: parsed as GameAction };
+        if (parsed.type === 'dice' && typeof parsed.emoji === 'string') return { displayText: parsed.emoji, diceResult: parseDiceResult(parsed) };
         if (parsed.type === 'whisper') {
           return {
             displayText: '🤫 پیام نجوا (Whisper)',
@@ -1562,6 +1614,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
               target_username: parsed.target_username || '',
               target_id: parsed.target_id || '',
               secret_text: parsed.secret_text || '',
+              encrypted_secret: parsed.encrypted_secret,
+              secret_nonce: parsed.secret_nonce,
               sender_username: parsed.sender_username || '',
               sender_id: parsed.sender_id || '',
             },
@@ -1631,14 +1685,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
             attachmentMeta: att,
             isForwarded: parsed.is_forwarded,
             forwardFromName: parsed.forward_from_name,
-            botActions: Array.isArray(parsed.bot_actions) ? parsed.bot_actions : undefined,
+            botActions: normalizeBotActions(parsed.bot_actions),
           };
         }
         // General text, bot payloads, and forwarded messages
         if (typeof parsed.text === 'string' || Array.isArray(parsed.bot_actions) || parsed.is_forwarded) {
           return {
             displayText: typeof parsed.text === 'string' ? parsed.text : '',
-            botActions: Array.isArray(parsed.bot_actions) ? parsed.bot_actions : undefined,
+            botActions: normalizeBotActions(parsed.bot_actions),
             isForwarded: Boolean(parsed.is_forwarded),
             forwardFromName: parsed.forward_from_name,
           };
@@ -1690,9 +1744,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
     let pollIv: string | undefined = undefined;
     let isForwarded: boolean | undefined = undefined;
     let forwardFromName: string | undefined = undefined;
-    let botActions: BotActionButton[][] | undefined = msg.bot_actions;
+    let botActions: BotActionButton[][] | undefined = normalizeBotActions(msg.bot_actions);
     let callEvent = msg.callEvent;
     let whisper = msg.whisper;
+    let gameAction = msg.game_action;
+    let diceResult = msg.dice_result;
 
     // Message classification: Normal Chat messages and system messages are server-readable
     const isNormalMessage = msg.nonce === 'normal' || msg.nonce === '' || msg.nonce === 'system';
@@ -1717,6 +1773,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         isForwarded = parsed.isForwarded;
         forwardFromName = parsed.forwardFromName;
         if (parsed.whisper) whisper = parsed.whisper;
+      if (parsed.gameAction) gameAction = parsed.gameAction;
+      if (parsed.diceResult) diceResult = parsed.diceResult;
         if (parsed.botActions) botActions = parsed.botActions;
         if (parsed.callEvent) callEvent = parsed.callEvent;
       } catch (err: any) {
@@ -1741,6 +1799,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
       isForwarded = parsed.isForwarded;
       forwardFromName = parsed.forwardFromName;
       if (parsed.whisper) whisper = parsed.whisper;
+      if (parsed.gameAction) gameAction = parsed.gameAction;
+      if (parsed.diceResult) diceResult = parsed.diceResult;
       if (parsed.botActions) botActions = parsed.botActions;
       if (parsed.callEvent) callEvent = parsed.callEvent;
     }
@@ -1771,8 +1831,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
       forward_from_name: forwardFromName || msg.forward_from_name,
       callEvent,
       whisper: whisper || msg.whisper,
+      game_action: gameAction,
+      dice_result: diceResult,
       reactions,
-      bot_actions: botActions || msg.bot_actions,
+      bot_actions: normalizeBotActions(botActions || msg.bot_actions),
       decryptionError,
       status: isRead ? 'read' : 'delivered',
     };
@@ -1804,7 +1866,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
             !seenIds.has(m.id) &&
             (!m.idempotency_key || !dedupedList.some((d) => d.idempotency_key === m.idempotency_key))
         );
-        return [...dedupedList, ...pendingSending];
+        const oldest = dedupedList[0]?.created_at;
+        const newest = dedupedList[dedupedList.length - 1]?.created_at;
+        // A live event can arrive while HTTP history is being fetched. Retain
+        // messages newer than that snapshot as well as older loaded history.
+        const outsideSnapshot = prev.filter(m => m.conversation_id === conversation.id && !m.is_deleted && m.status !== 'sending' && !seenIds.has(m.id) && (!oldest || m.created_at < oldest || m.created_at > newest));
+        return [...outsideSnapshot, ...dedupedList, ...pendingSending].reduce<Message[]>((all, message) => reconcileMessageList(all, message), []);
       });
 
       // Synchronize latest decrypted message preview to sidebar
@@ -1835,26 +1902,38 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Auto-fetch OpenGraph Link Previews for URLs present in conversation messages
+  const gameEvents = useMemo<GameEvent[]>(() => messages.filter(m => m.game_action && !m.edited_at && !m.is_deleted).map(m => ({ id: m.id, actorId: m.sender_id, createdAt: m.created_at, data: m.game_action! })), [messages]);
+  const sendGameAction = async (action: GameAction) => {
+    const plaintext = JSON.stringify({ type: 'game_action', ...action });
+    let ciphertext = plaintext; let nonce = 'normal';
+    if (securityMode === 'e2ee_active') {
+      const encrypted = await signalManager.encryptMultiDevice(plaintext, await getEncryptionTargets(), conversation.id, api.getToken() || undefined);
+      ciphertext = encrypted.ciphertext; nonce = encrypted.nonce;
+    }
+    await api.submitMessage(conversation.id, { ciphertext, nonce, idempotency_key: crypto.randomUUID() });
+    await loadMessages();
+  };
+
+  // Decrypted E2EE content must never be passed to a server-side preview service.
   useEffect(() => {
-    messages.forEach((m) => {
-      const text = m.plaintext || m.ciphertext;
-      if (!text) return;
-      const match = text.match(URL_REGEX);
-      if (match && match.length > 0) {
-        const url = match[0];
-        if (!linkPreviews[url]) {
-          api.getLinkPreview(url).then((prev) => {
-            if (prev) {
-              setLinkPreviews((curr) => ({ ...curr, [url]: prev }));
-            }
-          }).catch(() => {});
-        }
-      }
+    if (!mediaSettings.linkPreviews || securityMode === 'e2ee_active') return;
+    const abort = new AbortController();
+    const requested = new Set<string>();
+    messages.forEach(m => {
+      if (m.nonce !== 'normal') return;
+      const match = (m.plaintext || m.ciphertext || '').match(URL_REGEX);
+      const url = match?.[0];
+      if (!url || linkPreviews[url] || requested.has(url)) return;
+      requested.add(url);
+      api.getLinkPreview(url, abort.signal).then(preview => {
+        if (!abort.signal.aborted && preview) setLinkPreviews(current => ({ ...current, [url]: preview }));
+      }).catch(() => {});
     });
-  }, [messages]);
+    return () => abort.abort();
+  }, [messages, mediaSettings.linkPreviews, securityMode]);
 
   const renderLinkPreviewCard = (rawText: string) => {
+    if (!mediaSettings.linkPreviews || securityMode === "e2ee_active") return null;
     if (!rawText) return null;
     const match = rawText.match(URL_REGEX);
     if (!match || match.length === 0) return null;
@@ -1920,11 +1999,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }, 1000);
   };
 
-  // Real-time synchronization without reopening chats or aggressive polling (Phase 3)
+  // Real-time WebSocket message and conversation updates
   useEffect(() => {
     loadMessages();
 
     const unsub = wsManager.subscribe((event) => {
+      if (event.type === 'bot.callback_answer' && !event.replay && event.payload?.conversation_id === conversation.id) {
+        if (event.payload.text) alert(event.payload.text);
+        return;
+      }
       if (event.payload?.conversation_id !== conversation.id) {
         return;
       }
@@ -2014,7 +2097,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
             prev.map((m) => (m.id === msgId ? { ...m, reactions } : m))
           );
         }
-      } else if (event.type === 'message.updated' || event.type === 'call_event') {
+      } else if (event.type === 'message.updated') {
+        const updated = event.payload as Message;
+        if (updated?.id && updated.ciphertext != null) {
+          void decryptSingleMessage(updated).then(decoded => {
+            setMessages(prev => prev.map(m => m.id === updated.id ? { ...m, ...decoded } : m));
+          });
+        } else { loadMessages(); }
+      } else if (event.type === 'call_event') {
         loadMessages();
       }
     });
@@ -2099,24 +2189,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
     try {
       const isE2EE = securityMode === 'e2ee_active';
 
-      // Check if we are currently editing an existing message
-      if (editingMessage) {
-        if (isE2EE) {
-          const targets = await getEncryptionTargets();
-          const token = api.getToken() || undefined;
-          const encrypted = await signalManager.encryptMultiDevice(text, targets, conversation.id, token);
-          await api.editMessage(conversation.id, editingMessage.id, encrypted.ciphertext);
-        } else {
-          await api.editMessage(conversation.id, editingMessage.id, text);
-        }
-        setEditingMessage(null);
-        setInput('');
-        await loadMessages();
-        return;
-      }
-
       // Detect whisper command or raw whisper payload
       let textToSend = text;
+      let diceResult: DiceResult | undefined;
+      if (['🎲','🎯','🏀','⚽','🎰'].includes(text)) {
+        diceResult = newDiceResult(); textToSend = JSON.stringify({ type: 'dice', emoji: text, text, ...diceResult });
+      }
       let whisperData: Message['whisper'] = undefined;
       const whisperMatch = text.match(/^(@whisper|\/whisper)\s+@?([a-zA-Z0-9_\-\.]+)\s+([\s\S]+)$/i);
       if (whisperMatch) {
@@ -2139,11 +2217,30 @@ export const ChatView: React.FC<ChatViewProps> = ({
             whisperData = {
               target_username: parsed.target_username,
               secret_text: parsed.secret_text,
+              encrypted_secret: parsed.encrypted_secret,
+              secret_nonce: parsed.secret_nonce,
+              target_id: parsed.target_id,
               sender_username: parsed.sender_username || currentUser.username,
               sender_id: parsed.sender_id || currentUser.id,
             };
           }
         } catch {}
+      }
+
+      if (editingMessage?.whisper && !whisperData) {
+        whisperData = { ...editingMessage.whisper, secret_text: text };
+      }
+      if (whisperData?.secret_text) {
+        whisperData = await encryptWhisper(whisperData, await getEncryptionTargets(), conversation.id, currentUser.id);
+        textToSend = JSON.stringify({ type: 'whisper', ...whisperData });
+      }
+      if (editingMessage) {
+        let ciphertext = textToSend;
+        if (isE2EE) {
+          ciphertext = (await signalManager.encryptMultiDevice(textToSend, await getEncryptionTargets(), conversation.id, api.getToken() || undefined)).ciphertext;
+        }
+        await api.editMessage(conversation.id, editingMessage.id, ciphertext);
+        setEditingMessage(null); setInput(''); await loadMessages(); return;
       }
 
       // Normal send or reply
@@ -2182,6 +2279,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         reply_to_id: replyId,
         created_at: new Date().toISOString(),
         status: 'sending',
+        dice_result: diceResult,
       };
       setMessages((prev) => reconcileMessageList(prev, optMsg));
       scrollToBottom(true);
@@ -2233,7 +2331,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         const secs = parseInt(waitMatch[1], 10);
         startSlowModeTimer(secs);
       }
-      alert(err.message || 'Failed to submit message');
+      alert(err.message || uiText("Failed to submit message", uiLang));
     } finally {
       isSendingRef.current = false;
       setSending(false);
@@ -2374,7 +2472,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     const msgId = deleteTargetMsg.id;
     setDeleteTargetMsg(null);
     try {
-      await api.deleteMessage(conversation.id, msgId, 'everyone');
+      await api.deleteMessage(conversation.id, msgId, 'everyone', messages.find(m => m.id === msgId)?.attachmentMeta?.id ? [messages.find(m => m.id === msgId)!.attachmentMeta!.id] : []);
       setMessages((prev) => prev.filter((m) => m.id !== msgId));
     } catch (e: any) {
       alert(`Delete for everyone failed: ${e.message}`);
@@ -2396,7 +2494,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   const executeDeleteChatForBoth = async () => {
-    if (!confirm('Are you sure you want to permanently delete this chat for both participants?')) return;
+    if (!confirm(uiText("Are you sure you want to permanently delete this chat for both participants?", uiLang))) return;
     setDeletingChat(true);
     try {
       await api.deleteConversation(conversation.id, 'both');
@@ -2552,7 +2650,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Client-Side Encrypted File Upload Pipeline (Telegram-style preview & progress, multi-file support)
+  // Client-Side Encrypted File Upload Pipeline (multi-file support & progress)
   const prepareFilesForSending = (files: File[]) => {
     if (files.length === 0) return;
     const firstFile = files[0];
@@ -2811,6 +2909,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       ciphertext: finalCiphertext,
       nonce: finalNonce,
       idempotency_key: idempotencyKey,
+        attachment_ids: [att.id],
       topic_id: activeTopicId || undefined,
     });
   };
@@ -2895,6 +2994,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         ciphertext: finalCiphertext,
         nonce: finalNonce,
         idempotency_key: idempotencyKey,
+        attachment_ids: [att.id],
       });
 
       setShowRoundVideoRecorder(false);
@@ -2907,21 +3007,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
     }
   };
 
-  // Client-Side Decrypt and Download Attachment (Telegram-style secure download)
+  // Client-Side Decrypt and Download Attachment
   const handleDownloadAttachment = async (attMeta: any) => {
     if (!attMeta?.id) return;
     setDownloadingAttId(attMeta.id);
     try {
-      const blob = await api.downloadAttachment(attMeta.id);
-      let finalBlob = blob;
-      if (attMeta.keyBase64 && attMeta.ivBase64) {
-        finalBlob = await signalManager.decryptAttachment(
-          blob,
-          attMeta.keyBase64,
-          attMeta.ivBase64,
-          attMeta.contentType
-        );
-      }
+      const mediaURL = await getOrLoadDecryptedUrl(attMeta.id, attMeta);
+      if (!mediaURL) throw new Error('Attachment is unavailable');
+      const isStream = !mediaURL.startsWith('blob:');
+      const downloadURL = new URL(mediaURL, window.location.origin);
+      if (isStream) downloadURL.searchParams.set('download', 'true');
 
       let filename = attMeta.filename;
       if (!filename) {
@@ -2932,14 +3027,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
         else filename = `attachment_${Date.now()}.bin`;
       }
 
-      const url = URL.createObjectURL(finalBlob);
+      const url = isStream ? downloadURL.toString() : mediaURL;
       const a = document.createElement('a');
       a.href = url;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
-      setTimeout(() => URL.revokeObjectURL(url), 2000);
+
     } catch (e: any) {
       alert(`Decryption/download error: ${e.message}`);
     } finally {
@@ -2948,36 +3043,41 @@ export const ChatView: React.FC<ChatViewProps> = ({
   };
 
   // Get or Load Decrypted Media Blob URL
+  const mediaLoads = useRef(new Map<string, Promise<string | undefined>>());
+  const mediaCache = useRef<Record<string,string>>({});
+  // Shared work prevents parallel renderers from consuming a view-once file twice.
   const getOrLoadDecryptedUrl = async (msgId: string, attMeta: any): Promise<string | undefined> => {
-    if (decryptedMediaUrls[msgId]) return decryptedMediaUrls[msgId];
-    if (attMeta?.id && decryptedMediaUrls[attMeta.id]) return decryptedMediaUrls[attMeta.id];
-    if (attMeta?.id) {
-      setDownloadingAttId(attMeta.id);
-    }
-    try {
-      const blob = await api.downloadAttachment(attMeta.id);
-      let finalBlob = blob;
-      if (attMeta.keyBase64 && attMeta.ivBase64) {
-        finalBlob = await signalManager.decryptAttachment(
-          blob,
-          attMeta.keyBase64,
-          attMeta.ivBase64,
-          attMeta.contentType
-        );
-      }
-      const url = URL.createObjectURL(finalBlob);
-      setDecryptedMediaUrls((prev) => ({
-        ...prev,
-        [msgId]: url,
-        ...(attMeta.id ? { [attMeta.id]: url } : {}),
-      }));
+    if (!attMeta?.id) return undefined;
+    const key = attMeta.id;
+    // Unencrypted media is served by the authenticated Range endpoint. Opening
+    // a video must not download the entire file into a JavaScript Blob first.
+    if (!attMeta.keyBase64 && !attMeta.ivBase64 && !attMeta.isViewOnce) {
+      const url = api.attachmentStreamURL(key);
+      setDecryptedMediaUrls(prev => ({ ...prev, [msgId]: url, [key]: url }));
       return url;
-    } catch (e) {
-      console.warn('Failed to decrypt media:', e);
-      return undefined;
-    } finally {
-      setDownloadingAttId(null);
     }
+    const cached = mediaCache.current[key] || decryptedMediaUrls[msgId] || decryptedMediaUrls[key];
+    if (cached) return cached;
+    const existing = mediaLoads.current.get(key);
+    if (existing) return existing;
+    const pending = (async () => {
+      setDownloadingAttId(key);
+      try {
+        const blob = await api.downloadAttachment(key);
+        const finalBlob = attMeta.keyBase64 && attMeta.ivBase64
+          ? await signalManager.decryptAttachment(blob, attMeta.keyBase64, attMeta.ivBase64, attMeta.contentType)
+          : blob;
+        const url = URL.createObjectURL(finalBlob);
+        mediaCache.current[key] = url;
+        setDecryptedMediaUrls(prev => ({...prev, [msgId]:url, [key]:url}));
+        return url;
+      } catch (e) {
+        console.warn('Failed to decrypt media:',e);
+        return undefined;
+      } finally { setDownloadingAttId(null); }
+    })();
+    mediaLoads.current.set(key,pending);
+    try { return await pending; } finally { mediaLoads.current.delete(key); }
   };
 
   const autoLoadingMediaIdsRef = useRef<Set<string>>(new Set());
@@ -2986,7 +3086,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
   useEffect(() => {
     messages.forEach((m) => {
       const att = m.attachmentMeta;
-      if (!att || !att.id) return;
+      if (!att || !att.id || !shouldAutoDownload(mediaSettings, att)) return;
       if (decryptedMediaUrls[m.id] || decryptedMediaUrls[att.id] || autoLoadingMediaIdsRef.current.has(m.id)) return;
 
       // Do NOT auto-download large media files (> 20MB) into browser RAM; user can click to play/download on-demand
@@ -3003,14 +3103,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
         att.contentType?.startsWith('audio/') ||
         att.filename?.match(/\.(jpg|jpeg|png|webp|gif|bmp|svg|mp4|webm|ogg|mp3|wav|m4a)$/i);
 
-      if (isMedia) {
+      if (isMedia || mediaSettings.autoDownloadFiles) {
         autoLoadingMediaIdsRef.current.add(m.id);
         getOrLoadDecryptedUrl(m.id, att).finally(() => {
           autoLoadingMediaIdsRef.current.delete(m.id);
         });
       }
     });
-  }, [messages, decryptedMediaUrls]);
+  }, [messages, decryptedMediaUrls, mediaSettings]);
 
   // Fullscreen Media Lightbox Gallery Navigation
   const handleOpenLightbox = async (msg: Message) => {
@@ -3029,7 +3129,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       type: msg.attachmentMeta?.isVideo || msg.attachmentMeta?.isRoundVideo ? 'video' : 'photo',
       filename: msg.attachmentMeta?.filename,
       senderName: msg.sender_username,
-      date: new Date(msg.created_at).toLocaleString(),
+      date: new Date(msg.created_at).toLocaleString(uiLang === 'fa' ? 'fa-IR' : 'en-US'),
       caption: msg.attachmentMeta?.caption,
       currentIndex: idx >= 0 ? idx : 0,
       totalCount: mediaMsgs.length,
@@ -3055,7 +3155,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         type: prevMsg.attachmentMeta?.isVideo || prevMsg.attachmentMeta?.isRoundVideo ? 'video' : 'photo',
         filename: prevMsg.attachmentMeta?.filename,
         senderName: prevMsg.sender_username,
-        date: new Date(prevMsg.created_at).toLocaleString(),
+        date: new Date(prevMsg.created_at).toLocaleString(uiLang === 'fa' ? 'fa-IR' : 'en-US'),
         caption: prevMsg.attachmentMeta?.caption,
         currentIndex: curIdx - 1,
         totalCount: mediaMsgs.length,
@@ -3082,7 +3182,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         type: nextMsg.attachmentMeta?.isVideo || nextMsg.attachmentMeta?.isRoundVideo ? 'video' : 'photo',
         filename: nextMsg.attachmentMeta?.filename,
         senderName: nextMsg.sender_username,
-        date: new Date(nextMsg.created_at).toLocaleString(),
+        date: new Date(nextMsg.created_at).toLocaleString(uiLang === 'fa' ? 'fa-IR' : 'en-US'),
         caption: nextMsg.attachmentMeta?.caption,
         currentIndex: curIdx + 1,
         totalCount: mediaMsgs.length,
@@ -3110,7 +3210,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   const handleDeleteForEveryone = async (msg: Message) => {
     try {
-      await api.deleteMessage(conversation.id, msg.id, 'everyone');
+      await api.deleteMessage(conversation.id, msg.id, 'everyone', msg.attachmentMeta?.id ? [msg.attachmentMeta.id] : []);
       setMessages((prev) => prev.filter((m) => m.id !== msg.id));
     } catch (e: any) {
       alert(`Delete for everyone failed: ${e.message}`);
@@ -3134,10 +3234,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
         nonce: 'normal',
         idempotency_key: idempotencyKey,
       });
-      alert('Saved to Saved Messages');
+      alert(uiText("Saved to Saved Messages", uiLang));
     } catch (err: any) {
       console.error('Failed to save message:', err);
-      alert('Failed to save message: ' + err.message);
+      alert(uiText("Failed to save message: ", uiLang) + err.message);
     }
   };
 
@@ -3173,7 +3273,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
       }
       alert(`Saved ${selectedMsgs.length} messages to Saved Messages`);
     } catch (err: any) {
-      alert('Failed to save messages: ' + err.message);
+      alert(uiText("Failed to save messages: ", uiLang) + err.message);
     } finally {
       setSelectionMode(false);
       setSelectedMsgIds(new Set());
@@ -3313,12 +3413,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
           ciphertext: encryptedMsg.ciphertext,
           nonce: encryptedMsg.nonce,
           idempotency_key: idempotencyKey,
+        attachment_ids: [att.id],
         });
       } else {
         await api.submitMessage(conversation.id, {
           ciphertext: JSON.stringify(payload),
           nonce: 'normal',
           idempotency_key: idempotencyKey,
+        attachment_ids: [att.id],
         });
       }
 
@@ -3578,6 +3680,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
   // Filter messages for search query, media types, calendar date, and active forum topic
   const displayedMessages = messages.filter((m) => {
+    if (m.game_action) return false;
     // 1. Forum Topic Filter
     if (isForum && activeTopicId && m.topic_id !== activeTopicId) {
       return false;
@@ -3653,10 +3756,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <UploadCloud className="h-8 w-8 animate-bounce" />
           </div>
           <p className="text-base font-bold text-white">
-            {lang === 'fa' ? 'فایل‌ها را اینجا رها کنید تا ارسال شوند' : 'Drop files here to send'}
+            {lang === "fa" ? 'فایل‌ها را اینجا رها کنید تا ارسال شوند' : 'Drop files here to send'}
           </p>
           <p className="text-xs text-[#7f91a4] mt-1">
-            {lang === 'fa' ? 'تصاویر، ویدیوها، صوت‌ها و انواع فایل‌ها' : 'Images, videos, audio, and documents'}
+            {lang === "fa" ? 'تصاویر، ویدیوها، صوت‌ها و انواع فایل‌ها' : 'Images, videos, audio, and documents'}
           </p>
         </div>
       )}
@@ -3677,8 +3780,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               id="chat-back-btn"
               onClick={onBack}
-              aria-label={lang === 'fa' ? 'بازگشت به گفتگوها' : 'Back to conversations'}
-              title={lang === 'fa' ? 'خروج از چت و بازگشت' : 'Back to conversations'}
+              aria-label={lang === "fa" ? 'بازگشت به گفتگوها' : 'Back to conversations'}
+              title={lang === "fa" ? 'خروج از چت و بازگشت' : 'Back to conversations'}
               className="p-2 ltr:-ml-1 rtl:-mr-1 rounded-xl hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer flex-shrink-0 flex items-center justify-center lg:hidden"
             >
               <ArrowLeft className="h-5 w-5 rtl:rotate-180" />
@@ -3694,7 +3797,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }
             }}
             className="flex items-center gap-3 min-w-0 cursor-pointer hover:opacity-90 transition"
-            title={!isGroup && !isChannel && peerUser ? "View User Profile" : "View Chat Details"}
+            title={!isGroup && !isChannel && peerUser ? uiText("View User Profile", uiLang) : uiText("View Chat Details", uiLang)}
           >
             <div
               className={`h-10 w-10 rounded-full flex items-center justify-center font-bold text-white shadow-sm flex-shrink-0 overflow-hidden ${
@@ -3736,13 +3839,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </h2>
               <div className="flex items-center gap-1.5 text-[11px] text-[#7f91a4]">
                 {isSaved ? (
-                  <span>{lang === 'fa' ? 'فضای ابری شخصی' : 'Personal cloud storage'}</span>
+                  <span>{lang === "fa" ? 'فضای ابری شخصی' : 'Personal cloud storage'}</span>
                 ) : isChannel ? (
-                  <span>{conversation.participants ? `${conversation.participants.length} subscribers` : 'Channel • Broadcast'}</span>
+                  <span>{conversation.participants ? `${conversation.participants.length} ${uiText('subscribers', uiLang)}` : uiText("Channel • Broadcast", uiLang)}</span>
                 ) : isGroup ? (
-                  <span>Group • {conversation.participants?.length || conversationMembers.length || 2} members</span>
+                  <span>{uiText("Group • ", uiLang)}{conversation.participants?.length || conversationMembers.length || 2}{uiText(" members", uiLang)}</span>
                 ) : peerTyping ? (
-                  <span className="text-[#24A1DE] font-semibold animate-pulse">typing...</span>
+                  <span className="text-[#24A1DE] font-semibold animate-pulse">{uiText("typing...", uiLang)}</span>
                 ) : peerPresence.isOnline ? (
                   <>
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
@@ -3775,7 +3878,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   )
                 }
                 className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-emerald-400 transition cursor-pointer"
-                title="Voice Call"
+                title={uiText("Voice Call", uiLang)}
               >
                 <Phone className="h-4 w-4" />
               </button>
@@ -3793,7 +3896,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   )
                 }
                 className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-[#24A1DE] transition cursor-pointer"
-                title="Video Call"
+                title={uiText("Video Call", uiLang)}
               >
                 <Video className="h-4 w-4" />
               </button>
@@ -3806,7 +3909,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             type="button"
             onClick={() => setShowSharedMedia(true)}
             className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-[#24A1DE] transition cursor-pointer"
-            title="Shared Media & Files"
+            title={uiText("Shared Media & Files", uiLang)}
           >
             <Folder className="h-4 w-4" />
           </button>
@@ -3824,7 +3927,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 ? 'bg-[#24A1DE] text-white'
                 : 'hover:bg-[#202b36] text-[#7f91a4] hover:text-white'
             }`}
-            title="Select Messages"
+            title={uiText("Select Messages", uiLang)}
           >
             <CheckSquare className="h-4 w-4" />
           </button>
@@ -3833,7 +3936,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             id="search-chat-btn"
             onClick={() => setShowSearch(!showSearch)}
             className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer"
-            title="Search in chat"
+            title={uiText("Search in chat", uiLang)}
           >
             <Search className="h-4 w-4" />
           </button>
@@ -3844,10 +3947,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
               type="button"
               onClick={() => setShowVoiceChatModal(true)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 hover:bg-emerald-500/25 transition text-xs font-semibold text-emerald-400 cursor-pointer"
-              title="Group Voice Chat"
+              title={uiText("Group Voice Chat", uiLang)}
             >
               <Radio className="h-3.5 w-3.5 animate-pulse" />
-              <span className="hidden sm:inline">Voice Chat</span>
+              <span className="hidden sm:inline">{uiText("Voice Chat", uiLang)}</span>
             </button>
           )}
 
@@ -3862,7 +3965,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }
             }}
             className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer"
-            title={!isGroup && !isChannel && peerUser ? "User Profile" : "Chat Info"}
+            title={!isGroup && !isChannel && peerUser ? uiText("User Profile", uiLang) : uiText("Chat Info", uiLang)}
           >
             <Info className="h-4 w-4" />
           </button>
@@ -3872,19 +3975,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               onClick={() => setShowSecurityModal(true)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-emerald-500/10 border border-emerald-500/30 hover:bg-emerald-500/20 transition text-xs font-semibold text-emerald-400 cursor-pointer"
-              title="End-to-End Encrypted (Signal Protocol)"
+              title={uiText("End-to-End Encrypted (Signal Protocol)", uiLang)}
             >
               <Lock className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">E2EE Chat</span>
+              <span className="hidden sm:inline">{uiText("E2EE Chat", uiLang)}</span>
             </button>
           ) : (
             <button
               onClick={() => setShowModeModal(true)}
               className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-blue-500/10 border border-blue-500/30 hover:bg-blue-500/20 transition text-xs font-medium text-[#24A1DE] cursor-pointer"
-              title="Normal Chat (Standard Encryption)"
+              title={uiText("Normal Chat (Standard Encryption)", uiLang)}
             >
               <ShieldCheck className="h-3.5 w-3.5" />
-              <span className="hidden sm:inline">Normal Chat</span>
+              <span className="hidden sm:inline">{uiText("Normal Chat", uiLang)}</span>
             </button>
           )}
 
@@ -3892,7 +3995,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           <button
             onClick={() => setShowDeleteChatModal(true)}
             className="p-2 rounded-lg hover:bg-red-500/10 text-[#7f91a4] hover:text-red-400 transition cursor-pointer"
-            title="Delete Chat"
+            title={uiText("Delete Chat", uiLang)}
           >
             <Trash2 className="h-4 w-4" />
           </button>
@@ -3915,7 +4018,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 )
               }
               className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-emerald-400 transition cursor-pointer"
-              title="Voice Call"
+              title={uiText("Voice Call", uiLang)}
             >
               <Phone className="h-4 w-4" />
             </button>
@@ -3924,7 +4027,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             id="mobile-search-chat-btn"
             onClick={() => setShowSearch(!showSearch)}
             className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer"
-            title="Search in chat"
+            title={uiText("Search in chat", uiLang)}
           >
             <Search className="h-4 w-4" />
           </button>
@@ -3933,7 +4036,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             type="button"
             onClick={() => setShowMobileHeaderMenu(!showMobileHeaderMenu)}
             className="p-2 rounded-lg hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer"
-            title="More actions"
+            title={uiText("More actions", uiLang)}
           >
             <MoreVertical className="h-4 w-4" />
           </button>
@@ -3956,7 +4059,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="w-full px-3 py-2 text-left rtl:text-right text-xs text-amber-400 hover:text-amber-300 hover:bg-[#202b36] flex items-center gap-2 cursor-pointer border-b border-[#242f3d]/60 font-semibold"
                 >
                   <ArrowLeft className="h-4 w-4 rtl:rotate-180" />
-                  <span>{lang === 'fa' ? 'خروج از گفتگو و بازگشت' : 'Exit Conversation'}</span>
+                  <span>{lang === "fa" ? 'خروج از گفتگو و بازگشت' : 'Exit Conversation'}</span>
                 </button>
               )}
               <button
@@ -3965,7 +4068,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="w-full px-3 py-2 text-left text-xs text-[#7f91a4] hover:text-white hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
               >
                 <Folder className="h-4 w-4 text-[#24A1DE]" />
-                <span>Shared Media & Files</span>
+                <span>{uiText("Shared Media & Files", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -3976,7 +4079,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="w-full px-3 py-2 text-left text-xs text-[#7f91a4] hover:text-white hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
               >
                 <CheckSquare className="h-4 w-4 text-[#24A1DE]" />
-                <span>{selectionMode ? 'Cancel Selection' : 'Select Messages'}</span>
+                <span>{selectionMode ? uiText("Cancel Selection", uiLang) : uiText("Select Messages", uiLang)}</span>
               </button>
               {isGroup && (
                 <button
@@ -3990,13 +4093,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         setForumTopics(topRes.topics || []);
                       }
                     } catch (e: any) {
-                      alert(e.message || 'Failed to toggle forum');
+                      alert(e.message || uiText("Failed to toggle forum", uiLang));
                     }
                   }}
                   className="w-full px-3 py-2 text-left text-xs text-[#24A1DE] hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
                 >
                   <Hash className="h-4 w-4" />
-                  <span>{isForum ? (lang === 'fa' ? 'غیرفعال‌سازی تاپیک‌های انجمن' : 'Disable Forum Topics') : (lang === 'fa' ? 'فعال‌سازی تاپیک‌های انجمن (سوپرگروه)' : 'Enable Forum Topics')}</span>
+                  <span>{isForum ? (lang === "fa" ? 'غیرفعال‌سازی تاپیک‌های انجمن' : 'Disable Forum Topics') : (lang === "fa" ? 'فعال‌سازی تاپیک‌های انجمن (سوپرگروه)' : 'Enable Forum Topics')}</span>
                 </button>
               )}
               {isGroup && (
@@ -4006,7 +4109,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="w-full px-3 py-2 text-left text-xs text-emerald-400 hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
                 >
                   <Radio className="h-4 w-4" />
-                  <span>Group Voice Chat</span>
+                  <span>{uiText("Group Voice Chat", uiLang)}</span>
                 </button>
               )}
               <button
@@ -4033,7 +4136,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="w-full px-3 py-2 text-left text-xs text-[#7f91a4] hover:text-white hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
               >
                 <Info className="h-4 w-4 text-[#24A1DE]" />
-                <span>{!isGroup && !isChannel && peerUser ? "User Profile" : "Chat Info & Details"}</span>
+                <span>{!isGroup && !isChannel && peerUser ? uiText("User Profile", uiLang) : uiText("Chat Info & Details", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -4046,12 +4149,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 {securityMode === 'e2ee_active' ? (
                   <>
                     <Lock className="h-4 w-4 text-emerald-400" />
-                    <span className="text-emerald-400 font-medium">Signal E2EE Active</span>
+                    <span className="text-emerald-400 font-medium">{uiText("Signal E2EE Active", uiLang)}</span>
                   </>
                 ) : (
                   <>
                     <ShieldCheck className="h-4 w-4 text-[#24A1DE]" />
-                    <span className="text-[#24A1DE] font-medium">Normal Mode</span>
+                    <span className="text-[#24A1DE] font-medium">{uiText("Normal Mode", uiLang)}</span>
                   </>
                 )}
               </button>
@@ -4062,7 +4165,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 flex items-center gap-2 cursor-pointer"
               >
                 <Trash2 className="h-4 w-4" />
-                <span>Delete Conversation</span>
+                <span>{uiText("Delete Conversation", uiLang)}</span>
               </button>
             </div>
           )}
@@ -4130,7 +4233,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setSearchDate('');
                 }
               }}
-              placeholder={lang === 'fa' ? 'جستجوی پیام‌ها در این چت...' : 'Search messages in this chat...'}
+              placeholder={lang === "fa" ? 'جستجوی پیام‌ها در این چت...' : 'Search messages in this chat...'}
               className="flex-1 bg-transparent text-xs text-white placeholder-[#7f91a4] focus:outline-none"
               autoFocus
             />
@@ -4154,7 +4257,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }}
                   disabled={displayedMessages.length === 0}
                   className="p-1 text-[#7f91a4] hover:text-white disabled:opacity-40 rounded"
-                  title="Previous result"
+                  title={uiText("Previous result", uiLang)}
                 >
                   <ChevronUp className="h-4 w-4" />
                 </button>
@@ -4171,7 +4274,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }}
                   disabled={displayedMessages.length === 0}
                   className="p-1 text-[#7f91a4] hover:text-white disabled:opacity-40 rounded"
-                  title="Next result"
+                  title={uiText("Next result", uiLang)}
                 >
                   <ChevronDown className="h-4 w-4" />
                 </button>
@@ -4208,14 +4311,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }`}
                 >
                   {tab === 'all'
-                    ? (lang === 'fa' ? 'همه' : 'All')
+                    ? (lang === "fa" ? uiText("همه", uiLang) : uiText("All", uiLang))
                     : tab === 'media'
-                    ? (lang === 'fa' ? '📷 عکس/فیلم' : '📷 Media')
+                    ? (lang === "fa" ? '📷 عکس/فیلم' : '📷 Media')
                     : tab === 'files'
-                    ? (lang === 'fa' ? '📄 فایل‌ها' : '📄 Files')
+                    ? (lang === "fa" ? '📄 فایل‌ها' : '📄 Files')
                     : tab === 'voice'
-                    ? (lang === 'fa' ? '🎵 صوت' : '🎵 Voice')
-                    : (lang === 'fa' ? '🔗 لینک‌ها' : '🔗 Links')}
+                    ? (lang === "fa" ? '🎵 صوت' : '🎵 Voice')
+                    : (lang === "fa" ? '🔗 لینک‌ها' : '🔗 Links')}
                 </button>
               ))}
             </div>
@@ -4230,14 +4333,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setSearchMatchIndex(0);
                 }}
                 className="bg-transparent text-[11px] text-white focus:outline-none cursor-pointer"
-                title={lang === 'fa' ? 'فیلتر بر اساس تاریخ' : 'Filter by date'}
+                title={lang === "fa" ? 'فیلتر بر اساس تاریخ' : 'Filter by date'}
               />
               {searchDate && (
                 <button
                   type="button"
                   onClick={() => setSearchDate('')}
                   className="text-[#7f91a4] hover:text-white text-[11px] px-1"
-                  title="Clear date"
+                  title={uiText("Clear date", uiLang)}
                 >
                   ✕
                 </button>
@@ -4260,7 +4363,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             }`}
           >
             <span>💬</span>
-            <span>{lang === 'fa' ? 'همه پیام‌ها' : 'All Messages'}</span>
+            <span>{lang === "fa" ? 'همه پیام‌ها' : 'All Messages'}</span>
           </button>
 
           {forumTopics.map((topic) => (
@@ -4284,10 +4387,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
             type="button"
             onClick={() => setShowNewTopicModal(true)}
             className="px-2.5 py-1.5 rounded-full text-xs font-bold bg-[#242f3d]/60 hover:bg-[#242f3d] text-[#24A1DE] border border-dashed border-[#24A1DE]/40 flex items-center gap-1 transition whitespace-nowrap cursor-pointer"
-            title={lang === 'fa' ? 'ایجاد تاپیک جدید' : 'New Topic'}
+            title={lang === "fa" ? 'ایجاد تاپیک جدید' : 'New Topic'}
           >
             <span>+</span>
-            <span>{lang === 'fa' ? 'تاپیک جدید' : 'New Topic'}</span>
+            <span>{lang === "fa" ? 'تاپیک جدید' : 'New Topic'}</span>
           </button>
         </div>
       )}
@@ -4309,20 +4412,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="min-w-0">
               <div className="flex items-center gap-1.5">
                 <span className="font-semibold text-[#24A1DE] block text-[11px]">
-                  {lang === 'fa'
+                  {lang === "fa"
                     ? (pinnedMessages.length > 1
                       ? `پیام سنجاق شده (${(currentPinIndex % pinnedMessages.length) + 1} از ${pinnedMessages.length})`
                       : 'پیام سنجاق شده')
                     : (pinnedMessages.length > 1
                       ? `Pinned Message (${(currentPinIndex % pinnedMessages.length) + 1} of ${pinnedMessages.length})`
-                      : 'Pinned Message')}
+                      : uiText("Pinned Message", uiLang))}
                 </span>
                 {pinnedMessages.length > 1 && (
-                  <span className="text-[10px] text-[#7f91a4] font-mono">(کلیک برای بعدی)</span>
+                  <span className="text-[10px] text-[#7f91a4] font-mono">{uiText("(کلیک برای بعدی)", uiLang)}</span>
                 )}
               </div>
               <p className="text-[#7f91a4] truncate text-xs">
-                {pinnedMessage.plaintext || (pinnedMessage.attachmentMeta?.filename || 'Attachment')}
+                {pinnedMessage.plaintext || (pinnedMessage.attachmentMeta?.filename || uiText("Attachment", uiLang))}
               </p>
             </div>
           </div>
@@ -4336,7 +4439,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setShowPinsDrawer(true);
                 }}
                 className="p-1 text-[#24A1DE] hover:text-white bg-[#242f3d]/60 rounded-lg flex items-center gap-1 text-[11px] px-2 cursor-pointer"
-                title={lang === 'fa' ? 'مشاهده همه سنجاق‌ها' : 'View all pinned messages'}
+                title={lang === "fa" ? 'مشاهده همه سنجاق‌ها' : 'View all pinned messages'}
               >
                 <Layers className="h-3.5 w-3.5" />
                 <span>{pinnedMessages.length}</span>
@@ -4377,24 +4480,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
             </div>
             <h3 className="text-base font-bold text-white mb-1">
               {verificationState === 'verified'
-                ? 'Verified Identity'
+                ? uiText("Verified Identity", uiLang)
                 : verificationState === 'key_changed'
-                ? 'Identity Key Changed!'
+                ? uiText("Identity Key Changed!", uiLang)
                 : t.e2ee_verified}
             </h3>
             <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">{t.e2ee_desc}</p>
 
             {safetyNumber && (
               <div className="p-3 rounded-xl bg-[#0e1621] border border-[#242f3d] mb-4 text-left">
-                <span className="text-[10px] text-[#24A1DE] font-semibold uppercase tracking-wider block mb-1">
-                  Signal Safety Number (Out-of-Band Verification)
-                </span>
+                <span className="text-[10px] text-[#24A1DE] font-semibold uppercase tracking-wider block mb-1">{uiText("Signal Safety Number (Out-of-Band Verification)", uiLang)}</span>
                 <div className="font-mono text-xs tracking-wider font-bold text-emerald-400 select-all break-all bg-[#17212b] p-2 rounded-lg border border-[#242f3d]">
                   {safetyNumber}
                 </div>
-                <p className="text-[10px] text-[#7f91a4] mt-1.5 leading-normal">
-                  Both you and {chatTitle} have the same safety number. Compare in person or over a secure channel to verify zero tampering.
-                </p>
+                <p className="text-[10px] text-[#7f91a4] mt-1.5 leading-normal">{uiText("Both you and", uiLang)}{chatTitle}{uiText("have the same safety number. Compare in person or over a secure channel to verify zero tampering.", uiLang)}</p>
               </div>
             )}
 
@@ -4411,8 +4510,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 <ShieldCheck className="h-4 w-4" />
                 <span>
                   {verificationState === 'verified'
-                    ? 'Revoke Verification'
-                    : 'Mark as Verified (Confirm Identity)'}
+                    ? uiText("Revoke Verification", uiLang)
+                    : uiText("Mark as Verified (Confirm Identity)", uiLang)}
                 </span>
               </button>
             )}
@@ -4420,35 +4519,25 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               onClick={() => setShowSecurityModal(false)}
               className="w-full rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] py-2 text-xs font-semibold text-white cursor-pointer transition"
-            >
-              Close
-            </button>
+            >{uiText("Close", uiLang)}</button>
           </div>
         </div>
       )}
 
-      {/* Security Mode Modal (Track A) */}
+      {/* Security Mode Modal */}
       {showModeModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-sm rounded-2xl bg-[#17212b] p-6 shadow-2xl border border-[#242f3d] text-center">
             <div className="h-12 w-12 rounded-full mx-auto flex items-center justify-center mb-3 bg-blue-500/20 text-[#24A1DE]">
               <ShieldCheck className="h-6 w-6" />
             </div>
-            <h3 className="text-base font-bold text-white mb-1">
-              Normal Chat (Standard Security)
-            </h3>
-            <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">
-              Messages and attachments are transmitted over TLS and encrypted at rest on the server. Server-side message search, history backup, and multi-device synchronization are active.
-            </p>
+            <h3 className="text-base font-bold text-white mb-1">{uiText("Normal Chat (Standard Security)", uiLang)}</h3>
+            <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">{uiText("In normal mode, messages and attachments are sent over TLS and processed and stored by the server. Server-side search, history backup, and multi-device synchronization are available.", uiLang)}</p>
 
             {!isChannel && !isGroup && peerUser && securityMode !== 'e2ee_active' && (
               <div className="p-3 rounded-xl bg-[#0e1621] border border-[#242f3d] mb-4 text-left">
-                <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-wider block mb-1">
-                  Optional End-to-End Encryption
-                </span>
-                <p className="text-[11px] text-[#7f91a4] mb-3 leading-normal">
-                  You can upgrade this chat to Signal Protocol End-to-End Encryption. Only you and {peerUser.display_name || peerUser.username} will be able to read message contents.
-                </p>
+                <span className="text-[10px] text-emerald-400 font-semibold uppercase tracking-wider block mb-1">{uiText("Optional End-to-End Encryption", uiLang)}</span>
+                <p className="text-[11px] text-[#7f91a4] mb-3 leading-normal">{uiText("You can upgrade this chat to Signal Protocol End-to-End Encryption. Only you and", uiLang)}{peerUser.display_name || peerUser.username}{uiText("will be able to read message contents.", uiLang)}</p>
                 <button
                   type="button"
                   onClick={handleActivateE2EE}
@@ -4456,7 +4545,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="w-full py-2.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center justify-center gap-2 transition cursor-pointer shadow-md"
                 >
                   <Lock className="h-3.5 w-3.5" />
-                  <span>{activatingE2EE ? 'Verifying & Activating...' : 'Enable End-to-End Encryption'}</span>
+                  <span>{activatingE2EE ? uiText("Verifying & Activating...", uiLang) : uiText("Enable End-to-End Encryption", uiLang)}</span>
                 </button>
               </div>
             )}
@@ -4464,67 +4553,57 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <button
               onClick={() => setShowModeModal(false)}
               className="w-full rounded-xl bg-[#242f3d] hover:bg-[#202b36] py-2 text-xs font-semibold text-white cursor-pointer transition"
-            >
-              Close
-            </button>
+            >{uiText("Close", uiLang)}</button>
           </div>
         </div>
       )}
 
-      {/* Delete Message Modal (Track H) */}
+      {/* Delete Message Modal */}
       {deleteTargetMsg && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-sm rounded-2xl bg-[#17212b] p-6 shadow-2xl border border-[#242f3d] text-center">
             <div className="h-12 w-12 rounded-full mx-auto flex items-center justify-center mb-3 bg-red-500/20 text-red-400">
               <Trash2 className="h-6 w-6" />
             </div>
-            <h3 className="text-base font-bold text-white mb-1">Delete Message</h3>
-            <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">
-              Select how you would like to delete this message.
-            </p>
+            <h3 className="text-base font-bold text-white mb-1">{uiText("Delete Message", uiLang)}</h3>
+            <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">{uiText("Select how you would like to delete this message.", uiLang)}</p>
 
             <div className="space-y-2 mb-4">
               <button
                 type="button"
                 onClick={executeDeleteForMe}
                 className="w-full py-2.5 px-3 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-white text-xs font-semibold transition cursor-pointer"
-              >
-                Delete for Me
-              </button>
+              >{uiText("Delete for Me", uiLang)}</button>
 
               {(deleteTargetMsg.sender_id === currentUser.id || conversation.type === 'channel' || conversation.type === 'direct' || myRole === 'owner' || myRole === 'admin') && (
                 <button
                   type="button"
                   onClick={executeDeleteForEveryone}
                   className="w-full py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition cursor-pointer shadow-md"
-                >
-                  Delete for Everyone
-                </button>
+                >{uiText("Delete for Everyone", uiLang)}</button>
               )}
             </div>
 
             <button
               onClick={() => setDeleteTargetMsg(null)}
               className="text-xs text-[#7f91a4] hover:text-white transition cursor-pointer"
-            >
-              Cancel
-            </button>
+            >{uiText("Cancel", uiLang)}</button>
           </div>
         </div>
       )}
 
-      {/* Delete Chat Modal (Track I) */}
+      {/* Delete Chat Modal */}
       {showDeleteChatModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-sm rounded-2xl bg-[#17212b] p-6 shadow-2xl border border-[#242f3d] text-center">
             <div className="h-12 w-12 rounded-full mx-auto flex items-center justify-center mb-3 bg-red-500/20 text-red-400">
               <Trash2 className="h-6 w-6" />
             </div>
-            <h3 className="text-base font-bold text-white mb-1">Delete Conversation</h3>
+            <h3 className="text-base font-bold text-white mb-1">{uiText("Delete Conversation", uiLang)}</h3>
             <p className="text-xs text-[#7f91a4] leading-relaxed mb-4">
               {conversation.type === 'direct'
-                ? 'Do you want to delete this chat for yourself only, or permanently for both participants?'
-                : 'Clear this conversation history from your personal view?'}
+                ? uiText("Do you want to delete this chat for yourself only, or permanently for both participants?", uiLang)
+                : uiText("Clear this conversation history from your personal view?", uiLang)}
             </p>
 
             <div className="space-y-2 mb-4">
@@ -4533,9 +4612,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClick={executeDeleteChatForMe}
                 disabled={deletingChat}
                 className="w-full py-2.5 px-3 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-white text-xs font-semibold transition cursor-pointer"
-              >
-                Delete Chat for Me
-              </button>
+              >{uiText("Delete Chat for Me", uiLang)}</button>
 
               {conversation.type === 'direct' && (
                 <button
@@ -4543,23 +4620,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onClick={executeDeleteChatForBoth}
                   disabled={deletingChat}
                   className="w-full py-2.5 px-3 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition cursor-pointer shadow-md"
-                >
-                  Delete Chat for Both
-                </button>
+                >{uiText("Delete Chat for Both", uiLang)}</button>
               )}
             </div>
 
             <button
               onClick={() => setShowDeleteChatModal(false)}
               className="text-xs text-[#7f91a4] hover:text-white transition cursor-pointer"
-            >
-              Cancel
-            </button>
+            >{uiText("Cancel", uiLang)}</button>
           </div>
         </div>
       )}
 
-      {/* Group Voice Chat Modal (Track B) */}
+      {/* Group Voice Chat Modal */}
       {showVoiceChatModal && (
         <GroupVoiceChatModal
           conversation={conversation}
@@ -4609,7 +4682,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               callText = lang === 'fa' ? (isVideo ? 'تماس تصویری' : 'تماس صوتی') : (isVideo ? 'Video Call' : 'Voice Call');
             }
 
-            const callTime = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const callTime = new Date(msg.created_at).toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { hour: '2-digit', minute: '2-digit' });
 
             return (
               <div key={msg.id} id={`msg-${msg.id}`} className="flex justify-center my-3 animate-fadeIn select-none">
@@ -4633,7 +4706,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
           }
 
           if (msg.watchPartyInvite) {
-            const inviteTime = new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const inviteTime = new Date(msg.created_at).toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { hour: '2-digit', minute: '2-digit' });
             return (
               <div key={msg.id} id={`msg-${msg.id}`} className="flex justify-center my-3 animate-fadeIn select-none">
                 <div className="flex items-center gap-3 px-4 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-950/95 via-purple-950/90 to-slate-900/95 border border-indigo-500/40 text-xs shadow-xl backdrop-blur-md max-w-sm">
@@ -4643,13 +4716,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <div className="min-w-0 flex-1">
                     <div className="text-[10px] text-indigo-300 font-semibold flex items-center gap-1.5">
                       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                      <span>دعوت به سینما پارتی همزمان</span>
+                      <span>{uiText("دعوت به سینما پارتی همزمان", uiLang)}</span>
                     </div>
                     <div className="text-xs font-bold text-white truncate mt-0.5">
                       {msg.watchPartyInvite.media_title}
                     </div>
-                    <div className="text-[10px] text-slate-400 mt-0.5">
-                      میزبان: <span className="text-slate-200 font-medium">{msg.watchPartyInvite.leader_name}</span> • {inviteTime}
+                    <div className="text-[10px] text-slate-400 mt-0.5">{uiText("میزبان:", uiLang)}<span className="text-slate-200 font-medium">{msg.watchPartyInvite.leader_name}</span> • {inviteTime}
                     </div>
                   </div>
                   <button
@@ -4662,7 +4734,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs transition shadow-md shadow-indigo-600/30 flex items-center gap-1.5 cursor-pointer shrink-0"
                   >
                     <Play className="w-3.5 h-3.5 fill-white" />
-                    <span>ورود</span>
+                    <span>{uiText("ورود", uiLang)}</span>
                   </button>
                 </div>
               </div>
@@ -4690,7 +4762,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   type="button"
                   onClick={() => toggleSelectMessage(msg.id)}
                   className="p-1 text-[#24A1DE] self-center cursor-pointer flex-shrink-0"
-                  title="Select Message"
+                  title={uiText("Select Message", uiLang)}
                 >
                   {selectedMsgIds.has(msg.id) ? (
                     <CheckSquare className="h-5 w-5 text-[#24A1DE]" />
@@ -4750,14 +4822,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   {msg.is_forwarded && (
                     <div className="flex items-center gap-1 text-[11px] text-[#24A1DE] mb-1 italic">
                       <Share2 className="h-3 w-3" />
-                      <span>Forwarded{msg.forward_from_name ? ` from ${msg.forward_from_name}` : ''}</span>
+                      <span>{uiText("Forwarded", uiLang)}{msg.forward_from_name ? `${uiText(' from ', uiLang)}${msg.forward_from_name}` : ''}</span>
                     </div>
                   )}
 
                   {/* Sender name for group chats */}
                   {(isGroup || isChannel) && !isOutgoing && (
                     <span className="block text-[11px] font-bold text-[#24A1DE] mb-1">
-                      {msg.sender_username || 'Participant'}
+                      {msg.sender_username || uiText("Participant", uiLang)}
                     </span>
                   )}
 
@@ -4772,10 +4844,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   >
                     <div className="min-w-0">
                       <span className="block text-[11px] font-bold text-purple-300">
-                        {repliedMsg.sender_username || 'Reply'}
+                        {repliedMsg.sender_username || uiText("Reply", uiLang)}
                       </span>
                       <span className="block text-xs text-white/90 truncate">
-                        {repliedMsg.plaintext || (repliedMsg.attachmentMeta?.isPhoto ? 'Photo' : 'Attachment')}
+                        {repliedMsg.plaintext || (repliedMsg.attachmentMeta?.isPhoto ? uiText("Photo", uiLang) : uiText("Attachment", uiLang))}
                       </span>
                     </div>
                   </div>
@@ -4785,6 +4857,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 {msg.whisper ? (
                   <WhisperMessageCard
                     whisper={msg.whisper}
+                    conversationId={conversation.id}
                     currentUserId={currentUser.id}
                     currentUsername={currentUser.username}
                     senderId={msg.sender_id}
@@ -4813,10 +4886,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           </div>
                           <div className="text-left">
                             <span className="block text-xs font-semibold text-rose-300">
-                              {lang === 'fa' ? 'رسانه مشاهده و سوزانده شد' : 'Media viewed & burned'}
+                              {lang === "fa" ? 'رسانه مشاهده و سوزانده شد' : 'Media viewed & burned'}
                             </span>
                             <span className="block text-[10px] text-[#7f91a4]">
-                              {lang === 'fa' ? 'این عکس/ویدیو فقط یکبار قابل نمایش بود' : 'Self-destructed after 1 view'}
+                              {lang === "fa" ? 'این عکس/ویدیو فقط یکبار قابل نمایش بود' : 'Self-destructed after 1 view'}
                             </span>
                           </div>
                         </div>
@@ -4841,10 +4914,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           </div>
                           <div>
                             <span className="block text-xs font-bold text-amber-200">
-                              {lang === 'fa' ? 'عکس/ویدیو یک‌باره (View Once)' : 'Self-Destructing Media'}
+                              {lang === "fa" ? 'عکس/ویدیو یک‌باره (View Once)' : 'Self-Destructing Media'}
                             </span>
                             <span className="block text-[11px] text-amber-400/90 font-medium">
-                              {lang === 'fa' ? 'برای مشاهده کلیک کنید (تایمر ۱۰ ثانیه)' : 'Click to view (10s timer)'}
+                              {lang === "fa" ? 'برای مشاهده کلیک کنید (تایمر ۱۰ ثانیه)' : 'Click to view (10s timer)'}
                             </span>
                           </div>
                         </button>
@@ -4858,28 +4931,32 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           handleOpenStickerPack(msg.attachmentMeta?.stickerPackId || (msg.attachmentMeta as any)?.pack_id || (msg.attachmentMeta as any)?.stickerId || msg.attachmentMeta?.id);
                         }}
                         className="flex flex-col items-center p-1 cursor-pointer group/sticker bg-transparent border-0 outline-none hover:opacity-95 transition"
-                        title={lang === 'fa' ? 'مشاهده و اشتراک‌گذاری پک استیکر' : 'View & Share Sticker Pack'}
+                        title={lang === "fa" ? 'مشاهده و اشتراک‌گذاری پک استیکر' : 'View & Share Sticker Pack'}
                       >
                         {msg.attachmentMeta.stickerUrl?.includes('video/webm') || msg.attachmentMeta.stickerUrl?.endsWith('.webm') ? (
-                          <video
+                          <MotionVideo
+                            allowDownload={mediaSettings.autoDownloadVideos && !mediaSettings.lowDataMode}
                             src={msg.attachmentMeta.stickerUrl}
-                            autoPlay
+                            autoPlay={mediaSettings.autoplayStickers}
+                            controls={!mediaSettings.autoplayStickers}
                             loop
                             muted
                             playsInline
                             className="w-36 h-36 sm:w-44 sm:h-44 object-contain drop-shadow-md select-none transition-transform group-hover/sticker:scale-105"
                           />
                         ) : (
-                          <img
+                          <MotionImage
+                            allowDownload={mediaSettings.autoDownloadPhotos && !mediaSettings.lowDataMode}
+                            animate={mediaSettings.autoplayStickers}
                             src={msg.attachmentMeta.stickerUrl}
-                            alt="Sticker"
+                            alt={uiText("Sticker", uiLang)}
                             className="w-36 h-36 sm:w-44 sm:h-44 object-contain drop-shadow-md select-none transition-transform group-hover/sticker:scale-105"
                             loading="lazy"
                           />
                         )}
                       </button>
                     ) : msg.attachmentMeta.isRoundVideo ? (
-                      /* Circular Video Note (Issue 5) */
+                      /* Circular Video Note */
                       <div className="flex flex-col items-center p-1">
                         {decryptedMediaUrls[msg.id] ? (
                           <CircularVideoNotePlayer
@@ -4907,7 +4984,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     ? msg.attachmentMeta.sizeBytes < 1024 * 1024
                                       ? `${(msg.attachmentMeta.sizeBytes / 1024).toFixed(1)} KB`
                                       : `${(msg.attachmentMeta.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-                                    : 'Video Note'}
+                                    : uiText("Video Note", uiLang)}
                                 </span>
                               </>
                             )}
@@ -4915,7 +4992,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         )}
                       </div>
                     ) : msg.attachmentMeta.isPhoto ? (
-                      /* Photo Message (Telegram Card Treatment matching reference image) */
+                      /* Photo Message Card */
                       <div className="select-none">
                         <div
                           className="relative cursor-pointer group/photo overflow-hidden"
@@ -4925,18 +5002,22 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             <div className="relative">
                               {(((decryptedMediaUrls[msg.id] || (msg.attachmentMeta.id && decryptedMediaUrls[msg.attachmentMeta.id]) || msg.attachmentMeta.stickerUrl)?.includes('video/webm') ||
                                 (decryptedMediaUrls[msg.id] || (msg.attachmentMeta.id && decryptedMediaUrls[msg.attachmentMeta.id]) || msg.attachmentMeta.stickerUrl)?.endsWith('.webm'))) ? (
-                                <video
+                                <MotionVideo
+                                  allowDownload={mediaSettings.autoDownloadVideos && !mediaSettings.lowDataMode}
                                   src={decryptedMediaUrls[msg.id] || (msg.attachmentMeta.id && decryptedMediaUrls[msg.attachmentMeta.id]) || msg.attachmentMeta.stickerUrl}
-                                  autoPlay
+                                  autoPlay={mediaSettings.autoplayGifs}
+                                  controls={!mediaSettings.autoplayGifs}
                                   loop
                                   muted
                                   playsInline
                                   className="w-full max-h-[460px] object-cover block hover:opacity-95 transition"
                                 />
                               ) : (
-                                <img
+                                <MotionImage
+                            allowDownload={mediaSettings.autoDownloadPhotos && !mediaSettings.lowDataMode}
+                                  animate={mediaSettings.autoplayGifs}
                                   src={decryptedMediaUrls[msg.id] || (msg.attachmentMeta.id && decryptedMediaUrls[msg.attachmentMeta.id]) || msg.attachmentMeta.stickerUrl}
-                                  alt={msg.attachmentMeta.filename || 'Photo'}
+                                  alt={msg.attachmentMeta.filename || uiText("Photo", uiLang)}
                                   className="w-full max-h-[460px] object-cover block hover:opacity-95 transition"
                                 />
                               )}
@@ -4948,7 +5029,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     handleDownloadAttachment(msg.attachmentMeta);
                                   }}
                                   className="p-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white shadow-lg cursor-pointer transition"
-                                  title="Download Photo"
+                                  title={uiText("Download Photo", uiLang)}
                                 >
                                   <Download className="h-4 w-4" />
                                 </button>
@@ -4985,7 +5066,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     ? msg.attachmentMeta.sizeBytes < 1024 * 1024
                                       ? `${(msg.attachmentMeta.sizeBytes / 1024).toFixed(1)} KB`
                                       : `${(msg.attachmentMeta.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-                                    : 'Photo'}
+                                    : uiText("Photo", uiLang)}
                                 </div>
                               </div>
                             </button>
@@ -4994,16 +5075,16 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {/* Rich formatted caption directly inside the card */}
                         {(msg.attachmentMeta.caption || msg.plaintext) && (
                           <div dir="auto" className="px-3.5 pt-2.5 pb-1 chat-message-text text-sm leading-relaxed break-words text-white/95">
-                            {renderFormattedText(msg.attachmentMeta.caption || msg.plaintext || '', { onMentionClick: handleMentionClick })}
+                            {renderFormattedText(msg.attachmentMeta.caption || msg.plaintext || '', { onMentionClick: handleMentionClick, lang })}
                           </div>
                         )}
                       </div>
                     ) : msg.attachmentMeta.isVideo ? (
-                      /* Video Message (Telegram Card Treatment matching reference image 2) */
+                      /* Video Message Card */
                       <div className="relative group/video select-none">
                         {decryptedMediaUrls[msg.id] || (msg.attachmentMeta.id && decryptedMediaUrls[msg.attachmentMeta.id]) ? (
                           <div className="relative overflow-hidden">
-                            <video
+                            <StreamingVideo preload="metadata"
                               ref={(el) => {
                                 if (el) mediaDeviceManager.applyAudioOutput(el);
                               }}
@@ -5026,7 +5107,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 type="button"
                                 onClick={() => handleOpenLightbox(msg)}
                                 className="p-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white transition shadow-lg cursor-pointer"
-                                title="Fullscreen"
+                                title={uiText("Fullscreen", uiLang)}
                               >
                                 <Maximize2 className="h-4 w-4" />
                               </button>
@@ -5034,7 +5115,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 type="button"
                                 onClick={() => handleDownloadAttachment(msg.attachmentMeta)}
                                 className="p-1.5 rounded-xl bg-black/60 hover:bg-black/80 text-white transition shadow-lg cursor-pointer"
-                                title="Download Video"
+                                title={uiText("Download Video", uiLang)}
                               >
                                 <Download className="h-4 w-4" />
                               </button>
@@ -5071,7 +5152,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                   ? msg.attachmentMeta.sizeBytes < 1024 * 1024
                                     ? `${(msg.attachmentMeta.sizeBytes / 1024).toFixed(1)} KB`
                                     : `${(msg.attachmentMeta.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-                                  : 'Video'}
+                                  : uiText("Video", uiLang)}
                               </div>
                             </div>
                           </button>
@@ -5079,12 +5160,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         {/* Rich formatted caption */}
                         {(msg.attachmentMeta.caption || msg.plaintext) && (
                           <div dir="auto" className="px-3.5 pt-2.5 pb-1 chat-message-text text-sm leading-relaxed break-words text-white/95">
-                            {renderFormattedText(msg.attachmentMeta.caption || msg.plaintext || '', { onMentionClick: handleMentionClick })}
+                            {renderFormattedText(msg.attachmentMeta.caption || msg.plaintext || '', { onMentionClick: handleMentionClick, lang })}
                           </div>
                         )}
                       </div>
                     ) : msg.attachmentMeta.isVoice ? (
-                      /* Waveform Voice Note Player (Issue 8) */
+                      /* Waveform Voice Note Player */
                       <VoiceNotePlayer
                         id={msg.id}
                         src={decryptedMediaUrls[msg.id]}
@@ -5105,13 +5186,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         onDownload={() => handleDownloadAttachment(msg.attachmentMeta)}
                       />
                     ) : (
-                      /* Enhanced Telegram-style File Attachment Card */
+                      /* File Attachment Card */
                       <div>
                         <div className="flex items-center gap-3 p-2.5 rounded-xl bg-black/25 hover:bg-black/35 transition border border-white/5">
                           <div className="h-10 w-10 rounded-xl bg-[#24A1DE]/20 text-[#24A1DE] flex flex-col items-center justify-center flex-shrink-0">
                             <FileText className="h-4 w-4" />
                             <span className="text-[8px] uppercase font-bold tracking-wider font-mono">
-                              {msg.attachmentMeta.filename?.split('.').pop()?.slice(0, 4) || 'FILE'}
+                              {msg.attachmentMeta.filename?.split('.').pop()?.slice(0, 4) || uiText("FILE", uiLang)}
                             </span>
                           </div>
                           <div className="flex-1 min-w-0">
@@ -5123,7 +5204,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                 ? msg.attachmentMeta.sizeBytes < 1024 * 1024
                                   ? `${(msg.attachmentMeta.sizeBytes / 1024).toFixed(1)} KB`
                                   : `${(msg.attachmentMeta.sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-                                : 'File'}
+                                : uiText("File", uiLang)}
                               {msg.attachmentMeta.keyBase64 ? ' • E2EE Encrypted' : ''}
                             </p>
                           </div>
@@ -5132,7 +5213,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             onClick={() => handleDownloadAttachment(msg.attachmentMeta)}
                             disabled={downloadingAttId === msg.attachmentMeta.id}
                             className="p-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] disabled:opacity-50 text-white transition flex-shrink-0 cursor-pointer shadow-sm"
-                            title="Decrypt & Download"
+                            title={uiText("Decrypt & Download", uiLang)}
                           >
                             {downloadingAttId === msg.attachmentMeta.id ? (
                               <div className="h-4 w-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -5165,19 +5246,24 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       msg.plaintext || t.deleted_message
                     ) : ['🎲', '🎯', '🏀', '⚽', '🎰'].includes((msg.plaintext || msg.ciphertext || '').trim()) ? (
                       <AnimatedDiceCard
+                        messageId={msg.id}
+                        result={msg.dice_result}
+                        onRollAgain={() => handleSendMessage(undefined, (msg.plaintext || msg.ciphertext).trim())}
                         emoji={(msg.plaintext || msg.ciphertext).trim() as any}
                         senderName={isOutgoing ? (lang === 'fa' ? 'شما' : 'You') : (msg.sender_username || (lang === 'fa' ? 'کاربر' : 'User'))}
                         isOutgoing={isOutgoing}
                         lang={lang}
                       />
-                    ) : (msg.plaintext || msg.ciphertext || '').includes('[GAME:TICTACTOE]') || (msg.plaintext || msg.ciphertext || '').includes('بازی دوز') ? (
+                    ) : (msg.plaintext || msg.ciphertext || '').includes('[GAME:TICTACTOE]') || (msg.plaintext || msg.ciphertext || '').includes(uiText("بازی دوز", uiLang)) ? (
                       <TicTacToeGameCard
+                        network={{ gameId: msg.id, challengerId: msg.sender_id, currentUserId: currentUser.id, events: gameEvents, sendAction: sendGameAction }}
                         challengerName={isOutgoing ? (lang === 'fa' ? 'شما' : 'You') : (msg.sender_username || (lang === 'fa' ? 'کاربر' : 'User'))}
                         isOutgoing={isOutgoing}
                         lang={lang}
                       />
-                    ) : (msg.plaintext || msg.ciphertext || '').includes('[GAME:RPS]') || (msg.plaintext || msg.ciphertext || '').includes('سنگ، کاغذ، قیچی') ? (
+                    ) : (msg.plaintext || msg.ciphertext || '').includes('[GAME:RPS]') || (msg.plaintext || msg.ciphertext || '').includes(uiText("سنگ، کاغذ، قیچی", uiLang)) ? (
                       <RockPaperScissorsCard
+                        network={{ gameId: msg.id, challengerId: msg.sender_id, currentUserId: currentUser.id, events: gameEvents, sendAction: sendGameAction }}
                         challengerName={isOutgoing ? (lang === 'fa' ? 'شما' : 'You') : (msg.sender_username || (lang === 'fa' ? 'کاربر' : 'User'))}
                         isOutgoing={isOutgoing}
                         lang={lang}
@@ -5188,7 +5274,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       </div>
                     ) : (
                       <>
-                        {renderFormattedText(msg.plaintext || msg.ciphertext, { onMentionClick: handleMentionClick })}
+                        {renderFormattedText(msg.plaintext || msg.ciphertext, { onMentionClick: handleMentionClick, lang })}
                         {renderLinkPreviewCard(msg.plaintext || msg.ciphertext)}
                       </>
                     )}
@@ -5214,7 +5300,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   )}
                   {msg.is_pinned && <Pin className="h-2.5 w-2.5 text-[#24A1DE]" />}
                   <span>
-                    {new Date(msg.created_at).toLocaleTimeString([], {
+                    {new Date(msg.created_at).toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', {
                       hour: '2-digit',
                       minute: '2-digit',
                     })}
@@ -5244,7 +5330,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           <button
                             key={btnIdx}
                             type="button"
-                            onClick={() => handleBotButtonClick(btn)}
+                            onClick={() => handleBotButtonClick(btn, msg.id)}
                             className="flex-1 py-2 px-3 rounded-xl bg-[#242f3d]/90 hover:bg-[#2c3e50] active:scale-[0.98] border border-[#2c3e50]/80 hover:border-[#24A1DE]/40 text-xs font-semibold text-white transition duration-150 flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center"
                           >
                             <span>{btn.text}</span>
@@ -5312,7 +5398,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 )}
 
-                {/* Message Context Action Toolbar Below Bubble (Issue 10) */}
+                {/* Message Action Toolbar */}
                 <div
                   className={`mt-1 flex items-center gap-0.5 bg-[#17212b] border border-[#242f3d] rounded-xl px-1.5 py-0.5 shadow-lg text-[#7f91a4] select-none opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity z-10`}
                 >
@@ -5321,7 +5407,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     type="button"
                     onClick={() => setActiveReactionMsgId(isMsgHovered ? null : msg.id)}
                     className="p-1 hover:text-white hover:bg-[#242f3d] rounded-lg transition cursor-pointer"
-                    title="React"
+                    title={uiText("React", uiLang)}
                   >
                     <Smile className="h-3.5 w-3.5" />
                   </button>
@@ -5338,7 +5424,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     type="button"
                     onClick={() => setForwardingMessages([msg])}
                     className="p-1 hover:text-white hover:bg-[#242f3d] rounded-lg transition cursor-pointer"
-                    title="Forward"
+                    title={uiText("Forward", uiLang)}
                   >
                     <Share2 className="h-3.5 w-3.5" />
                   </button>
@@ -5391,7 +5477,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       });
                     }}
                     className="p-1 hover:text-white hover:bg-[#242f3d] rounded-lg transition cursor-pointer"
-                    title="More Actions"
+                    title={uiText("More Actions", uiLang)}
                   >
                     <MoreVertical className="h-3.5 w-3.5" />
                   </button>
@@ -5403,7 +5489,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Floating Telegram-style Scroll to Bottom button */}
+      {/* Floating Scroll to Bottom button */}
       {showScrollBottom && (
         <div className="relative w-full max-w-4xl mx-auto pointer-events-none z-30">
           <div className="absolute bottom-3 ltr:right-3 sm:ltr:right-4 rtl:left-3 sm:rtl:left-4 pointer-events-auto animate-in fade-in zoom-in-95 duration-150">
@@ -5434,8 +5520,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="flex items-center gap-2 truncate">
               <CornerUpLeft className="h-3.5 w-3.5 text-[#24A1DE] flex-shrink-0" />
               <div className="truncate">
-                <span className="font-bold text-[#24A1DE] block text-[11px]">
-                  Replying to {replyingTo.sender_username || 'Participant'}
+                <span className="font-bold text-[#24A1DE] block text-[11px]">{uiText("Replying to", uiLang)}{replyingTo.sender_username || uiText("Participant", uiLang)}
                 </span>
                 <span className="text-[#7f91a4] truncate block">{replyingTo.plaintext}</span>
               </div>
@@ -5455,7 +5540,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="flex items-center gap-2 truncate">
               <Pencil className="h-3.5 w-3.5 text-amber-400 flex-shrink-0" />
               <div className="truncate">
-                <span className="font-bold text-amber-400 block text-[11px]">Editing Message</span>
+                <span className="font-bold text-amber-400 block text-[11px]">{uiText("Editing Message", uiLang)}</span>
                 <span className="text-[#7f91a4] truncate block">{editingMessage.plaintext}</span>
               </div>
             </div>
@@ -5492,8 +5577,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         {selectionMode && (
           <div className="max-w-4xl mx-auto mb-2 px-4 py-2 rounded-2xl bg-[#182533] border border-[#242f3d] flex items-center justify-between shadow-2xl animate-fade-in text-xs">
             <span className="font-semibold text-white">
-              {selectedMsgIds.size} message{selectedMsgIds.size === 1 ? '' : 's'} selected
-            </span>
+              {selectedMsgIds.size}{uiText(" message", uiLang)}{selectedMsgIds.size === 1 ? '' : 's'}{uiText("selected", uiLang)}</span>
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -5502,7 +5586,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-3 py-1.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-[#7f91a4] hover:text-white font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 <Copy className="h-3.5 w-3.5" />
-                <span>Copy</span>
+                <span>{uiText("Copy", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -5511,7 +5595,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-3 py-1.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-[#7f91a4] hover:text-[#24A1DE] font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 <Bookmark className="h-3.5 w-3.5" />
-                <span>Save</span>
+                <span>{uiText("Save", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -5520,7 +5604,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-3 py-1.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-white font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 <Share2 className="h-3.5 w-3.5" />
-                <span>Forward</span>
+                <span>{uiText("Forward", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -5529,7 +5613,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Delete</span>
+                <span>{uiText("Delete", uiLang)}</span>
               </button>
               <button
                 type="button"
@@ -5538,9 +5622,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   setSelectedMsgIds(new Set());
                 }}
                 className="px-2.5 py-1.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-[#7f91a4] hover:text-white transition cursor-pointer"
-              >
-                Cancel
-              </button>
+              >{uiText("Cancel", uiLang)}</button>
             </div>
           </div>
         )}
@@ -5676,7 +5758,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 className="px-3 py-1 rounded-xl bg-red-600 hover:bg-red-500 text-xs font-bold text-white transition cursor-pointer flex items-center gap-1.5 shadow-md"
               >
                 <Send className="h-3.5 w-3.5" />
-                <span>Send Voice</span>
+                <span>{uiText("Send Voice", uiLang)}</span>
               </button>
             </div>
           </div>
@@ -5699,7 +5781,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#202b36] text-[11px] font-medium text-[#7f91a4] hover:text-[#24A1DE] cursor-pointer"
                 >
                   <Film className="h-3.5 w-3.5 text-[#24A1DE]" />
-                  <span>Video Note</span>
+                  <span>{uiText("Video Note", uiLang)}</span>
                 </button>
                 <button
                   id="silent-send-btn-mobile"
@@ -5713,7 +5795,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   }`}
                 >
                   <BellOff className="h-3.5 w-3.5" />
-                  <span>{isSilentSend ? 'Silent ON' : 'Silent'}</span>
+                  <span>{isSilentSend ? uiText("Silent ON", uiLang) : uiText("Silent", uiLang)}</span>
                 </button>
                 <button
                   id="schedule-msg-btn-mobile"
@@ -5725,12 +5807,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   className="flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#202b36] text-[11px] font-medium text-[#7f91a4] hover:text-[#24A1DE] cursor-pointer"
                 >
                   <Clock className="h-3.5 w-3.5 text-[#24A1DE]" />
-                  <span>Schedule</span>
+                  <span>{uiText("Schedule", uiLang)}</span>
                 </button>
               </div>
             )}
 
-            {/* Clean Telegram Desktop Composer Layout */}
+            {/* Composer Input Row */}
             <div className="flex items-end gap-2 w-full relative">
               {/* Attachment Button with Popover Menu */}
               <div className="relative flex-shrink-0" ref={attachMenuRef}>
@@ -5765,8 +5847,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Paperclip className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">Photo or File</span>
-                        <span className="text-[10px] text-slate-400">Send media or documents</span>
+                        <span className="font-semibold block">{uiText("Photo or File", uiLang)}</span>
+                        <span className="text-[10px] text-slate-400">{uiText("Send media or documents", uiLang)}</span>
                       </div>
                     </button>
 
@@ -5783,8 +5865,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <BarChart2 className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">Poll or Quiz</span>
-                        <span className="text-[10px] text-slate-400">Create interactive vote</span>
+                        <span className="font-semibold block">{uiText("Poll or Quiz", uiLang)}</span>
+                        <span className="text-[10px] text-slate-400">{uiText("Create interactive vote", uiLang)}</span>
                       </div>
                     </button>
 
@@ -5801,8 +5883,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Film className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">Video Note</span>
-                        <span className="text-[10px] text-slate-400">Record circular video</span>
+                        <span className="font-semibold block">{uiText("Video Note", uiLang)}</span>
+                        <span className="text-[10px] text-slate-400">{uiText("Record circular video", uiLang)}</span>
                       </div>
                     </button>
 
@@ -5819,8 +5901,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Clock className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">Schedule Message</span>
-                        <span className="text-[10px] text-slate-400">Send at scheduled time</span>
+                        <span className="font-semibold block">{uiText("Schedule Message", uiLang)}</span>
+                        <span className="text-[10px] text-slate-400">{uiText("Send at scheduled time", uiLang)}</span>
                       </div>
                     </button>
 
@@ -5839,8 +5921,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <BellOff className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">{isSilentSend ? 'Silent Send (Active)' : 'Send Silently'}</span>
-                        <span className="text-[10px] text-slate-400">No notification sound</span>
+                        <span className="font-semibold block">{isSilentSend ? uiText("Silent Send (Active)", uiLang) : uiText("Send Silently", uiLang)}</span>
+                        <span className="text-[10px] text-slate-400">{uiText("No notification sound", uiLang)}</span>
                       </div>
                     </button>
 
@@ -5857,14 +5939,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Lock className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">{lang === 'fa' ? 'پیام مخفی (نجوا)' : 'Whisper Message'}</span>
-                        <span className="text-[10px] text-slate-400">{lang === 'fa' ? 'فقط برای مخاطب خاص (@whisper)' : 'Private secret message'}</span>
+                        <span className="font-semibold block">{lang === "fa" ? 'پیام مخفی (نجوا)' : 'Whisper Message'}</span>
+                        <span className="text-[10px] text-slate-400">{lang === "fa" ? 'فقط برای مخاطب خاص (@whisper)' : 'Private secret message'}</span>
                       </div>
                     </button>
 
                     <div className="border-t border-[#242f3d] my-0.5" />
 
-                    {/* Telegram Mini App Game */}
+                    {/* Mini App Game */}
                     <button
                       id="mini-game-btn"
                       type="button"
@@ -5878,8 +5960,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Gamepad2 className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">{lang === 'fa' ? 'مینی‌اپ تلگرام (2048)' : 'Telegram Mini App (2048)'}</span>
-                        <span className="text-[10px] text-slate-400">{lang === 'fa' ? 'بازی و اشتراک رکورد در چت' : 'Play & share high score'}</span>
+                        <span className="font-semibold block">{lang === "fa" ? 'مینی‌اپ تلگرام (2048)' : 'Telegram Mini App (2048)'}</span>
+                        <span className="text-[10px] text-slate-400">{lang === "fa" ? 'بازی و اشتراک رکورد در چت' : 'Play & share high score'}</span>
                       </div>
                     </button>
 
@@ -5897,8 +5979,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         ❌
                       </div>
                       <div>
-                        <span className="font-semibold block">{lang === 'fa' ? 'بازی دوز دونفره' : 'Tic-Tac-Toe Game'}</span>
-                        <span className="text-[10px] text-slate-400">{lang === 'fa' ? 'ارسال برد تعاملی دوز در چت' : 'Interactive 3x3 duel'}</span>
+                        <span className="font-semibold block">{lang === "fa" ? 'بازی دوز دونفره' : 'Tic-Tac-Toe Game'}</span>
+                        <span className="text-[10px] text-slate-400">{lang === "fa" ? 'ارسال برد تعاملی دوز در چت' : 'Interactive 3x3 duel'}</span>
                       </div>
                     </button>
 
@@ -5915,8 +5997,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         ✌️
                       </div>
                       <div>
-                        <span className="font-semibold block">{lang === 'fa' ? 'سنگ، کاغذ، قیچی' : 'Rock-Paper-Scissors'}</span>
-                        <span className="text-[10px] text-slate-400">{lang === 'fa' ? 'دوئل مخفی با کارت تعاملی' : 'Secret move clash'}</span>
+                        <span className="font-semibold block">{lang === "fa" ? uiText("سنگ، کاغذ، قیچی", uiLang) : 'Rock-Paper-Scissors'}</span>
+                        <span className="text-[10px] text-slate-400">{lang === "fa" ? 'دوئل مخفی با کارت تعاملی' : 'Secret move clash'}</span>
                       </div>
                     </button>
 
@@ -5935,8 +6017,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         <Dices className="h-4 w-4" />
                       </div>
                       <div>
-                        <span className="font-semibold block">{lang === 'fa' ? 'تاس و رولت متحرک' : 'Roll Telegram Dice'}</span>
-                        <span className="text-[10px] text-slate-400">{lang === 'fa' ? 'تاس، دارت، بسکتبال، فوتبال یا اسلات' : 'Animated dice, dart, slot'}</span>
+                        <span className="font-semibold block">{lang === "fa" ? 'تاس و رولت متحرک' : 'Roll Telegram Dice'}</span>
+                        <span className="text-[10px] text-slate-400">{lang === "fa" ? 'تاس، دارت، بسکتبال، فوتبال یا اسلات' : 'Animated dice, dart, slot'}</span>
                       </div>
                     </button>
                   </div>
@@ -5959,7 +6041,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     slowModeRemaining > 0 && myRole !== 'owner' && myRole !== 'admin'
                       ? `⏳ ${t.slow_mode_wait} ${slowModeRemaining}s`
                       : isSilentSend
-                      ? 'Silent message...'
+                      ? uiText("Silent message...", uiLang)
                       : t.type_message
                   }
                   rows={1}
@@ -5978,7 +6060,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         ? 'text-[#24A1DE] bg-[#24A1DE]/15'
                         : 'text-[#7f91a4] hover:text-[#24A1DE] hover:bg-[#17212b]'
                     }`}
-                    title="Format Text (Ctrl+B, Ctrl+I, Spoiler, Code...)"
+                    title={uiText("Format Text (Ctrl+B, Ctrl+I, Spoiler, Code...)", uiLang)}
                   >
                     <Type className="h-4 w-4" />
                   </button>
@@ -5993,7 +6075,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         ? 'text-[#24A1DE] bg-[#24A1DE]/15'
                         : 'text-[#7f91a4] hover:text-white hover:bg-[#17212b]'
                     }`}
-                    title="Emojis & Stickers"
+                    title={uiText("Emojis & Stickers", uiLang)}
                   >
                     <Smile className="h-4.5 w-4.5" />
                   </button>
@@ -6015,14 +6097,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   </div>
                 )}
 
-                {/* Floating Telegram Mention Suggestions Popover */}
+                {/* Floating Mention Suggestions Popover */}
                 {showMentionSuggestions && mentionSuggestions.length > 0 && (
                   <div
                     className="absolute bottom-full left-0 mb-2 w-72 sm:w-80 max-h-56 overflow-y-auto rounded-2xl bg-[#17212b] border border-[#242f3d] shadow-2xl z-50 p-1.5 space-y-0.5 animate-in fade-in slide-in-from-bottom-2 duration-150 backdrop-blur-md"
                   >
                     <div className="px-2 py-1 text-[10px] font-bold text-[#7f91a4] uppercase tracking-wider flex items-center justify-between border-b border-[#242f3d] mb-1">
-                      <span>Mention</span>
-                      <span className="text-[9px] font-normal lowercase">Tab or click to select</span>
+                      <span>{uiText("Mention", uiLang)}</span>
+                      <span className="text-[9px] font-normal lowercase">{uiText("Tab or click to select", uiLang)}</span>
                     </div>
                     {mentionSuggestions.map((mUser, idx) => {
                       const isSelected = idx === selectedMentionIndex;
@@ -6037,7 +6119,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         >
                           <div className="h-8 w-8 rounded-full bg-gradient-to-tr from-[#3ca9e2] to-[#24A1DE] flex items-center justify-center font-bold text-xs text-white overflow-hidden flex-shrink-0 shadow-sm">
                             {mUser.avatar_url ? (
-                              <img src={mUser.avatar_url} alt={mUser.display_name} className="h-full w-full object-cover" />
+                              <img src={api.avatarURL(mUser.avatar_url)} alt={mUser.display_name} className="h-full w-full object-cover" />
                             ) : (
                               (mUser.display_name || mUser.username).charAt(0).toUpperCase()
                             )}
@@ -6073,7 +6155,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onClick={() => handleSendMessage()}
                   disabled={sending}
                   className="h-10 w-10 rounded-full bg-[#24A1DE] hover:bg-[#208fc4] flex items-center justify-center text-white shadow-lg shadow-[#24A1DE]/25 transition cursor-pointer flex-shrink-0"
-                  title="Send"
+                  title={uiText("Send", uiLang)}
                 >
                   <Send className="h-4 w-4" />
                 </button>
@@ -6103,7 +6185,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       )}
 
-      {/* Telegram-style Media & Document Preview Modal Overlay */}
+      {/* Media & Document Preview Modal */}
       {pendingMediaFiles && (
         <MediaPreviewModal
           file={pendingMediaFiles.file}
@@ -6193,13 +6275,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       )}
 
-      {/* Telegram-style Message Context Menu Overlay */}
+      {/* Message Context Menu */}
       {contextMenuPos && (
         <MessageContextMenu
           position={contextMenuPos}
           currentUser={currentUser}
           isOwnerOrAdmin={conversation.type === 'direct' || myRole === 'owner' || myRole === 'admin' || contextMenuPos.message.sender_id === currentUser.id}
-          lang={lang}
           onClose={() => setContextMenuPos(null)}
           onReply={handleReply}
           onForward={(msg) => setForwardingMessages([msg])}
@@ -6225,7 +6306,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
           }}
           onShowInfo={(msg) => {
             alert(
-              `Message Details:\nID: ${msg.id}\nSender: ${msg.sender_username || msg.sender_id}\nTime: ${new Date(msg.created_at).toLocaleString()}\nStatus: ${msg.status || 'delivered'}\nSecurity: ${securityMode === 'e2ee' ? 'Signal Protocol E2EE' : 'Standard Secure'}`
+              lang === 'fa'
+                ? `اطلاعات پیام:\nشناسه: ${msg.id}\nفرستنده: ${msg.sender_username || msg.sender_id}\nزمان: ${new Date(msg.created_at).toLocaleString('fa-IR')}\nوضعیت: ${msg.status || 'delivered'}\nامنیت: ${securityMode === 'e2ee' ? uiText("رمزنگاری سرتاسری Signal", uiLang) : uiText("استاندارد", uiLang)}`
+                : `Message Details:\nID: ${msg.id}\nSender: ${msg.sender_username || msg.sender_id}\nTime: ${new Date(msg.created_at).toLocaleString('en-US')}\nStatus: ${msg.status || 'delivered'}\nSecurity: ${securityMode === 'e2ee' ? uiText("Signal Protocol E2EE", uiLang) : 'Standard Secure'}`
             );
           }}
           onDeleteForMe={handleDeleteForMe}
@@ -6258,7 +6341,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       )}
 
-      {/* Read By Modal (Phase 1) */}
+      {/* Read By Modal */}
       {readByModalMessage && (
         <ReadByModal
           conversationId={conversation.id}
@@ -6307,25 +6390,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="h-12 w-12 rounded-full mx-auto flex items-center justify-center mb-3 bg-[#24A1DE]/20 text-[#24A1DE]">
               <Clock className="h-6 w-6" />
             </div>
-            <h3 className="text-base font-bold text-white text-center mb-1">Schedule Message</h3>
-            <p className="text-xs text-[#7f91a4] text-center mb-4">
-              Send this message automatically at a future date and time.
-            </p>
+            <h3 className="text-base font-bold text-white text-center mb-1">{uiText("Schedule Message", uiLang)}</h3>
+            <p className="text-xs text-[#7f91a4] text-center mb-4">{uiText("Send this message automatically at a future date and time.", uiLang)}</p>
 
             <div className="space-y-3 mb-5">
               <div>
-                <label className="text-[11px] text-[#7f91a4] font-medium block mb-1">
-                  Message Content
-                </label>
+                <label className="text-[11px] text-[#7f91a4] font-medium block mb-1">{uiText("Message Content", uiLang)}</label>
                 <div className="p-2.5 rounded-xl bg-[#242f3d] text-xs text-white max-h-24 overflow-y-auto">
-                  {input.trim() || <span className="italic text-slate-400">Type in input box first</span>}
+                  {input.trim() || <span className="italic text-slate-400">{uiText("Type in input box first", uiLang)}</span>}
                 </div>
               </div>
 
               <div>
-                <label className="text-[11px] text-[#7f91a4] font-medium block mb-1">
-                  Schedule For
-                </label>
+                <label className="text-[11px] text-[#7f91a4] font-medium block mb-1">{uiText("Schedule For", uiLang)}</label>
                 <input
                   type="datetime-local"
                   value={scheduledDateStr}
@@ -6342,9 +6419,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onChange={(e) => setIsSilentSend(e.target.checked)}
                   className="rounded text-[#24A1DE]"
                 />
-                <label htmlFor="schedule-silent" className="text-xs text-[#7f91a4] cursor-pointer">
-                  Send silently (no sound notification)
-                </label>
+                <label htmlFor="schedule-silent" className="text-xs text-[#7f91a4] cursor-pointer">{uiText("Send silently (no sound notification)", uiLang)}</label>
               </div>
             </div>
 
@@ -6353,23 +6428,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 type="button"
                 onClick={() => setShowScheduleModal(false)}
                 className="flex-1 py-2 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-xs text-white transition cursor-pointer"
-              >
-                Cancel
-              </button>
+              >{uiText("Cancel", uiLang)}</button>
               <button
                 type="button"
                 onClick={handleScheduleSubmit}
                 disabled={!input.trim() || !scheduledDateStr}
                 className="flex-1 py-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white transition cursor-pointer shadow-md disabled:opacity-50"
-              >
-                Schedule
-              </button>
+              >{uiText("Schedule", uiLang)}</button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Chat Info Modal & Member List Inspector (Issue 3) */}
+      {/* Chat Info & Members Modal */}
       {showChatInfoModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-fade-in">
           <div className="w-full max-w-md rounded-2xl bg-[#17212b] p-6 shadow-2xl border border-[#242f3d] max-h-[85vh] flex flex-col">
@@ -6399,37 +6470,37 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
               <h3 className="text-base font-bold text-white">{chatTitle}</h3>
               <p className="text-xs text-[#7f91a4] mt-0.5">
-                {isSaved ? 'Saved Messages' : isChannel ? 'Channel' : isGroup ? 'Group Chat' : 'Direct Conversation'}
+                {isSaved ? uiText("Saved Messages", uiLang) : isChannel ? uiText("Channel", uiLang) : isGroup ? uiText("Group Chat", uiLang) : uiText("Direct Conversation", uiLang)}
               </p>
             </div>
 
             <div className="space-y-2 text-xs bg-[#242f3d] p-3 rounded-xl mb-4 flex-shrink-0">
               {conversation.description && (
                 <div>
-                  <span className="text-[10px] text-[#7f91a4] block">Description</span>
+                  <span className="text-[10px] text-[#7f91a4] block">{uiText("Description", uiLang)}</span>
                   <p className="text-white mt-0.5">{conversation.description}</p>
                 </div>
               )}
               <div className="flex justify-between items-center py-1 border-b border-[#17212b]/50">
-                <span className="text-[#7f91a4]">Security Mode</span>
+                <span className="text-[#7f91a4]">{uiText("Security Mode", uiLang)}</span>
                 <span className="font-semibold text-emerald-400">
-                  {securityMode === 'e2ee_active' ? 'Signal E2EE Active' : 'TLS & Encrypted at Rest'}
+                  {securityMode === 'e2ee_active' ? uiText("Signal E2EE Active", uiLang) : uiText("TLS transport security (normal mode)", uiLang)}
                 </span>
               </div>
               {myRole && (
                 <div className="flex justify-between items-center py-1 border-b border-[#17212b]/50">
-                  <span className="text-[#7f91a4]">Your Role</span>
+                  <span className="text-[#7f91a4]">{uiText("Your Role", uiLang)}</span>
                   <span className="font-semibold text-[#24A1DE] capitalize">{myRole}</span>
                 </div>
               )}
               <div className="flex justify-between items-center py-1">
                 <span className="text-[#7f91a4]">
-                  {isChannel ? 'Subscribers' : isGroup ? 'Members' : 'Participants'}
+                  {isChannel ? uiText("Subscribers", uiLang) : isGroup ? uiText("Members", uiLang) : uiText("Participants", uiLang)}
                 </span>
                 <span className="text-white font-medium">
                   {conversationMembers.length > 0
-                    ? `${conversationMembers.length} ${isChannel ? 'subscribers' : 'members'}`
-                    : `${conversation.participants?.length || 1} ${isChannel ? 'subscribers' : 'members'}`}
+                    ? `${conversationMembers.length} ${isChannel ? uiText("subscribers", uiLang) : uiText("members", uiLang)}`
+                    : `${conversation.participants?.length || 1} ${isChannel ? uiText("subscribers", uiLang) : uiText("members", uiLang)}`}
                 </span>
               </div>
             </div>
@@ -6439,15 +6510,15 @@ export const ChatView: React.FC<ChatViewProps> = ({
               <div className="flex items-center gap-2">
                 <Clock className="h-4 w-4 text-[#7f91a4]" />
                 <div>
-                  <span className="text-[10px] text-[#7f91a4] block">Auto-Delete Messages</span>
+                  <span className="text-[10px] text-[#7f91a4] block">{uiText("Auto-Delete Messages", uiLang)}</span>
                   <span className="text-xs text-white font-medium">
                     {conversationTTL === 3600
-                      ? '1 Hour'
+                      ? uiText("1 Hour", uiLang)
                       : conversationTTL === 86400
-                      ? '1 Day'
+                      ? uiText("1 Day", uiLang)
                       : conversationTTL === 604800
-                      ? '1 Week'
-                      : 'Off'}
+                      ? uiText("1 Week", uiLang)
+                      : uiText("Off", uiLang)}
                   </span>
                 </div>
               </div>
@@ -6458,10 +6529,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   onChange={(e) => handleSetTTL(Number(e.target.value))}
                   className="bg-[#17212b] border border-[#242f3d] rounded-lg px-2 py-1 text-xs text-white focus:outline-none focus:border-[#24A1DE] cursor-pointer"
                 >
-                  <option value={0}>Off</option>
-                  <option value={3600}>1 Hour</option>
-                  <option value={86400}>1 Day</option>
-                  <option value={604800}>1 Week</option>
+                  <option value={0}>{uiText("Off", uiLang)}</option>
+                  <option value={3600}>{uiText("1 Hour", uiLang)}</option>
+                  <option value={86400}>{uiText("1 Day", uiLang)}</option>
+                  <option value={604800}>{uiText("1 Week", uiLang)}</option>
                 </select>
               )}
             </div>
@@ -6470,7 +6541,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {(isGroup || isChannel) && (
               <div className="bg-[#242f3d] p-3 rounded-xl mb-3 space-y-2 flex-shrink-0">
                 <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-[#7f91a4] block font-semibold uppercase tracking-wider">Private Invite Link</span>
+                  <span className="text-[10px] text-[#7f91a4] block font-semibold uppercase tracking-wider">{uiText("Private Invite Link", uiLang)}</span>
                   {(myRole === 'owner' || myRole === 'admin') && (
                     <button
                       type="button"
@@ -6478,7 +6549,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       onClick={handleGenerateInvite}
                       className="text-[10px] text-[#24A1DE] hover:underline font-semibold cursor-pointer disabled:opacity-50"
                     >
-                      {inviteLoading ? 'Generating...' : activeInviteCode ? 'Create New Link' : 'Generate Invite Link'}
+                      {inviteLoading ? uiText("Generating...", uiLang) : activeInviteCode ? uiText("Create New Link", uiLang) : uiText("Generate Invite Link", uiLang)}
                     </button>
                   )}
                 </div>
@@ -6496,10 +6567,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           ? `${window.location.origin}/join/${activeInviteCode}`
                           : `${window.location.origin}/join/${conversation.id}`;
                         await navigator.clipboard.writeText(link);
-                        alert('Invite link copied to clipboard!');
+                        alert(uiText("Invite link copied to clipboard!", uiLang));
                       }}
                       className="p-1.5 rounded-lg bg-[#24A1DE]/20 hover:bg-[#24A1DE]/30 text-[#24A1DE] transition cursor-pointer"
-                      title="Copy Invite Link"
+                      title={uiText("Copy Invite Link", uiLang)}
                     >
                       <Copy className="h-3.5 w-3.5" />
                     </button>
@@ -6509,7 +6580,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                         disabled={inviteLoading}
                         onClick={() => handleRevokeInvite(activeInviteCode)}
                         className="p-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 text-red-400 transition cursor-pointer"
-                        title="Revoke Invite Link"
+                        title={uiText("Revoke Invite Link", uiLang)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -6537,20 +6608,20 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       try {
                         await api.setConversationSlowMode(conversation.id, secs);
                         conversation.slow_mode_seconds = secs;
-                        alert(secs > 0 ? `حالت آهسته روی ${secs} ثانیه تنظیم شد.` : 'حالت آهسته خاموش شد.');
+                        alert(secs > 0 ? `حالت آهسته روی ${secs} ثانیه تنظیم شد.` : uiText("حالت آهسته خاموش شد.", uiLang));
                       } catch (err: any) {
-                        alert(err.message || 'خطا در تنظیم حالت آهسته');
+                        alert(err.message || uiText("خطا در تنظیم حالت آهسته", uiLang));
                       }
                     }}
                     className="rounded-lg bg-[#17212b] border border-[#242f3d] px-2.5 py-1 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#24A1DE] cursor-pointer"
                   >
                     <option value={0}>{t.slow_mode_off}</option>
-                    <option value={10}>10s</option>
-                    <option value={30}>30s</option>
-                    <option value={60}>1m</option>
-                    <option value={300}>5m</option>
-                    <option value={900}>15m</option>
-                    <option value={3600}>1h</option>
+                    <option value={10}>{uiText("10s", uiLang)}</option>
+                    <option value={30}>{uiText("30s", uiLang)}</option>
+                    <option value={60}>{uiText("1m", uiLang)}</option>
+                    <option value={300}>{uiText("5m", uiLang)}</option>
+                    <option value={900}>{uiText("15m", uiLang)}</option>
+                    <option value={3600}>{uiText("1h", uiLang)}</option>
                   </select>
                 </div>
               </div>
@@ -6565,7 +6636,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                       type="text"
                       value={newMemberUsername}
                       onChange={(e) => setNewMemberUsername(e.target.value)}
-                      placeholder="User ID or @username"
+                      placeholder={uiText("User ID or @username", uiLang)}
                       className="flex-1 bg-[#121921] border border-[#242f3d] rounded-xl px-3 py-1.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
                     />
                     <button
@@ -6591,14 +6662,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           setShowAddMemberInput(false);
                           await loadMembers();
                         } catch (err: any) {
-                          alert(err.message || 'Failed to add member');
+                          alert(err.message || uiText("Failed to add member", uiLang));
                         } finally {
                           setAddingMember(false);
                         }
                       }}
                       className="px-3 py-1.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white transition disabled:opacity-50 cursor-pointer"
                     >
-                      {addingMember ? 'Adding...' : 'Add'}
+                      {addingMember ? uiText("Adding...", uiLang) : uiText("Add", uiLang)}
                     </button>
                     <button
                       type="button"
@@ -6618,7 +6689,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     className="w-full py-2 px-3 rounded-xl bg-[#242f3d] hover:bg-[#2c3846] text-[#24A1DE] text-xs font-semibold flex items-center justify-center gap-1.5 transition cursor-pointer"
                   >
                     <UserPlus className="h-4 w-4" />
-                    <span>Add {isChannel ? 'Subscriber' : 'Member'}</span>
+                    <span>{uiText("Add ", uiLang)}{isChannel ? uiText("Subscriber", uiLang) : uiText("Member", uiLang)}</span>
                   </button>
                 )}
               </div>
@@ -6628,19 +6699,19 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {(isGroup || isChannel) && (
               <div className="flex-1 overflow-y-auto mb-4 min-h-[120px] max-h-60 border border-[#242f3d] rounded-xl p-2 bg-[#121921]">
                 <h4 className="text-[11px] font-bold text-[#7f91a4] uppercase px-2 py-1 tracking-wider">
-                  {isChannel ? 'Subscribers' : 'Members'} ({conversationMembers.length})
+                  {isChannel ? uiText("Subscribers", uiLang) : uiText("Members", uiLang)} ({conversationMembers.length})
                 </h4>
                 {loadingMembers ? (
                   <div className="flex items-center justify-center py-6 text-xs text-[#7f91a4] gap-2">
                     <div className="h-4 w-4 border-2 border-[#24A1DE] border-t-transparent rounded-full animate-spin" />
-                    <span>Loading members...</span>
+                    <span>{uiText("Loading members...", uiLang)}</span>
                   </div>
                 ) : membersError ? (
                   <div className="p-3 text-xs text-amber-300 bg-amber-500/10 rounded-lg">
                     {membersError}
                   </div>
                 ) : conversationMembers.length === 0 ? (
-                  <div className="p-3 text-xs text-[#7f91a4] text-center">No members found.</div>
+                  <div className="p-3 text-xs text-[#7f91a4] text-center">{uiText("No members found.", uiLang)}</div>
                 ) : (
                   <div className="space-y-1">
                     {conversationMembers.map((m) => (
@@ -6656,12 +6727,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
                           } as User);
                         }}
                         className="flex items-center justify-between p-2 rounded-lg hover:bg-[#202b36] transition cursor-pointer"
-                        title="View Profile"
+                        title={uiText("View Profile", uiLang)}
                       >
                         <div className="flex items-center gap-2.5 min-w-0">
                           <div className="h-8 w-8 rounded-full bg-[#24A1DE] flex items-center justify-center font-bold text-xs text-white overflow-hidden flex-shrink-0">
                             {m.avatar_url ? (
-                              <img src={m.avatar_url} alt={m.display_name} className="h-full w-full object-cover" />
+                              <img src={api.avatarURL(m.avatar_url)} alt={m.display_name} className="h-full w-full object-cover" />
                             ) : (
                               (m.display_name || m.username || 'U').charAt(0).toUpperCase()
                             )}
@@ -6670,7 +6741,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                             <span className="block text-xs font-semibold text-white truncate">
                               {m.display_name || m.username}
                               {m.user_id === currentUser.id && (
-                                <span className="text-[10px] text-[#24A1DE] ml-1">(You)</span>
+                                <span className="text-[10px] text-[#24A1DE] ml-1">{uiText("(You)", uiLang)}</span>
                               )}
                             </span>
                             <span className="block text-[10px] text-[#7f91a4] truncate">
@@ -6718,7 +6789,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     ? 'text-amber-400 hover:text-amber-300 hover:bg-amber-500/10'
                                     : 'text-[#24A1DE] hover:text-[#208fc4] hover:bg-[#24A1DE]/10'
                                 }`}
-                                title={m.role === 'admin' ? 'Demote to Member' : 'Promote to Admin'}
+                                title={m.role === 'admin' ? uiText("Demote to Member", uiLang) : uiText("Promote to Admin", uiLang)}
                               >
                                 <Shield className="h-3.5 w-3.5" />
                               </button>
@@ -6744,11 +6815,11 @@ export const ChatView: React.FC<ChatViewProps> = ({
                                     await api.removeConversationMember(conversation.id, m.user_id);
                                     await loadMembers();
                                   } catch (err: any) {
-                                    alert(err.message || 'Failed to remove member');
+                                    alert(err.message || uiText("Failed to remove member", uiLang));
                                   }
                                 }}
                                 className="p-1 text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded-lg transition cursor-pointer"
-                                title="Remove Member"
+                                title={uiText("Remove Member", uiLang)}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
                               </button>
@@ -6765,14 +6836,12 @@ export const ChatView: React.FC<ChatViewProps> = ({
               type="button"
               onClick={() => setShowChatInfoModal(false)}
               className="w-full py-2.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white transition cursor-pointer flex-shrink-0"
-            >
-              Close
-            </button>
+            >{uiText("Close", uiLang)}</button>
           </div>
         </div>
       )}
 
-      {/* Telegram-style User Profile Modal */}
+      {/* User Profile Modal */}
       {inspectedUser && (
         <UserProfileModal
           user={inspectedUser}
@@ -6825,6 +6894,8 @@ export const ChatView: React.FC<ChatViewProps> = ({
         />
       )}
 
+
+
       {showStickerPackModal && (
         <StickerPackModal
           isOpen={showStickerPackModal}
@@ -6858,11 +6929,10 @@ export const ChatView: React.FC<ChatViewProps> = ({
               </div>
               <div>
                 <span className="text-xs font-bold text-white block">
-                  {lang === 'fa' ? 'مشاهده یک‌باره (در حال سوختن...)' : 'View Once (Self-Destructing...)'}
+                  {lang === "fa" ? 'مشاهده یک‌باره (در حال سوختن...)' : 'View Once (Self-Destructing...)'}
                 </span>
                 <span className="text-[10px] text-amber-400 font-mono">
-                  {activeViewOnceModal.countdown}s remaining
-                </span>
+                  {activeViewOnceModal.countdown}{uiText("s remaining", uiLang)}</span>
               </div>
             </div>
 
@@ -6881,7 +6951,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
               }}
               className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold transition cursor-pointer shadow-lg"
             >
-              {lang === 'fa' ? 'بستن و سوزاندن' : 'Close & Burn'}
+              {lang === "fa" ? 'بستن و سوزاندن' : 'Close & Burn'}
             </button>
           </div>
 
@@ -6898,7 +6968,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             ) : (
               <img
                 src={activeViewOnceModal.url}
-                alt="View once"
+                alt={uiText("View once", uiLang)}
                 className="max-w-full max-h-full rounded-2xl object-contain shadow-2xl"
               />
             )}
@@ -6906,7 +6976,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
           {/* Security anti-screenshot notice */}
           <p className="text-[11px] text-[#7f91a4] font-medium z-10 text-center">
-            🔒 {lang === 'fa' ? 'محافظت شده با رمزنگاری سرتاسری E2EE - بدون ذخیره در حافظه' : 'Protected by E2EE - not cached locally'}
+            🔒 {lang === "fa" ? 'محافظت شده با رمزنگاری سرتاسری E2EE - بدون ذخیره در حافظه' : 'Protected by E2EE - not cached locally'}
           </p>
         </div>
       )}
@@ -6918,7 +6988,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="flex items-center justify-between pb-3 border-b border-[#242f3d]">
               <div className="flex items-center gap-2 text-white font-bold text-sm">
                 <Layers className="h-4 w-4 text-[#24A1DE]" />
-                <span>{lang === 'fa' ? `پیام‌های سنجاق شده (${pinnedMessages.length})` : `Pinned Messages (${pinnedMessages.length})`}</span>
+                <span>{lang === "fa" ? `پیام‌های سنجاق شده (${pinnedMessages.length})` : `Pinned Messages (${pinnedMessages.length})`}</span>
               </div>
               <button
                 type="button"
@@ -6943,14 +7013,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <div className="min-w-0 text-left">
                     <div className="flex items-center gap-2">
                       <span className="text-xs font-bold text-[#24A1DE]">
-                        {pinMsg.sender_username || 'Sender'}
+                        {pinMsg.sender_username || uiText("Sender", uiLang)}
                       </span>
                       <span className="text-[10px] text-[#7f91a4]">
-                        {new Date(pinMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {new Date(pinMsg.created_at).toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}
                       </span>
                     </div>
                     <p className="text-xs text-white truncate mt-0.5">
-                      {pinMsg.plaintext || (pinMsg.attachmentMeta?.filename || 'Attachment')}
+                      {pinMsg.plaintext || (pinMsg.attachmentMeta?.filename || uiText("Attachment", uiLang))}
                     </p>
                   </div>
 
@@ -6981,7 +7051,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-2 text-white font-bold text-sm">
                 <Hash className="h-5 w-5 text-[#24A1DE]" />
-                <span>{lang === 'fa' ? 'ایجاد تاپیک جدید' : 'Create Forum Topic'}</span>
+                <span>{lang === "fa" ? 'ایجاد تاپیک جدید' : 'Create Forum Topic'}</span>
               </div>
               <button
                 type="button"
@@ -6994,13 +7064,13 @@ export const ChatView: React.FC<ChatViewProps> = ({
 
             <div className="space-y-1.5">
               <label className="text-[11px] font-semibold text-[#7f91a4]">
-                {lang === 'fa' ? 'عنوان تاپیک' : 'Topic Title'}
+                {lang === "fa" ? 'عنوان تاپیک' : 'Topic Title'}
               </label>
               <input
                 type="text"
                 value={newTopicTitle}
                 onChange={(e) => setNewTopicTitle(e.target.value)}
-                placeholder={lang === 'fa' ? 'مثال: اخبار، پشتیبانی، توسعه...' : 'e.g. Development, Support...'}
+                placeholder={lang === "fa" ? 'مثال: اخبار، پشتیبانی، توسعه...' : 'e.g. Development, Support...'}
                 className="w-full px-3 py-2 bg-[#242f3d] border border-[#324252] rounded-xl text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
                 autoFocus
               />
@@ -7009,7 +7079,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {/* Icon picker */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-semibold text-[#7f91a4]">
-                {lang === 'fa' ? 'آیکون / اموجی' : 'Icon / Emoji'}
+                {lang === "fa" ? 'آیکون / اموجی' : 'Icon / Emoji'}
               </label>
               <div className="flex items-center gap-2">
                 {['💬', '🛠️', '📢', '💡', '🎮', '🚀', '🔥', '📚'].map((ico) => (
@@ -7030,7 +7100,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             {/* Color picker */}
             <div className="space-y-1.5">
               <label className="text-[11px] font-semibold text-[#7f91a4]">
-                {lang === 'fa' ? 'رنگ تاپیک' : 'Topic Color'}
+                {lang === "fa" ? 'رنگ تاپیک' : 'Topic Color'}
               </label>
               <div className="flex items-center gap-2">
                 {['#24A1DE', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899'].map((c) => (
@@ -7053,7 +7123,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 onClick={() => setShowNewTopicModal(false)}
                 className="px-4 py-2 rounded-xl text-xs font-semibold text-[#7f91a4] hover:text-white hover:bg-[#242f3d] transition cursor-pointer"
               >
-                {lang === 'fa' ? 'انصراف' : 'Cancel'}
+                {lang === "fa" ? uiText("انصراف", uiLang) : uiText("Cancel", uiLang)}
               </button>
               <button
                 type="button"
@@ -7072,14 +7142,14 @@ export const ChatView: React.FC<ChatViewProps> = ({
                     setShowNewTopicModal(false);
                     setNewTopicTitle('');
                   } catch (e: any) {
-                    alert(e.message || 'Failed to create topic');
+                    alert(e.message || uiText("Failed to create topic", uiLang));
                   } finally {
                     setCreatingTopic(false);
                   }
                 }}
                 className="px-4 py-2 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] disabled:opacity-50 text-white text-xs font-bold shadow transition cursor-pointer"
               >
-                {creatingTopic ? (lang === 'fa' ? 'در حال ساخت...' : 'Creating...') : (lang === 'fa' ? 'ساخت تاپیک' : 'Create Topic')}
+                {creatingTopic ? (lang === "fa" ? uiText("در حال ساخت...", uiLang) : uiText("Creating...", uiLang)) : (lang === "fa" ? 'ساخت تاپیک' : 'Create Topic')}
               </button>
             </div>
           </div>

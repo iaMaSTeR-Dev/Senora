@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Attachment, MediaShare } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -15,6 +16,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
   isOpen,
   onClose,
 }) => {
+  const uiLang = useUILanguage();
   const [password, setPassword] = useState('');
   const [usePassword, setUsePassword] = useState(false);
   const [expiresInHours, setExpiresInHours] = useState<number>(0);
@@ -45,7 +47,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
       });
       setShareResult(res.share);
     } catch (e: any) {
-      setError(e.message || 'Failed to create media share');
+      setError(e.message || uiText("Failed to create media share", uiLang));
     } finally {
       setLoading(false);
     }
@@ -73,8 +75,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               <Share2 className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">لینک استریم مستقیم و پلیر تحت وب</h2>
-              <p className="text-xs text-slate-400">RFC 7233 Byte-Range Stream & Web Player</p>
+              <h2 className="text-lg font-bold text-white">{uiText("لینک استریم مستقیم و پلیر تحت وب", uiLang)}</h2>
+              <p className="text-xs text-slate-400">{uiText("RFC 7233 Byte-Range Stream & Web Player", uiLang)}</p>
             </div>
           </div>
           <button
@@ -107,7 +109,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2 text-sm font-medium text-slate-200">
                     <Lock className="w-4 h-4 text-amber-400" />
-                    <span>محافظت با رمز عبور</span>
+                    <span>{uiText("محافظت با رمز عبور", uiLang)}</span>
                   </div>
                   <input
                     type="checkbox"
@@ -120,7 +122,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                 {usePassword && (
                   <input
                     type="password"
-                    placeholder="رمز عبور دلخواه برای تماشا یا دانلود..."
+                    placeholder={uiText("رمز عبور دلخواه برای تماشا یا دانلود...", uiLang)}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
@@ -132,19 +134,19 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               <div className="space-y-1.5">
                 <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
                   <Clock className="w-3.5 h-3.5 text-blue-400" />
-                  <span>مدت اعتبار لینک</span>
+                  <span>{uiText("مدت اعتبار لینک", uiLang)}</span>
                 </label>
                 <select
                   value={expiresInHours}
                   onChange={(e) => setExpiresInHours(Number(e.target.value))}
                   className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
                 >
-                  <option value={0}>همیشگی (بدون انقضا)</option>
-                  <option value={12}>۱۲ ساعت</option>
-                  <option value={24}>۲۴ ساعت (۱ روز)</option>
-                  <option value={72}>۳ روز</option>
-                  <option value={168}>۷ روز (۱ هفته)</option>
-                  <option value={720}>۳۰ روز (۱ ماه)</option>
+                  <option value={0}>{uiText("همیشگی (بدون انقضا)", uiLang)}</option>
+                  <option value={12}>{uiText("۱۲ ساعت", uiLang)}</option>
+                  <option value={24}>{uiText("۲۴ ساعت (۱ روز)", uiLang)}</option>
+                  <option value={72}>{uiText("۳ روز", uiLang)}</option>
+                  <option value={168}>{uiText("۷ روز (۱ هفته)", uiLang)}</option>
+                  <option value={720}>{uiText("۳۰ روز (۱ ماه)", uiLang)}</option>
                 </select>
               </div>
 
@@ -152,18 +154,18 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               <div className="space-y-1.5">
                 <label className="flex items-center gap-1.5 text-xs font-medium text-slate-300">
                   <Download className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>محدودیت تعداد دانلود</span>
+                  <span>{uiText("محدودیت تعداد دانلود", uiLang)}</span>
                 </label>
                 <select
                   value={maxDownloads}
                   onChange={(e) => setMaxDownloads(Number(e.target.value))}
                   className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:border-indigo-500 cursor-pointer"
                 >
-                  <option value={0}>نامحدود</option>
-                  <option value={5}>۵ دانلود</option>
-                  <option value={10}>۱۰ دانلود</option>
-                  <option value={50}>۵۰ دانلود</option>
-                  <option value={100}>۱۰۰ دانلود</option>
+                  <option value={0}>{uiText("نامحدود", uiLang)}</option>
+                  <option value={5}>{uiText("۵ دانلود", uiLang)}</option>
+                  <option value={10}>{uiText("۱۰ دانلود", uiLang)}</option>
+                  <option value={50}>{uiText("۵۰ دانلود", uiLang)}</option>
+                  <option value={100}>{uiText("۱۰۰ دانلود", uiLang)}</option>
                 </select>
               </div>
 
@@ -179,21 +181,21 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                 className="w-full py-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-semibold rounded-xl shadow-lg shadow-indigo-600/25 transition disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Sparkles className="w-4 h-4" />
-                <span>{loading ? 'در حال ایجاد لینک...' : 'تولید لینک مستقیم و وب پلیر'}</span>
+                <span>{loading ? uiText("در حال ایجاد لینک...", uiLang) : uiText("تولید لینک مستقیم و وب پلیر", uiLang)}</span>
               </button>
             </div>
           ) : (
             <div className="space-y-5 animate-fade-in">
               <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 rounded-xl flex items-center gap-2.5 text-emerald-400 text-xs">
                 <Check className="w-4 h-4 shrink-0" />
-                <span>لینک استریم اختصاصی با استاندارد RFC 7233 با موفقیت ساخته شد!</span>
+                <span>{uiText("لینک استریم اختصاصی با استاندارد RFC 7233 با موفقیت ساخته شد!", uiLang)}</span>
               </div>
 
               {/* Direct Stream Link */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                  <span>لینک مستقیم استریم (Direct Stream URL)</span>
-                  <span className="text-[10px] text-indigo-400">پشتیبانی از دانلود منیجر و پلیرها</span>
+                  <span>{uiText("لینک مستقیم استریم (Direct Stream URL)", uiLang)}</span>
+                  <span className="text-[10px] text-indigo-400">{uiText("پشتیبانی از دانلود منیجر و پلیرها", uiLang)}</span>
                 </label>
                 <div className="flex items-center gap-2">
                   <input
@@ -207,16 +209,16 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                     className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition shrink-0"
                   >
                     {copiedField === 'stream' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedField === 'stream' ? 'کپی شد' : 'کپی'}</span>
+                    <span>{copiedField === 'stream' ? uiText("کپی شد", uiLang) : uiText("کپی", uiLang)}</span>
                   </button>
                 </div>
                 <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
-                  <span>لینک کوتاه: <code className="text-slate-300 font-mono">{vanityStreamUrl}</code></span>
+                  <span>{uiText("لینک کوتاه: ", uiLang)}<code className="text-slate-300 font-mono">{vanityStreamUrl}</code></span>
                   <button
                     onClick={() => copyToClipboard(vanityStreamUrl, 'vanity')}
                     className="text-indigo-400 hover:underline cursor-pointer"
                   >
-                    {copiedField === 'vanity' ? 'کپی شد!' : 'کپی لینک کوتاه'}
+                    {copiedField === 'vanity' ? uiText("کپی شد!", uiLang) : uiText("کپی لینک کوتاه", uiLang)}
                   </button>
                 </div>
               </div>
@@ -224,8 +226,8 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
               {/* Standalone Dark Web Player Link */}
               <div className="space-y-1.5">
                 <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
-                  <span>پلیر تحت وب تاریک (Dark Web Player)</span>
-                  <span className="text-[10px] text-cyan-400">مشاهده مستقیم در مرورگر</span>
+                  <span>{uiText("پلیر تحت وب تاریک (Dark Web Player)", uiLang)}</span>
+                  <span className="text-[10px] text-cyan-400">{uiText("مشاهده مستقیم در مرورگر", uiLang)}</span>
                 </label>
                 <div className="flex items-center gap-2">
                   <input
@@ -239,14 +241,14 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                     className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium flex items-center gap-1.5 transition shrink-0"
                   >
                     {copiedField === 'watch' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedField === 'watch' ? 'کپی شد' : 'کپی'}</span>
+                    <span>{copiedField === 'watch' ? uiText("کپی شد", uiLang) : uiText("کپی", uiLang)}</span>
                   </button>
                   <a
                     href={webPlayerUrl}
                     target="_blank"
                     rel="noreferrer"
                     className="p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg transition shrink-0"
-                    title="باز کردن در تب جدید"
+                    title={uiText("باز کردن در تب جدید", uiLang)}
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                   </a>
@@ -257,9 +259,7 @@ export const ShareMediaModal: React.FC<ShareMediaModalProps> = ({
                 <button
                   onClick={onClose}
                   className="px-5 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-semibold rounded-xl transition cursor-pointer"
-                >
-                  بستن
-                </button>
+                >{uiText("بستن", uiLang)}</button>
               </div>
             </div>
           )}

@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef } from 'react';
 import { mediaDeviceManager, MediaDeviceState } from '../calls/mediaDeviceManager';
 import { Language, translations } from '../../app/i18n';
@@ -17,6 +18,7 @@ interface DevicesSettingsProps {
 }
 
 export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
+  const uiLang = useUILanguage(lang);
   const t = translations[lang];
   const [deviceState, setDeviceState] = useState<MediaDeviceState>(mediaDeviceManager.getState());
   const [isTestingMic, setIsTestingMic] = useState(false);
@@ -63,7 +65,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
       // Refresh permissions
       mediaDeviceManager.checkPermissions().then(setPermissions);
     } catch (err: any) {
-      alert('Could not start microphone test: ' + err.message);
+      alert(uiText("Could not start microphone test: ", uiLang) + err.message);
       setIsTestingMic(false);
       setMicLevel(0);
     }
@@ -91,7 +93,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
           setCameraTestStop(() => test.stop);
           mediaDeviceManager.checkPermissions().then(setPermissions);
         } catch (err: any) {
-          alert('Could not start camera test: ' + err.message);
+          alert(uiText("Could not start camera test: ", uiLang) + err.message);
           setIsTestingCamera(false);
         }
       }
@@ -109,18 +111,16 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
       <div className="flex items-center justify-between pb-3 border-b border-[#242f3d]">
         <div>
           <h3 className="text-sm font-bold text-white">{t.settings_devices_media}</h3>
-          <p className="text-[11px] text-[#7f91a4] mt-0.5">
-            Configure real input/output hardware for voice notes, calls, and video messages
-          </p>
+          <p className="text-[11px] text-[#7f91a4] mt-0.5">{uiText("Configure real input/output hardware for voice notes, calls, and video messages", uiLang)}</p>
         </div>
         <button
           type="button"
           onClick={handleRefreshDevices}
           className="px-2.5 py-1.5 rounded-lg bg-[#242f3d] hover:bg-[#2b3a4a] text-[#7f91a4] hover:text-white transition flex items-center gap-1.5 cursor-pointer"
-          title="Refresh Device List"
+          title={uiText("Refresh Device List", uiLang)}
         >
           <RefreshCw className="h-3.5 w-3.5" />
-          <span>Refresh</span>
+          <span>{uiText("Refresh", uiLang)}</span>
         </button>
       </div>
 
@@ -137,10 +137,10 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
             onChange={(e) => mediaDeviceManager.setSelectedAudioInputId(e.target.value)}
             className="w-full rounded-xl bg-[#17212b] border border-[#242f3d] px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
           >
-            <option value="">Default - System Microphone</option>
+            <option value="">{uiText("Default - System Microphone", uiLang)}</option>
             {deviceState.audioInputs.map((d, i) => (
               <option key={d.deviceId || i} value={d.deviceId}>
-                {d.label || `Microphone ${i + 1}`}
+                {d.label || `${uiText('Microphone', uiLang)} ${i + 1}`}
               </option>
             ))}
           </select>
@@ -194,7 +194,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
                 : 'bg-amber-500/20 text-amber-400'
             }`}
           >
-            {deviceState.isSinkIdSupported ? 'setSinkId Supported' : 'Standard Output Only'}
+            {deviceState.isSinkIdSupported ? uiText("setSinkId Supported", uiLang) : uiText("Standard Output Only", uiLang)}
           </span>
         </div>
 
@@ -205,10 +205,10 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
             disabled={!deviceState.isSinkIdSupported}
             className="w-full rounded-xl bg-[#17212b] border border-[#242f3d] px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#24A1DE] disabled:opacity-60"
           >
-            <option value="">Default - System Output</option>
+            <option value="">{uiText("Default - System Output", uiLang)}</option>
             {deviceState.audioOutputs.map((d, i) => (
               <option key={d.deviceId || i} value={d.deviceId}>
-                {d.label || `Speaker / Headphone ${i + 1}`}
+                {d.label || `${uiText('Speaker', uiLang)} / ${uiText('Headphone', uiLang)} ${i + 1}`}
               </option>
             ))}
           </select>
@@ -225,7 +225,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
             className="px-3 py-1.5 rounded-lg bg-[#242f3d] hover:bg-[#208fc4] hover:text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
           >
             <Volume2 className="h-3.5 w-3.5" />
-            <span>{isPlayingTestSound ? 'Playing Chime...' : t.test_sound}</span>
+            <span>{isPlayingTestSound ? uiText("Playing Chime...", uiLang) : t.test_sound}</span>
           </button>
         </div>
       </div>
@@ -243,10 +243,10 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
             onChange={(e) => mediaDeviceManager.setSelectedVideoInputId(e.target.value)}
             className="w-full rounded-xl bg-[#17212b] border border-[#242f3d] px-3 py-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
           >
-            <option value="">Default - Front / User Camera</option>
+            <option value="">{uiText("Default - Front / User Camera", uiLang)}</option>
             {deviceState.videoInputs.map((d, i) => (
               <option key={d.deviceId || i} value={d.deviceId}>
-                {d.label || `Camera ${i + 1}`}
+                {d.label || `${uiText('Camera', uiLang)} ${i + 1}`}
               </option>
             ))}
           </select>
@@ -276,7 +276,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
             }`}
           >
             {isTestingCamera ? <Square className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-            <span>{isTestingCamera ? 'Stop Camera Preview' : t.test_camera}</span>
+            <span>{isTestingCamera ? uiText("Stop Camera Preview", uiLang) : t.test_camera}</span>
           </button>
         </div>
       </div>
@@ -285,12 +285,12 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
       <div className="p-4 rounded-xl bg-[#17212b] border border-[#242f3d] space-y-2.5">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
           <Sliders className="h-3.5 w-3.5 text-[#24A1DE]" />
-          <span>Device Permissions & Capability Status</span>
+          <span>{uiText("Device Permissions & Capability Status", uiLang)}</span>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1 text-[11px]">
           <div className="p-2.5 rounded-lg bg-[#242f3d]/50 flex items-center justify-between">
-            <span className="text-[#7f91a4]">Microphone</span>
+            <span className="text-[#7f91a4]">{uiText("Microphone", uiLang)}</span>
             <span
               className={`font-semibold capitalize ${
                 permissions.audio === 'granted'
@@ -305,7 +305,7 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
           </div>
 
           <div className="p-2.5 rounded-lg bg-[#242f3d]/50 flex items-center justify-between">
-            <span className="text-[#7f91a4]">Camera</span>
+            <span className="text-[#7f91a4]">{uiText("Camera", uiLang)}</span>
             <span
               className={`font-semibold capitalize ${
                 permissions.video === 'granted'
@@ -320,13 +320,13 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
           </div>
 
           <div className="p-2.5 rounded-lg bg-[#242f3d]/50 flex items-center justify-between">
-            <span className="text-[#7f91a4]">Audio Sink ID</span>
+            <span className="text-[#7f91a4]">{uiText("Audio Sink ID", uiLang)}</span>
             <span
               className={`font-semibold ${
                 deviceState.isSinkIdSupported ? 'text-emerald-400' : 'text-slate-400'
               }`}
             >
-              {deviceState.isSinkIdSupported ? 'Available' : 'Fallback'}
+              {deviceState.isSinkIdSupported ? uiText("Available", uiLang) : uiText("Fallback", uiLang)}
             </span>
           </div>
         </div>
@@ -336,10 +336,8 @@ export const DevicesSettings: React.FC<DevicesSettingsProps> = ({ lang }) => {
       <div className="p-3.5 rounded-xl bg-blue-500/10 border border-blue-500/20 text-[#7f91a4] text-[11px] flex gap-2.5">
         <HelpCircle className="h-4 w-4 text-[#24A1DE] flex-shrink-0 mt-0.5" />
         <div className="space-y-1">
-          <span className="font-semibold text-white">Device Troubleshooting</span>
-          <p className="leading-relaxed">
-            If device labels appear as "Microphone 1" or permissions are blocked, click the lock icon in your browser address bar to allow microphone and camera access for Senora.
-          </p>
+          <span className="font-semibold text-white">{uiText("Device Troubleshooting", uiLang)}</span>
+          <p className="leading-relaxed">{uiText("If device labels appear as \"Microphone 1\" or permissions are blocked, click the lock icon in your browser address bar to allow microphone and camera access for SENORA.", uiLang)}</p>
         </div>
       </div>
     </div>

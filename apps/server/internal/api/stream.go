@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -94,12 +93,18 @@ func (r *Router) handleCreateMediaShare(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Verify user is member of conversation or owner
+	if b, ok := req.Context().Value(botContextKey).(*models.ManagedBot); ok && !r.store.BotCanReadAttachment(req.Context(), b, att.ID) {
+		r.writeError(w, 403, "FORBIDDEN", "Attachment is not visible to this bot")
+		return
+	}
 	if err := r.convs.ValidateMembership(req.Context(), att.ConversationID, user.ID); err != nil {
-		if isOwner, _ := r.store.IsUserOwner(req.Context(), user.ID); !isOwner {
-			r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not authorized to share this media")
-			return
-		}
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not authorized to share this media")
+		return
+	}
+
+	if att.IsViewOnce || r.store.AuthorizeAttachmentDownload(req.Context(), att.ID, user.ID, false) != nil {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Deleted or view-once media cannot be shared publicly")
+		return
 	}
 
 	var pwdHash string
@@ -157,7 +162,7 @@ func (r *Router) handleGetMediaShare(w http.ResponseWriter, req *http.Request) {
 	}
 
 	share, err := r.store.GetMediaShareByID(req.Context(), id)
-	if err != nil || share == nil {
+	if err != nil || share == nil || !r.mediaShareSourceAvailable(req, share) {
 		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Media share not found")
 		return
 	}
@@ -186,7 +191,7 @@ func (r *Router) handleDeleteMediaShare(w http.ResponseWriter, req *http.Request
 
 	id := req.PathValue("id")
 	share, err := r.store.GetMediaShareByID(req.Context(), id)
-	if err != nil || share == nil {
+	if err != nil || share == nil || !r.mediaShareSourceAvailable(req, share) {
 		r.writeError(w, http.StatusNotFound, "NOT_FOUND", "Share not found")
 		return
 	}
@@ -209,6 +214,7 @@ func (r *Router) handleDeleteMediaShare(w http.ResponseWriter, req *http.Request
 
 // handlePublicStreamDownload serves the media with RFC 7233 Byte-Range streaming & direct download.
 func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Request) {
+	w = streamWriter(w)
 	id := req.PathValue("id")
 	if id == "" {
 		http.NotFound(w, req)
@@ -216,7 +222,7 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 	}
 
 	share, err := r.store.GetMediaShareByID(req.Context(), id)
-	if err != nil || share == nil {
+	if err != nil || share == nil || !r.mediaShareSourceAvailable(req, share) {
 		http.NotFound(w, req)
 		return
 	}
@@ -250,6 +256,16 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 		}
 	}
 
+	if wantsMediaIndex(req) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		att, err := r.store.GetAttachmentByID(req.Context(), share.MessageID)
+		if err != nil || att == nil {
+			r.writeError(w, 422, "INDEX_UNAVAILABLE", "This legacy share cannot be indexed")
+			return
+		}
+		r.serveMediaIndex(w, req, att)
+		return
+	}
 	isDownload := req.URL.Query().Get("download") == "true"
 	if isDownload {
 		_ = r.store.IncrementMediaShareDownloads(req.Context(), share.ID)
@@ -273,13 +289,14 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 		asciiFallback = "media"
 	}
 
-	contentType := share.MimeType
+	contentType := mediaContentType(share.MimeType, cleanFilename)
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}
 
+	req = mediaRangeRequest(req, share.FileSize, contentType)
 	disposition := "inline"
-	if isDownload {
+	if isDownload || !safeInlineType(contentType) {
 		disposition = "attachment"
 	}
 
@@ -291,6 +308,9 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 		return
 	}
 
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`%s; filename="%s"; filename*=UTF-8''%s`, disposition, asciiFallback, escapedFilename))
@@ -355,7 +375,7 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 					var s3Resp *http.Response
 					var s3Err error
 					if r.fileStore != nil {
-						s3Resp, s3Err = r.fileStore.StreamS3Object(req.Context(), s3URL, req.Header.Get("Range"))
+						s3Resp, s3Err = r.fileStore.StreamS3ObjectMethod(req.Context(), req.Method, s3URL, req.Header.Get("Range"))
 					} else {
 						s3Req, _ := http.NewRequestWithContext(req.Context(), "GET", s3URL, nil)
 						if rangeHdr := req.Header.Get("Range"); rangeHdr != "" {
@@ -363,18 +383,10 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 						}
 						s3Resp, s3Err = http.DefaultClient.Do(s3Req)
 					}
-					if s3Err == nil && (s3Resp.StatusCode == http.StatusOK || s3Resp.StatusCode == http.StatusPartialContent) {
-						defer s3Resp.Body.Close()
-						if cr := s3Resp.Header.Get("Content-Range"); cr != "" {
-							w.Header().Set("Content-Range", cr)
-						}
-						if cl := s3Resp.Header.Get("Content-Length"); cl != "" {
-							w.Header().Set("Content-Length", cl)
-						}
-						w.WriteHeader(s3Resp.StatusCode)
-						io.Copy(w, s3Resp.Body)
+					if s3Err == nil && writeMediaUpstream(w, req, s3Resp) {
 						return
 					}
+
 					if s3Resp != nil {
 						s3Resp.Body.Close()
 					}
@@ -395,26 +407,11 @@ func (r *Router) handlePublicStreamDownload(w http.ResponseWriter, req *http.Req
 		return
 	}
 
-	// Direct S3 storage fallback with Range header forwarding
-	if filestore.IsS3URL(share.FilePath) {
-		s3Req, s3ReqErr := http.NewRequestWithContext(req.Context(), "GET", share.FilePath, nil)
-		if s3ReqErr == nil {
-			if rangeHdr := req.Header.Get("Range"); rangeHdr != "" {
-				s3Req.Header.Set("Range", rangeHdr)
-			}
-			s3Resp, s3Err := http.DefaultClient.Do(s3Req)
-			if s3Err == nil && (s3Resp.StatusCode == http.StatusOK || s3Resp.StatusCode == http.StatusPartialContent) {
-				defer s3Resp.Body.Close()
-				if cr := s3Resp.Header.Get("Content-Range"); cr != "" {
-					w.Header().Set("Content-Range", cr)
-				}
-				if cl := s3Resp.Header.Get("Content-Length"); cl != "" {
-					w.Header().Set("Content-Length", cl)
-				}
-				w.WriteHeader(s3Resp.StatusCode)
-				io.Copy(w, s3Resp.Body)
-				return
-			}
+	// Direct S3 fallback uses the configured signed streaming transport.
+	if filestore.IsS3URL(share.FilePath) && r.fileStore != nil {
+		response, err := r.fileStore.StreamS3ObjectMethod(req.Context(), req.Method, share.FilePath, req.Header.Get("Range"))
+		if err == nil && writeMediaUpstream(w, req, response) {
+			return
 		}
 	}
 
@@ -430,7 +427,7 @@ func (r *Router) handlePublicWatchPlayer(w http.ResponseWriter, req *http.Reques
 	}
 
 	share, err := r.store.GetMediaShareByID(req.Context(), id)
-	if err != nil || share == nil {
+	if err != nil || share == nil || !r.mediaShareSourceAvailable(req, share) {
 		http.NotFound(w, req)
 		return
 	}
@@ -438,10 +435,14 @@ func (r *Router) handlePublicWatchPlayer(w http.ResponseWriter, req *http.Reques
 	if share.ExpiresAt != nil && !share.ExpiresAt.IsZero() && share.ExpiresAt.Year() > 1970 && time.Now().UTC().After(*share.ExpiresAt) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusGone)
-		w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Expired - Senora Stream</title><style>body{background:#0b0f19;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style></head><body><div style="text-align:center;padding:2rem;background:#1e293b;border-radius:1rem;border:1px solid #334155;"><h2>⚠️ لینک منقضی شده است</h2><p>This stream link has expired or reached its limit.</p><a href="/" style="color:#38bdf8;text-decoration:none;">Go to Senora</a></div></body></html>`))
+		w.Write([]byte(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Expired - SENORA Stream</title><style>body{background:#0b0f19;color:#f8fafc;font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}</style></head><body><div style="text-align:center;padding:2rem;background:#1e293b;border-radius:1rem;border:1px solid #334155;"><h2>⚠️ لینک منقضی شده است</h2><p>This stream link has expired or reached its limit.</p><a href="/" style="color:#38bdf8;text-decoration:none;">Go to SENORA</a></div></body></html>`))
 		return
 	}
 
+	if r.frontendDir != "" {
+		http.ServeFile(w, req, filepath.Join(r.frontendDir, "index.html"))
+		return
+	}
 	providedPwd := req.URL.Query().Get("pwd")
 	passwordRequired := share.HasPassword
 	passwordValid := false
@@ -588,7 +589,7 @@ func (r *Router) handlePublicWatchPlayer(w http.ResponseWriter, req *http.Reques
 <head>
 	<meta charset="utf-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
-	<title>%s | Senora Dark Player</title>
+	<title>%s | SENORA Dark Player</title>
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -801,7 +802,7 @@ func (r *Router) handlePublicWatchPlayer(w http.ResponseWriter, req *http.Reques
 <body>
 	<header>
 		<a href="/" class="brand">
-			<span>⚡ Senora Web Player</span>
+			<span>⚡ SENORA Web Player</span>
 			<span class="brand-badge">RFC 7233 Stream</span>
 		</a>
 		<div class="header-actions">
@@ -1021,6 +1022,17 @@ func (r *Router) handleWatchPartyAction(w http.ResponseWriter, req *http.Request
 			r.writeError(w, http.StatusBadRequest, "MISSING_URL", "media_url is required")
 			return
 		}
+		// Shared session metadata never carries the creator's account token.
+		// Every viewer authorizes attachment/playlist/range requests themselves.
+		if strings.HasPrefix(body.MediaURL, "/api/v1/attachments/") {
+			if source, err := url.Parse(body.MediaURL); err == nil {
+				query := source.Query()
+				query.Del("auth")
+				query.Del("token")
+				source.RawQuery = query.Encode()
+				body.MediaURL = source.String()
+			}
+		}
 		if body.PlaybackRate <= 0 {
 			body.PlaybackRate = 1.0
 		}
@@ -1149,4 +1161,20 @@ func (r *Router) handleWatchPartyAction(w http.ResponseWriter, req *http.Request
 	default:
 		r.writeError(w, http.StatusBadRequest, "UNKNOWN_ACTION", "Unknown watch party action")
 	}
+}
+
+// Legacy file-only shares remain readable; attachment-backed shares follow
+// revocation and their creator must retain access to a live reference.
+func (r *Router) mediaShareSourceAvailable(req *http.Request, share *models.MediaShare) bool {
+	if share == nil {
+		return false
+	}
+	if !strings.HasPrefix(share.MessageID, "att_") {
+		return true
+	}
+	att, err := r.store.GetAttachmentByID(req.Context(), share.MessageID)
+	if err != nil || att.IsViewOnce {
+		return false
+	}
+	return r.store.AuthorizeAttachmentDownload(req.Context(), att.ID, share.CreatorID, false) == nil
 }

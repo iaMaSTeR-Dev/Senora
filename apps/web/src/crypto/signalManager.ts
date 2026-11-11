@@ -4,10 +4,12 @@ import {
   SessionCipher,
   SignalProtocolAddress,
   SignedPreKeyPairType,
-  PreKeyPairType,
 } from '@privacyresearch/libsignal-protocol-typescript';
 import { SignalIndexedDBStore } from './signalStore';
-import { cryptoEngine, bufferToBase64, base64ToBuffer } from './clientCrypto';
+import { cryptoEngine, bufferToBase64, base64ToBuffer, computeSafetyNumber } from './clientCrypto';
+import { api } from '../protocol/api';
+import { serverManager } from '../protocol/serverManager';
+import { archiveEncrypt, archiveDecrypt } from './localArchive';
 
 export interface DeviceKeyBundleResponse {
   device_id: string;
@@ -27,6 +29,7 @@ export interface SignalDeviceCiphertext {
   body: string;
   registrationId?: number;
   nonce?: string;
+  archiveId?: string;
 }
 
 export interface SignalMultiDeviceEnvelope {
@@ -52,17 +55,23 @@ export class SignalProtocolManager {
   private userId: string = '';
   private deviceId: string = '';
   private initialized: boolean = false;
+  private serverId = '';
+  private decrypting = new Map<string, Promise<{ conversationId: string; text: string }>>();
   private initPromise: Promise<void> | null = null;
 
   async initialize(userId: string, deviceId: string, apiToken?: string): Promise<void> {
-    if (this.initialized && this.userId === userId && this.deviceId === deviceId) {
+    const serverId = serverManager.getActiveServer().id;
+    if (this.initialized && this.userId === userId && this.deviceId === deviceId && this.serverId === serverId) {
       return;
     }
     if (this.initPromise) {
-      return this.initPromise;
+      await this.initPromise;
+      return this.initialize(userId, deviceId, apiToken);
     }
 
     this.initPromise = (async () => {
+      this.initialized = false;
+      this.serverId = serverId;
       this.userId = userId;
       this.deviceId = deviceId;
       this.store = new SignalIndexedDBStore(userId);
@@ -72,74 +81,54 @@ export class SignalProtocolManager {
       let identityKey = await this.store.getIdentityKeyPair();
       let registrationId = await this.store.getLocalRegistrationId();
 
-      let shouldRegisterWithServer = false;
 
       if (!identityKey || !registrationId) {
         identityKey = await KeyHelper.generateIdentityKeyPair();
         registrationId = KeyHelper.generateRegistrationId();
         await this.store.setIdentityKeyPair(identityKey);
         await this.store.setLocalRegistrationId(registrationId);
-        shouldRegisterWithServer = true;
       }
 
-      // Check if signed prekey exists
-      let signedPreKey = await this.store.loadSignedPreKey(1);
-      if (!signedPreKey) {
-        const signedPreKeyObj: SignedPreKeyPairType = await KeyHelper.generateSignedPreKey(identityKey, 1);
-        await this.store.storeSignedPreKey(1, signedPreKeyObj.keyPair);
-        shouldRegisterWithServer = true;
+      let signed = await this.store.getMetadata<SignedPreKeyPairType>('publishedSignedPreKey');
+      if (!signed) {
+        const keyId = Date.now() % 2147483647;
+        signed = await KeyHelper.generateSignedPreKey(identityKey, keyId);
+        await this.store.storeSignedPreKey(signed.keyId, signed.keyPair);
+        await this.store.setMetadata('publishedSignedPreKey', signed);
       }
-
-      // Generate a batch of one-time prekeys
       const preKeyStrings: string[] = [];
-      for (let i = 1; i <= 25; i++) {
-        const existing = await this.store.loadPreKey(i);
-        if (!existing) {
-          const preKeyObj: PreKeyPairType = await KeyHelper.generatePreKey(i);
-          await this.store.storePreKey(i, preKeyObj.keyPair);
-          preKeyStrings.push(
-            JSON.stringify({
-              keyId: i,
-              publicKey: bufferToBase64(preKeyObj.keyPair.pubKey),
-            })
-          );
-        }
+      let nextId = (await this.store.getMetadata<number>('nextPreKeyId')) || 26;
+      for (let n = 0; n < 25; n++, nextId++) {
+        const key = await KeyHelper.generatePreKey(nextId);
+        await this.store.storePreKey(nextId, key.keyPair);
+        preKeyStrings.push(JSON.stringify({ keyId: nextId, publicKey: bufferToBase64(key.keyPair.pubKey) }));
       }
-
-      // Ensure P-256 ECDH device key is also initialized and scoped to this user and device
-      const myKeyPair = await cryptoEngine.getOrCreateDeviceKeyPair(userId, deviceId);
-
-      if (shouldRegisterWithServer && apiToken) {
-        try {
-          const signedPreKeyObj = await this.store.loadSignedPreKey(1);
-          await fetch('/api/v1/crypto/keys', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${apiToken}`,
-            },
-            body: JSON.stringify({
-              device_id: deviceId,
-              identity_public_key: myKeyPair.publicKeyBase64,
-              registration_id: registrationId,
-              signed_pre_key: signedPreKeyObj
-                ? JSON.stringify({
-                    keyId: 1,
-                    publicKey: bufferToBase64(signedPreKeyObj.pubKey),
-                  })
-                : '',
-              pre_keys: preKeyStrings,
-            }),
-          });
-        } catch (e) {
-          console.warn('[SignalManager] Key registration warning:', e);
-        }
+      await this.store.setMetadata('nextPreKeyId', nextId);
+      let expectedLegacyKey: string | undefined;
+      if (apiToken) {
+        const devices = await api.listDevices(apiToken);
+        expectedLegacyKey = devices.find(d => d.id === deviceId)?.identity_public_key || undefined;
+      }
+      const myKeyPair = await cryptoEngine.getOrCreateDeviceKeyPair(userId, deviceId, expectedLegacyKey);
+      if (apiToken) {
+        await api.registerSignalKeys({
+          device_id: deviceId,
+          identity_public_key: myKeyPair.publicKeyBase64,
+          registration_id: registrationId,
+          signed_pre_key: JSON.stringify({
+            keyId: signed.keyId,
+            publicKey: bufferToBase64(signed.keyPair.pubKey),
+            signature: bufferToBase64(signed.signature),
+            identityKey: bufferToBase64(identityKey.pubKey),
+          }),
+          pre_keys: preKeyStrings,
+        }, apiToken);
       }
 
       this.initialized = true;
     })();
 
-    return this.initPromise;
+    try { await this.initPromise; } finally { this.initPromise = null; }
   }
 
   getDeviceId(): string {
@@ -166,36 +155,15 @@ export class SignalProtocolManager {
   ): Promise<{ ciphertext: string; nonce: string; isSignal: boolean }> {
     const myKeyPair = await cryptoEngine.getOrCreateDeviceKeyPair(this.userId, this.deviceId);
 
-    if (!this.initialized || !this.store) {
-      // Fall back to legacy if SignalManager not yet initialized
-      const legacyEnc = await cryptoEngine.encryptMultiDevice(
-        plaintext,
-        targets.map((t) => ({
-          deviceId: t.deviceId,
-          publicKeyBase64: (t.deviceId === this.deviceId || t.userId === this.userId)
-            ? myKeyPair.publicKeyBase64
-            : (t.publicKeyBase64 || ''),
-        })),
-        this.deviceId,
-        conversationId
-      );
-      return { ciphertext: legacyEnc.ciphertext, nonce: legacyEnc.nonce, isSignal: false };
-    }
+    if (!this.initialized || !this.store) throw new Error('ENCRYPTION_NOT_READY: Initialize this device before sending.');
 
     const encoder = new TextEncoder();
-    const plaintextBuffer = encoder.encode(plaintext).buffer;
+    const plaintextBuffer = encoder.encode(JSON.stringify({ domain: 'senora.signal', conversation_id: conversationId, sender_user_id: this.userId, text: plaintext })).buffer;
     const devicesMap: Record<string, SignalDeviceCiphertext> = {};
 
     for (const target of targets) {
-      // ALWAYS encrypt for own device using myKeyPair directly to guarantee self-decryption
-      if (target.deviceId === this.deviceId || target.userId === this.userId) {
-        const selfEnc = await cryptoEngine.encrypt(plaintext, myKeyPair.publicKeyBase64, conversationId);
-        devicesMap[target.deviceId] = {
-          type: 999,
-          body: selfEnc.ciphertext,
-          nonce: selfEnc.nonce,
-          registrationId: 0,
-        };
+      if (target.deviceId === this.deviceId) {
+        devicesMap[target.deviceId] = await archiveEncrypt(this.store, plaintext, conversationId);
         continue;
       }
 
@@ -206,11 +174,8 @@ export class SignalProtocolManager {
       if (!hasSession && apiToken) {
         // Fetch pre-key bundle for recipient
         try {
-          const resp = await fetch(`/api/v1/crypto/keys/${encodeURIComponent(target.userId)}`, {
-            headers: { Authorization: `Bearer ${apiToken}` },
-          });
-          if (resp.ok) {
-            const data: UserKeysResponse = await resp.json();
+          {
+            const data: UserKeysResponse = await api.getUserKeys(target.userId, apiToken);
             const devBundle = data.devices.find((d) => d.device_id === target.deviceId);
             if (devBundle && devBundle.identity_public_key) {
               const sessionBuilder = new SessionBuilder(this.store, address);
@@ -233,9 +198,7 @@ export class SignalProtocolManager {
                   spkPart = {
                     keyId: spkObj.keyId || 1,
                     publicKey: base64ToBuffer(spkObj.publicKey).buffer as ArrayBuffer,
-                    signature: spkObj.signature
-                      ? (base64ToBuffer(spkObj.signature).buffer as ArrayBuffer)
-                      : new ArrayBuffer(64),
+                    signature: base64ToBuffer(spkObj.signature).buffer as ArrayBuffer,
                   };
                 } catch {}
               }
@@ -243,7 +206,7 @@ export class SignalProtocolManager {
               if (spkPart) {
                 await sessionBuilder.processPreKey({
                   registrationId: devBundle.registration_id || 1,
-                  identityKey: base64ToBuffer(devBundle.identity_public_key).buffer as ArrayBuffer,
+                  identityKey: base64ToBuffer(JSON.parse(devBundle.signed_pre_key!).identityKey || devBundle.identity_public_key).buffer as ArrayBuffer,
                   signedPreKey: spkPart,
                   preKey: preKeyPart,
                 });
@@ -263,28 +226,15 @@ export class SignalProtocolManager {
           body: ciphertextObj.body || '',
           registrationId: ciphertextObj.registrationId,
         };
-      } else if (target.publicKeyBase64) {
-        // Pairwise ECDH fallback
-        const legacy = await cryptoEngine.encrypt(plaintext, target.publicKeyBase64, conversationId);
-        devicesMap[target.deviceId] = {
-          type: 999, // Marker for fallback
-          body: legacy.ciphertext,
-          nonce: legacy.nonce,
-          registrationId: 0,
-        };
+      } else {
+        throw new Error('SIGNAL_SESSION_UNAVAILABLE: The recipient must update and initialize their device.');
       }
     }
 
     // Ensure sender's own device is always included in the envelope with self-device encryption
     // so the sender can decrypt its own sent message across reloads and multi-device views
     if (!devicesMap[this.deviceId]) {
-      const selfEnc = await cryptoEngine.encrypt(plaintext, myKeyPair.publicKeyBase64, conversationId);
-      devicesMap[this.deviceId] = {
-        type: 999,
-        body: selfEnc.ciphertext,
-        nonce: selfEnc.nonce,
-        registrationId: 0,
-      };
+      devicesMap[this.deviceId] = await archiveEncrypt(this.store, plaintext, conversationId);
     }
 
     const envelope: SignalMultiDeviceEnvelope = {
@@ -323,6 +273,7 @@ export class SignalProtocolManager {
       if (parsed) {
         // Version 2: Real Signal Protocol multi-device envelope
         if (parsed.v === 2 && parsed.devices && typeof parsed.devices === 'object') {
+          if (parsed.sender_user_id && parsed.sender_user_id !== senderUserId) throw new Error('SENDER_MISMATCH');
           const deviceIds = Object.keys(parsed.devices);
           if (deviceIds.length === 0) {
             throw new Error('EMPTY_ENVELOPE: Multi-device envelope has no recipient entries');
@@ -349,6 +300,9 @@ export class SignalProtocolManager {
             throw new Error(`DEVICE_NOT_TARGETED: Message was not encrypted for this device (${this.deviceId})`);
           }
 
+          if (deviceCipher.type === 998) {
+            return archiveDecrypt(this.getStore(), deviceCipher, conversationId || '');
+          }
           if (deviceCipher.type === 999) {
             // Pairwise fallback or self-device encryption
             let keyToUse = peerPublicKeyBase64;
@@ -364,22 +318,38 @@ export class SignalProtocolManager {
           }
 
           if (this.store) {
+            const protocolStore = this.store;
             const effectiveSenderId = parsed.sender_user_id || senderUserId;
             const effectiveSenderDeviceId = parsed.sender_device_id || senderDeviceId;
-            const address = new SignalProtocolAddress(
-              effectiveSenderId,
-              parseDeviceId(effectiveSenderDeviceId)
-            );
-            const cipher = new SessionCipher(this.store, address);
-
-            let decryptedBuffer: ArrayBuffer;
-            if (deviceCipher.type === 3) {
-              decryptedBuffer = await cipher.decryptPreKeyWhisperMessage(deviceCipher.body, 'binary');
-            } else {
-              decryptedBuffer = await cipher.decryptWhisperMessage(deviceCipher.body, 'binary');
+            const address = new SignalProtocolAddress(effectiveSenderId, parseDeviceId(effectiveSenderDeviceId));
+            const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${effectiveSenderId}:${effectiveSenderDeviceId}:${deviceCipher.body}`));
+            const cacheKey = `signalHistory:${bufferToBase64(digest)}`;
+            const jobKey = `${this.serverId}:${this.userId}:${this.deviceId}:${cacheKey}`;
+            let job = this.decrypting.get(jobKey);
+            if (!job) {
+              const entry = deviceCipher;
+              job = (async () => {
+                const cached = await protocolStore.getMetadata<SignalDeviceCiphertext & { conversationId: string }>(cacheKey);
+                if (cached) return { conversationId: cached.conversationId, text: await archiveDecrypt(protocolStore, cached, cached.conversationId) };
+                const cipher = new SessionCipher(protocolStore, address);
+                const buffer = entry.type === 3
+                  ? await cipher.decryptPreKeyWhisperMessage(entry.body, 'binary')
+                  : await cipher.decryptWhisperMessage(entry.body, 'binary');
+                const context = JSON.parse(new TextDecoder().decode(buffer));
+                if (context.domain !== 'senora.signal' || typeof context.conversation_id !== 'string' || context.sender_user_id !== senderUserId || typeof context.text !== 'string') throw new Error('CONVERSATION_MISMATCH');
+                const saved = await archiveEncrypt(protocolStore, context.text, context.conversation_id);
+                await protocolStore.setMetadata(cacheKey, { ...saved, conversationId: context.conversation_id });
+                return { conversationId: context.conversation_id as string, text: context.text as string };
+              })();
+              this.decrypting.set(jobKey, job);
             }
-
-            return new TextDecoder().decode(decryptedBuffer);
+            try {
+              const decrypted = await job;
+              if (decrypted.conversationId !== conversationId) throw new Error('CONVERSATION_MISMATCH');
+              return decrypted.text;
+            } finally {
+              if (this.decrypting.get(jobKey) === job) this.decrypting.delete(jobKey);
+            }
           }
         }
 
@@ -408,33 +378,12 @@ export class SignalProtocolManager {
 
   // Calculate 12-digit safety number between two identities
   async calculateSafetyNumber(theirIdentityKeyBase64: string): Promise<string> {
-    const ourKey = await this.store?.getIdentityKeyPair();
-    if (!ourKey || !theirIdentityKeyBase64) {
-      return '00000 00000 00000 00000 00000 00000';
-    }
-
-    const ourBytes = new Uint8Array(ourKey.pubKey);
-    const theirBytes = base64ToBuffer(theirIdentityKeyBase64);
-
-    // Sort to make symmetric
-    const combined = new Uint8Array(ourBytes.length + theirBytes.length);
-    if (this.userId < theirIdentityKeyBase64) {
-      combined.set(ourBytes, 0);
-      combined.set(theirBytes, ourBytes.length);
-    } else {
-      combined.set(theirBytes, 0);
-      combined.set(ourBytes, theirBytes.length);
-    }
-
-    const hash = await crypto.subtle.digest('SHA-256', combined);
-    const hashBytes = new Uint8Array(hash);
-
-    let digits = '';
-    for (let i = 0; i < 15; i++) {
-      const val = (hashBytes[i * 2] << 8) | hashBytes[i * 2 + 1];
-      digits += String(val % 100000).padStart(5, '0') + ' ';
-    }
-    return digits.trim().slice(0, 35);
+    const peer = base64ToBuffer(theirIdentityKeyBase64);
+    const signalKey = await this.store?.getIdentityKeyPair();
+    const ours = peer.byteLength === 33 && signalKey
+      ? bufferToBase64(signalKey.pubKey)
+      : (await cryptoEngine.getOrCreateDeviceKeyPair(this.userId || undefined, this.deviceId || undefined)).publicKeyBase64;
+    return computeSafetyNumber(ours, theirIdentityKeyBase64);
   }
 
   // --- End-to-End Encrypted Attachments ---
@@ -503,10 +452,12 @@ export class SignalProtocolManager {
   // Encrypt poll question and options client-side via AES-256-GCM before server submission
   async encryptPollData(
     question: string,
-    options: string[]
+    options: string[],
+    explanation?: string
   ): Promise<{
     encryptedQuestion: string;
     encryptedOptions: string[];
+    encryptedExplanation?: string;
     keyBase64: string;
     ivBase64: string;
   }> {
@@ -542,6 +493,7 @@ export class SignalProtocolManager {
     return {
       encryptedQuestion: encQuestion,
       encryptedOptions: encOptions,
+      encryptedExplanation: explanation ? await encryptField(explanation) : undefined,
       keyBase64: bufferToBase64(exportedKey),
       ivBase64: bufferToBase64(legacyIv.buffer as ArrayBuffer),
     };

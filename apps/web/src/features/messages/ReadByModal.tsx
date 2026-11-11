@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useEffect, useState } from 'react';
 import { X, CheckCheck, Eye, ShieldAlert, User as UserIcon } from 'lucide-react';
 import { Message, MessageReader } from '../../app/types';
@@ -19,6 +20,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
   onClose,
   onOpenProfile,
 }) => {
+  const uiLang = useUILanguage(lang);
   const [readers, setReaders] = useState<MessageReader[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -58,7 +60,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
     try {
       const d = new Date(dateStr);
       if (isNaN(d.getTime())) return '';
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' • ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return d.toLocaleTimeString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { hour: '2-digit', minute: '2-digit' }) + ' • ' + d.toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { month: 'short', day: 'numeric' });
     } catch {
       return '';
     }
@@ -86,7 +88,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
             </div>
             <div>
               <h3 id="read-by-title" className="font-semibold text-base">
-                {isRTL ? 'خوانده شده توسط' : 'Read by'}
+                {isRTL ? uiText("خوانده شده توسط", uiLang) : uiText("Read by", uiLang)}
               </h3>
               {!loading && !error && (
                 <span className="text-xs text-[#7f91a4]">
@@ -99,7 +101,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
             type="button"
             onClick={onClose}
             className="p-1.5 rounded-lg text-[#7f91a4] hover:text-white hover:bg-white/10 transition cursor-pointer"
-            aria-label="Close"
+            aria-label={uiText("Close", uiLang)}
           >
             <X className="w-5 h-5" />
           </button>
@@ -108,7 +110,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
         {/* Message Preview Snippet */}
         <div className="px-5 py-3 bg-[#0e1621]/40 border-b border-[#242f3d]/40 text-xs text-[#7f91a4] truncate">
           <span className="text-[#24A1DE] font-medium mr-1.5">{isRTL ? 'پیام:' : 'Message:'}</span>
-          <span className="text-white/80">{message.plaintext || message.ciphertext || '(Media)'}</span>
+          <span className="text-white/80">{message.plaintext || message.ciphertext || uiText("(Media)", uiLang)}</span>
         </div>
 
         {/* Reader List Body */}
@@ -128,7 +130,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
           ) : error ? (
             <div className="flex flex-col items-center justify-center p-8 text-center text-[#7f91a4] gap-2">
               <ShieldAlert className="w-10 h-10 text-amber-400 mb-1" />
-              <p className="text-sm font-medium text-white/90">{error}</p>
+              <p className="text-sm font-medium text-white/90">{uiText(error, uiLang)}</p>
             </div>
           ) : readers.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-8 text-center text-[#7f91a4] gap-2">
@@ -154,7 +156,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
                 <div className="flex items-center gap-3">
                   {r.avatar_url ? (
                     <img
-                      src={r.avatar_url}
+                      src={api.avatarURL(r.avatar_url)}
                       alt={r.display_name}
                       className="w-10 h-10 rounded-full object-cover border border-white/10"
                     />
@@ -187,7 +189,7 @@ export const ReadByModal: React.FC<ReadByModalProps> = ({
             onClick={onClose}
             className="px-4 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-medium transition cursor-pointer"
           >
-            {isRTL ? 'بستن' : 'Close'}
+            {isRTL ? uiText("بستن", uiLang) : uiText("Close", uiLang)}
           </button>
         </div>
       </div>

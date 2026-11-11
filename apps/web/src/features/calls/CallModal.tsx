@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useEffect, useRef, useState } from 'react';
 import { CallSession, webrtcManager, ScreenQualityPreset } from './webrtcManager';
 import { mediaDeviceManager } from './mediaDeviceManager';
@@ -26,10 +27,11 @@ import {
 
 interface CallModalProps {
   session: CallSession;
-  lang?: string;
+  lang?: 'en' | 'fa';
 }
 
 export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) => {
+  const uiLang = useUILanguage(lang);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const screenVideoRef = useRef<HTMLVideoElement>(null);
@@ -266,13 +268,13 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
         <div className="w-full flex items-center justify-between px-6 pt-5 pb-2 text-xs text-slate-400">
           <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
             <ShieldCheck size={15} />
-            <span>End-to-End Encrypted Call</span>
+            <span>{uiText("End-to-End Encrypted Call", uiLang)}</span>
           </div>
           <button
             type="button"
             onClick={() => setShowDeviceSettings(!showDeviceSettings)}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Call Settings (Microphone, Camera, Audio)"
+            title={uiText("Call Settings (Microphone, Camera, Audio)", uiLang)}
           >
             <Settings size={16} />
           </button>
@@ -320,7 +322,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   {session.peerName ? session.peerName.charAt(0) : <User size={48} />}
                 </div>
                 <p className="text-sm text-slate-400">
-                  {lang === 'fa' ? 'در انتظار دریافت تصویر...' : 'Connecting video...'}
+                  {lang === "fa" ? 'در انتظار دریافت تصویر...' : 'Connecting video...'}
                 </p>
               </div>
             ) : null}
@@ -337,7 +339,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   className="w-full h-full object-contain bg-black"
                 />
                 <div className="absolute bottom-1 left-2 px-1.5 py-0.5 rounded bg-blue-600/90 text-[10px] text-white font-medium">
-                  {lang === 'fa' ? 'صفحه شما' : 'Your Screen'}
+                  {lang === "fa" ? 'صفحه شما' : 'Your Screen'}
                 </div>
               </div>
             ) : (session.callType === 'video' && !session.isVideoOff && session.localStream) ? (
@@ -358,14 +360,14 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
               {session.isScreenSharing && (
                 <div className="px-3 py-1.5 rounded-xl bg-blue-600/90 backdrop-blur-md text-white text-xs font-semibold shadow-lg flex items-center gap-2">
                   <Monitor size={15} className="animate-pulse" />
-                  <span>{lang === 'fa' ? 'در حال اشتراک صفحه' : 'Sharing Screen'}</span>
+                  <span>{lang === "fa" ? 'در حال اشتراک صفحه' : 'Sharing Screen'}</span>
                 </div>
               )}
 
               {session.peerScreenSharing && (
                 <div className="px-3 py-1.5 rounded-xl bg-emerald-600/90 backdrop-blur-md text-white text-xs font-semibold shadow-lg flex items-center gap-2">
                   <Monitor size={15} />
-                  <span>{session.peerName} {lang === 'fa' ? '(صفحه اشتراکی)' : '(Screen)'}</span>
+                  <span>{session.peerName} {lang === "fa" ? '(صفحه اشتراکی)' : '(Screen)'}</span>
                 </div>
               )}
 
@@ -386,7 +388,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                     className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
                       showQualityMenu ? 'bg-[#24A1DE] text-white shadow-md' : 'text-slate-200 hover:bg-white/15'
                     }`}
-                    title={lang === 'fa' ? 'کیفیت اشتراک صفحه' : 'Screen Share Quality'}
+                    title={lang === "fa" ? 'کیفیت اشتراک صفحه' : 'Screen Share Quality'}
                   >
                     <Sparkles size={13} className="text-amber-400" />
                     <span className="font-mono text-[11px] uppercase font-bold">{currentQuality}</span>
@@ -397,7 +399,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   {showQualityMenu && (
                     <div className="absolute right-0 mt-2 w-56 bg-[#17212b] border border-[#242f3d] rounded-2xl shadow-2xl p-1.5 z-40 animate-fadeIn text-xs">
                       <div className="px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/5 mb-1">
-                        {lang === 'fa' ? 'انتخاب کیفیت نمایش' : 'Stream Quality'}
+                        {lang === "fa" ? 'انتخاب کیفیت نمایش' : 'Stream Quality'}
                       </div>
                       {qualityOptions.map((opt) => (
                         <button
@@ -436,8 +438,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 }`}
                 title={
                   fitMode === 'contain'
-                    ? (lang === 'fa' ? 'تغییر اندازه: تمام کادر (Fill)' : 'Fill Frame (Crop)')
-                    : (lang === 'fa' ? 'تغییر اندازه: اندازه اصلی (Fit)' : 'Fit Frame (Original Aspect)')
+                    ? (lang === "fa" ? 'تغییر اندازه: تمام کادر (Fill)' : 'Fill Frame (Crop)')
+                    : (lang === "fa" ? 'تغییر اندازه: اندازه اصلی (Fit)' : 'Fit Frame (Original Aspect)')
                 }
               >
                 <Scaling size={16} />
@@ -453,8 +455,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   }`}
                   title={
                     isTheaterMode
-                      ? (lang === 'fa' ? 'خروج از حالت بزرگ‌تر (سینمایی)' : 'Exit Theater Mode')
-                      : (lang === 'fa' ? 'بزرگ‌تر کردن کادر (حالت سینمایی)' : 'Enlarge (Theater Mode)')
+                      ? (lang === "fa" ? 'خروج از حالت بزرگ‌تر (سینمایی)' : 'Exit Theater Mode')
+                      : (lang === "fa" ? 'بزرگ‌تر کردن کادر (حالت سینمایی)' : 'Enlarge (Theater Mode)')
                   }
                 >
                   {isTheaterMode ? <Minimize size={16} /> : <Maximize size={16} />}
@@ -470,8 +472,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 }`}
                 title={
                   isFullscreen
-                    ? (lang === 'fa' ? 'خروج از تمام‌صفحه' : 'Exit Fullscreen')
-                    : (lang === 'fa' ? 'تمام‌صفحه' : 'Enter Fullscreen')
+                    ? (lang === "fa" ? uiText("خروج از تمام‌صفحه", uiLang) : 'Exit Fullscreen')
+                    : (lang === "fa" ? uiText("تمام‌صفحه", uiLang) : 'Enter Fullscreen')
                 }
               >
                 {isFullscreen ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
@@ -483,10 +485,10 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   type="button"
                   onClick={() => webrtcManager.toggleScreenShare()}
                   className="px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-semibold shadow-md transition flex items-center gap-1 cursor-pointer"
-                  title={lang === 'fa' ? 'توقف اشتراک صفحه' : 'Stop Sharing'}
+                  title={lang === "fa" ? 'توقف اشتراک صفحه' : 'Stop Sharing'}
                 >
                   <X size={13} />
-                  <span className="hidden sm:inline">{lang === 'fa' ? 'توقف' : 'Stop'}</span>
+                  <span className="hidden sm:inline">{lang === "fa" ? 'توقف' : 'Stop'}</span>
                 </button>
               )}
             </div>
@@ -503,7 +505,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   className={`p-2 rounded-full cursor-pointer transition ${
                     session.isMuted ? 'bg-red-600 text-white' : 'bg-white/15 text-white hover:bg-white/25'
                   }`}
-                  title={session.isMuted ? 'Unmute Mic' : 'Mute Mic'}
+                  title={session.isMuted ? uiText("Unmute Mic", uiLang) : uiText("Mute Mic", uiLang)}
                 >
                   {session.isMuted ? <MicOff size={16} /> : <Mic size={16} />}
                 </button>
@@ -511,7 +513,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   type="button"
                   onClick={toggleFullscreen}
                   className="p-2 rounded-full bg-white/15 text-white hover:bg-white/25 cursor-pointer transition"
-                  title={lang === 'fa' ? 'خروج از تمام‌صفحه' : 'Exit Fullscreen'}
+                  title={lang === "fa" ? uiText("خروج از تمام‌صفحه", uiLang) : 'Exit Fullscreen'}
                 >
                   <Minimize2 size={16} />
                 </button>
@@ -519,7 +521,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   type="button"
                   onClick={() => webrtcManager.hangupCall()}
                   className="p-2 rounded-full bg-red-600 hover:bg-red-700 text-white cursor-pointer transition shadow-lg"
-                  title={lang === 'fa' ? 'پایان تماس' : 'End Call'}
+                  title={lang === "fa" ? uiText("پایان تماس", uiLang) : uiText("End Call", uiLang)}
                 >
                   <PhoneOff size={16} />
                 </button>
@@ -562,8 +564,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
               <h3 className="text-2xl font-bold text-white tracking-wide">{session.peerName}</h3>
               <p className="text-xs font-semibold text-[#24A1DE] uppercase tracking-wider">
                 {session.callType === 'video'
-                  ? (lang === 'fa' ? 'تماس تصویری سنورا' : 'Senora Video Call')
-                  : (lang === 'fa' ? 'تماس صوتی سنورا' : 'Senora Voice Call')}
+                  ? (lang === "fa" ? 'تماس تصویری SENORA' : 'SENORA Video Call')
+                  : (lang === "fa" ? 'تماس صوتی SENORA' : 'SENORA Voice Call')}
               </p>
               <p className="text-base font-mono text-slate-300 pt-1 font-semibold">{getStatusText()}</p>
             </div>
@@ -576,7 +578,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 className="px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg animate-bounce transition cursor-pointer"
               >
                 <span>🔊</span>
-                <span>{lang === 'fa' ? 'برای پخش صدای زنگ کلیک کنید' : 'Tap to Unmute Ringtone'}</span>
+                <span>{lang === "fa" ? 'برای پخش صدای زنگ کلیک کنید' : 'Tap to Unmute Ringtone'}</span>
               </button>
             )}
           </div>
@@ -586,7 +588,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
         {showDeviceSettings && (
           <div className="w-full bg-[#1e2a38] border-t border-[#242f3d] p-4 text-xs text-slate-300 animate-fadeIn space-y-3">
             <div className="flex items-center justify-between pb-1 border-b border-white/5">
-              <span className="font-semibold text-white">Call Audio & Video Devices</span>
+              <span className="font-semibold text-white">{uiText("Call Audio & Video Devices", uiLang)}</span>
               <button
                 type="button"
                 onClick={() => setShowDeviceSettings(false)}
@@ -598,16 +600,16 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
 
             {/* Microphone Selection */}
             <div>
-              <label className="block text-[11px] text-slate-400 mb-1">Microphone</label>
+              <label className="block text-[11px] text-slate-400 mb-1">{uiText("Microphone", uiLang)}</label>
               <select
                 value={selectedAudioIn}
                 onChange={(e) => handleDeviceChange('audioinput', e.target.value)}
                 className="w-full bg-[#242f3d] text-white px-2.5 py-1.5 rounded-lg border border-white/10 focus:outline-none"
               >
-                <option value="">Default Microphone</option>
+                <option value="">{uiText("Default Microphone", uiLang)}</option>
                 {audioDevices.audioInputs.map((d, i) => (
                   <option key={d.deviceId || i} value={d.deviceId}>
-                    {d.label || `Microphone ${i + 1}`}
+                    {d.label || `${uiText('Microphone', uiLang)} ${i + 1}`}
                   </option>
                 ))}
               </select>
@@ -616,16 +618,16 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
             {/* Speaker Selection (if supported) */}
             {mediaDeviceManager.isSinkIdSupported() && (
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Audio Output / Speaker</label>
+                <label className="block text-[11px] text-slate-400 mb-1">{uiText("Audio Output / Speaker", uiLang)}</label>
                 <select
                   value={selectedAudioOut}
                   onChange={(e) => handleDeviceChange('audiooutput', e.target.value)}
                   className="w-full bg-[#242f3d] text-white px-2.5 py-1.5 rounded-lg border border-white/10 focus:outline-none"
                 >
-                  <option value="">Default Speaker</option>
+                  <option value="">{uiText("Default Speaker", uiLang)}</option>
                   {audioDevices.audioOutputs.map((d, i) => (
                     <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Speaker ${i + 1}`}
+                      {d.label || `${uiText('Speaker', uiLang)} ${i + 1}`}
                     </option>
                   ))}
                 </select>
@@ -635,16 +637,16 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
             {/* Camera Selection */}
             {session.callType === 'video' && (
               <div>
-                <label className="block text-[11px] text-slate-400 mb-1">Camera</label>
+                <label className="block text-[11px] text-slate-400 mb-1">{uiText("Camera", uiLang)}</label>
                 <select
                   value={selectedVideoIn}
                   onChange={(e) => handleDeviceChange('videoinput', e.target.value)}
                   className="w-full bg-[#242f3d] text-white px-2.5 py-1.5 rounded-lg border border-white/10 focus:outline-none"
                 >
-                  <option value="">Default Camera</option>
+                  <option value="">{uiText("Default Camera", uiLang)}</option>
                   {audioDevices.videoInputs.map((d, i) => (
                     <option key={d.deviceId || i} value={d.deviceId}>
-                      {d.label || `Camera ${i + 1}`}
+                      {d.label || `${uiText('Camera', uiLang)} ${i + 1}`}
                     </option>
                   ))}
                 </select>
@@ -666,7 +668,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 <div className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white shadow-xl shadow-red-600/30 transition-transform transform group-hover:scale-105 active:scale-95">
                   <PhoneOff size={28} />
                 </div>
-                <span className="text-xs text-slate-400 group-hover:text-red-400 font-medium">Decline</span>
+                <span className="text-xs text-slate-400 group-hover:text-red-400 font-medium">{uiText("Decline", uiLang)}</span>
               </button>
 
               <button
@@ -677,7 +679,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 <div className="w-16 h-16 rounded-full bg-emerald-600 hover:bg-emerald-700 flex items-center justify-center text-white shadow-xl shadow-emerald-600/30 transition-transform transform group-hover:scale-105 active:scale-95 animate-pulse">
                   <Phone size={28} />
                 </div>
-                <span className="text-xs text-slate-400 group-hover:text-emerald-400 font-medium">Accept</span>
+                <span className="text-xs text-slate-400 group-hover:text-emerald-400 font-medium">{uiText("Accept", uiLang)}</span>
               </button>
             </div>
           ) : session.state === 'outgoing_calling' || session.state === 'outgoing_ringing' ? (
@@ -689,7 +691,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 className="flex items-center gap-2 px-6 py-3 rounded-full bg-red-600 hover:bg-red-700 text-white font-semibold text-sm shadow-xl shadow-red-600/30 transition-transform transform hover:scale-105 active:scale-95 cursor-pointer"
               >
                 <PhoneOff size={18} />
-                <span>Cancel Call</span>
+                <span>{uiText("Cancel Call", uiLang)}</span>
               </button>
             </div>
           ) : (
@@ -704,7 +706,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                     ? 'bg-red-600/25 text-red-400 border border-red-500/50 hover:bg-red-600/35'
                     : 'bg-[#242f3d] text-slate-200 hover:bg-[#2c3949] border border-white/5'
                 }`}
-                title={session.isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+                title={session.isMuted ? uiText("Unmute Microphone", uiLang) : uiText("Mute Microphone", uiLang)}
               >
                 {session.isMuted ? <MicOff size={20} /> : <Mic size={20} />}
               </button>
@@ -718,7 +720,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                     ? 'bg-[#242f3d] text-slate-400 hover:bg-[#2c3949] border border-white/5'
                     : 'bg-[#24A1DE] text-white shadow-[#24A1DE]/30'
                 }`}
-                title={session.isVideoOff ? 'Enable Camera' : 'Disable Camera'}
+                title={session.isVideoOff ? uiText("Enable Camera", uiLang) : uiText("Disable Camera", uiLang)}
               >
                 {session.isVideoOff || session.callType !== 'video' ? <VideoOff size={20} /> : <Video size={20} />}
               </button>
@@ -735,8 +737,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   }`}
                   title={
                     session.isScreenSharing
-                      ? (lang === 'fa' ? 'توقف اشتراک صفحه' : 'Stop Screen Share')
-                      : (lang === 'fa' ? 'اشتراک صفحه نمایش' : 'Share Screen')
+                      ? (lang === "fa" ? 'توقف اشتراک صفحه' : 'Stop Screen Share')
+                      : (lang === "fa" ? 'اشتراک صفحه نمایش' : 'Share Screen')
                   }
                 >
                   <Monitor size={20} />
@@ -752,7 +754,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                     ? 'bg-[#24A1DE] text-white'
                     : 'bg-[#242f3d] text-slate-200 hover:bg-[#2c3949] border border-white/5'
                 }`}
-                title="Audio & Video Devices"
+                title={uiText("Audio & Video Devices", uiLang)}
               >
                 <Volume2 size={20} />
               </button>
@@ -762,7 +764,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 type="button"
                 onClick={() => webrtcManager.hangupCall()}
                 className="p-3.5 sm:p-4 rounded-full bg-red-600 hover:bg-red-700 text-white shadow-xl shadow-red-600/30 transition-transform hover:scale-105 active:scale-95 cursor-pointer ml-2"
-                title="End Call"
+                title={uiText("End Call", uiLang)}
               >
                 <PhoneOff size={22} />
               </button>

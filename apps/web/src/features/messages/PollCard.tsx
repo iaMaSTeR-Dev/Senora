@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Poll } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -21,6 +22,7 @@ export const PollCard: React.FC<PollCardProps> = ({
   pollKey,
   pollIv,
 }) => {
+  const uiLang = useUILanguage();
   const [poll, setPoll] = useState<Poll | null>(null);
   const [loading, setLoading] = useState(false);
   const [voting, setVoting] = useState(false);
@@ -35,7 +37,7 @@ export const PollCard: React.FC<PollCardProps> = ({
           text: await signalManager.decryptPollText(opt.text, pollKey, pollIv),
         }))
       );
-      return { ...res, question: decQuestion, options: decOptions };
+      return { ...res, question: decQuestion, options: decOptions, explanation: res.explanation ? await signalManager.decryptPollText(res.explanation, pollKey, pollIv) : undefined };
     }
     return res;
   };
@@ -59,17 +61,13 @@ export const PollCard: React.FC<PollCardProps> = ({
 
   if (loading && !poll) {
     return (
-      <div className="p-4 bg-[#17212b] border border-[#242f3d] rounded-2xl w-full max-w-[280px] sm:w-80 text-center text-xs text-[#7f91a4] animate-pulse">
-        Loading poll...
-      </div>
+      <div className="p-4 bg-[#17212b] border border-[#242f3d] rounded-2xl w-full max-w-[280px] sm:w-80 text-center text-xs text-[#7f91a4] animate-pulse">{uiText("Loading poll...", uiLang)}</div>
     );
   }
 
   if (!poll) {
     return (
-      <div className="p-4 bg-[#17212b] border border-[#242f3d] rounded-2xl w-full max-w-[280px] sm:w-80 text-center text-xs text-[#7f91a4]">
-        Poll not available
-      </div>
+      <div className="p-4 bg-[#17212b] border border-[#242f3d] rounded-2xl w-full max-w-[280px] sm:w-80 text-center text-xs text-[#7f91a4]">{uiText("Poll not available", uiLang)}</div>
     );
   }
 
@@ -108,27 +106,19 @@ export const PollCard: React.FC<PollCardProps> = ({
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         {poll.is_quiz && (
           <span className="px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30 text-[10px] font-bold flex items-center gap-1">
-            <HelpCircle size={10} /> Quiz
-          </span>
+            <HelpCircle size={10} />{uiText("Quiz", uiLang)}</span>
         )}
         {poll.is_anonymous ? (
           <span className="px-2 py-0.5 rounded-full bg-blue-500/20 text-blue-300 border border-blue-500/30 text-[10px] font-bold flex items-center gap-1">
-            <Lock size={10} /> Anonymous
-          </span>
+            <Lock size={10} />{uiText("Anonymous", uiLang)}</span>
         ) : (
-          <span className="px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 text-[10px] font-semibold">
-            Public Votes
-          </span>
+          <span className="px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 text-[10px] font-semibold">{uiText("Public Votes", uiLang)}</span>
         )}
         {poll.allows_multiple && (
-          <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">
-            Multiple Choice
-          </span>
+          <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-semibold">{uiText("Multiple Choice", uiLang)}</span>
         )}
         {poll.is_closed && (
-          <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold">
-            Closed
-          </span>
+          <span className="px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 text-[10px] font-bold">{uiText("Closed", uiLang)}</span>
         )}
       </div>
 
@@ -213,7 +203,7 @@ export const PollCard: React.FC<PollCardProps> = ({
       {/* Footer: Vote Count & Close Button */}
       <div className="flex items-center justify-between text-[11px] text-[#7f91a4] pt-1 border-t border-[#242f3d]">
         <span>
-          {poll.total_votes} {poll.total_votes === 1 ? 'vote' : 'votes'}
+          {poll.total_votes} {poll.total_votes === 1 ? uiText("vote", uiLang) : uiText("votes", uiLang)}
         </span>
 
         {canClose && (
@@ -221,9 +211,7 @@ export const PollCard: React.FC<PollCardProps> = ({
             type="button"
             onClick={handleClose}
             className="text-red-400 hover:text-red-300 font-semibold cursor-pointer"
-          >
-            Close Poll
-          </button>
+          >{uiText("Close Poll", uiLang)}</button>
         )}
       </div>
     </div>

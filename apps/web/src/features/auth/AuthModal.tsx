@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { api } from '../../protocol/api';
 import { cryptoEngine } from '../../crypto/clientCrypto';
@@ -10,9 +11,11 @@ import { serverManager } from '../../protocol/serverManager';
 interface AuthModalProps {
   onSuccess: (session: AuthSession) => void;
   lang: Language;
+  onToggleLang?: () => void;
 }
 
-export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
+export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang, onToggleLang }) => {
+  const uiLang = useUILanguage(lang);
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -25,6 +28,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
   const [checkingApproval, setCheckingApproval] = useState(false);
 
   const t = translations[lang];
+
+  const authErrorMessage = (error: { code?: string; message?: string }): string => {
+    const messages: Record<string, string> = {
+      INVALID_CREDENTIALS: 'Invalid username or password',
+      ACCOUNT_BANNED: 'Your account has been banned by the server administrator.',
+      ACCOUNT_RATE_LIMIT_EXCEEDED: 'Too many attempts for this account; please retry later',
+    };
+    return uiText(messages[error.code || ''] || error.message || 'Authentication failed', uiLang);
+  };
 
   const handleCheckStatus = async () => {
     if (!pendingApproval) return;
@@ -50,9 +62,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
       }
     } catch (err: any) {
       if (err?.code === 'ACCOUNT_PENDING_APPROVAL' || err?.message?.includes('تایید') || err?.message?.includes('pending')) {
-        setError('حساب شما هنوز توسط مدیر سرور تایید نشده است. لطفاً شکیبا باشید.');
+        setError(uiText("حساب شما هنوز توسط مدیر سرور تایید نشده است. لطفاً شکیبا باشید.", uiLang));
       } else {
-        setError(err?.message || 'خطا در ورود مجدد');
+        setError(authErrorMessage(err));
       }
     } finally {
       setCheckingApproval(false);
@@ -101,7 +113,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
       if (err?.code === 'ACCOUNT_PENDING_APPROVAL' || err?.message?.includes('تایید') || err?.message?.includes('pending')) {
         setPendingApproval({ username, displayName: displayName || username });
       } else {
-        setError(err?.message || 'Authentication failed');
+        setError(authErrorMessage(err));
       }
     } finally {
       setLoading(false);
@@ -119,11 +131,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
           <p className="text-xs text-[#7f91a4] mt-1">{t.subtitle}</p>
         </div>
 
+        {onToggleLang && (
+          <button type="button" onClick={onToggleLang} className="mb-3 text-xs text-[#24A1DE] hover:underline" aria-label={lang === "fa" ? 'تغییر زبان به انگلیسی' : 'Switch language to Persian'}>
+            {lang === "fa" ? 'English' : 'فارسی'}
+          </button>
+        )}
+
         {/* Server Network Bar */}
         <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#242f3d]/60 border border-[#242f3d] mb-4 text-xs">
           <div className="flex items-center gap-2 min-w-0">
             <span className="h-2 w-2 rounded-full bg-emerald-400 shrink-0" />
-            <span className="text-[#7f91a4] shrink-0">Server:</span>
+            <span className="text-[#7f91a4] shrink-0">{uiText("Server:", uiLang)}</span>
             <span className="font-semibold text-white truncate max-w-[150px]">{serverManager.getActiveServer().name}</span>
           </div>
           <button
@@ -132,7 +150,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
             className="flex items-center gap-1 text-[#24A1DE] hover:text-[#3ca9e2] font-semibold transition cursor-pointer shrink-0 ml-2"
           >
             <Server className="h-3 w-3" />
-            <span>Change</span>
+            <span>{uiText("Change", uiLang)}</span>
           </button>
         </div>
 
@@ -146,35 +164,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
             </div>
 
             <div>
-              <h3 className="text-lg font-bold text-white">در انتظار تایید مدیر سرور</h3>
-              <p className="text-xs text-[#7f91a4] mt-1.5 leading-relaxed">
-                درخواست ثبت‌نام شما با موفقیت ثبت شد و برای مدیر سرور ارسال گردید. پس از بررسی و تایید می‌توانید وارد شوید.
-              </p>
+              <h3 className="text-lg font-bold text-white">{uiText("در انتظار تایید مدیر سرور", uiLang)}</h3>
+              <p className="text-xs text-[#7f91a4] mt-1.5 leading-relaxed">{uiText("درخواست ثبت‌نام شما با موفقیت ثبت شد و برای مدیر سرور ارسال گردید. پس از بررسی و تایید می‌توانید وارد شوید.", uiLang)}</p>
             </div>
 
             <div className="p-3.5 rounded-xl bg-[#242f3d]/70 border border-[#242f3d] text-right space-y-2">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-[#7f91a4]">حساب کاربری:</span>
+                <span className="text-[#7f91a4]">{uiText("حساب کاربری:", uiLang)}</span>
                 <span className="font-semibold text-white">@{pendingApproval.username}</span>
               </div>
               {pendingApproval.displayName && (
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-[#7f91a4]">نام نمایشی:</span>
+                  <span className="text-[#7f91a4]">{uiText("نام نمایشی:", uiLang)}</span>
                   <span className="text-white">{pendingApproval.displayName}</span>
                 </div>
               )}
               <div className="flex items-center justify-between text-xs">
-                <span className="text-[#7f91a4]">وضعیت:</span>
+                <span className="text-[#7f91a4]">{uiText("وضعیت:", uiLang)}</span>
                 <span className="text-amber-400 font-medium flex items-center gap-1.5">
-                  <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />
-                  در انتظار تایید مالک سرور
-                </span>
+                  <span className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />{uiText("در انتظار تایید مالک سرور", uiLang)}</span>
               </div>
             </div>
 
             {error && (
               <div className="p-3 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs text-center">
-                {error}
+                {uiText(error, uiLang)}
               </div>
             )}
 
@@ -185,7 +199,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
               className="w-full rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] py-3 text-sm font-semibold text-white shadow-lg shadow-[#24A1DE]/25 transition duration-150 ease-in-out disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer mt-2"
             >
               <RefreshCw className={`h-4 w-4 ${checkingApproval ? 'animate-spin' : ''}`} />
-              {checkingApproval ? 'در حال بررسی وضعیت...' : 'بررسی مجدد وضعیت تایید'}
+              {checkingApproval ? uiText("در حال بررسی وضعیت...", uiLang) : uiText("بررسی مجدد وضعیت تایید", uiLang)}
             </button>
 
             <button
@@ -196,15 +210,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
               }}
               className="w-full py-2 text-xs text-[#7f91a4] hover:text-white transition flex items-center justify-center gap-1.5 cursor-pointer"
             >
-              <ArrowLeft className="h-3.5 w-3.5" />
-              بازگشت به فرم ورود
-            </button>
+              <ArrowLeft className="h-3.5 w-3.5" />{uiText("بازگشت به فرم ورود", uiLang)}</button>
           </div>
         ) : (
           <>
             {error && (
               <div className="mb-4 p-3 rounded-lg bg-red-500/15 border border-red-500/30 text-red-400 text-xs text-center">
-                {error}
+                {uiText(error, uiLang)}
               </div>
             )}
 
@@ -221,7 +233,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ onSuccess, lang }) => {
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
                       className="w-full rounded-xl bg-[#242f3d] px-4 py-2.5 text-sm text-white placeholder-[#7f91a4] focus:outline-none focus:ring-2 focus:ring-[#24A1DE]"
-                      placeholder="e.g. Alice Wonderland"
+                      placeholder={uiText("e.g. Alice Wonderland", uiLang)}
                     />
                   </div>
                 </div>

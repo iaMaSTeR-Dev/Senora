@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 
@@ -11,6 +12,7 @@ export interface FormattingRange {
 
 // Interactive Code Block Component with Copy Button
 export const CodeBlockView: React.FC<{ code: string; language?: string }> = ({ code, language }) => {
+  const uiLang = useUILanguage();
   const [copied, setCopied] = useState(false);
 
   const handleCopy = (e: React.MouseEvent) => {
@@ -31,17 +33,17 @@ export const CodeBlockView: React.FC<{ code: string; language?: string }> = ({ c
           type="button"
           onClick={handleCopy}
           className="flex items-center gap-1 text-[11px] hover:text-white transition px-2 py-0.5 rounded hover:bg-white/10 cursor-pointer"
-          title="Copy Code"
+          title={uiText("Copy Code", uiLang)}
         >
           {copied ? (
             <>
               <Check className="h-3 w-3 text-emerald-400" />
-              <span className="text-emerald-400">Copied</span>
+              <span className="text-emerald-400">{uiText("Copied", uiLang)}</span>
             </>
           ) : (
             <>
               <Copy className="h-3 w-3" />
-              <span>Copy</span>
+              <span>{uiText("Copy", uiLang)}</span>
             </>
           )}
         </button>
@@ -55,6 +57,7 @@ export const CodeBlockView: React.FC<{ code: string; language?: string }> = ({ c
 
 // Interactive Spoiler Component that toggles concealed state on click
 export const SpoilerView: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const uiLang = useUILanguage();
   const [revealed, setRevealed] = useState(false);
 
   return (
@@ -68,7 +71,7 @@ export const SpoilerView: React.FC<{ children: React.ReactNode }> = ({ children 
           ? 'bg-white/10 text-inherit'
           : 'bg-slate-700/80 text-transparent blur-[3px] hover:blur-[2px] hover:bg-slate-600/80 relative'
       }`}
-      title={revealed ? 'Click to hide spoiler' : 'Spoiler: click to reveal'}
+      title={revealed ? uiText("Click to hide spoiler", uiLang) : uiText("Spoiler: click to reveal", uiLang)}
     >
       {children}
     </span>
@@ -99,6 +102,7 @@ export function isRTLText(text: string): boolean {
 
 export interface FormattedTextOptions {
   onMentionClick?: (username: string) => void;
+  lang?: 'en' | 'fa';
 }
 
 // Parses Markdown / Telegram formatted text into rich React elements
@@ -256,7 +260,9 @@ function parseInlineTokens(line: string, options?: FormattedTextOptions): React.
             }
           }}
           className="inline font-semibold text-[#24A1DE] hover:text-[#52bcf5] hover:underline cursor-pointer select-text transition bg-transparent p-0 m-0 border-none outline-none align-baseline"
-          title={token.startsWith('@') ? `View @${identifier}'s profile` : `Open ${token}`}
+          title={options?.lang === 'fa'
+            ? (token.startsWith('@') ? `مشاهدهٔ پروفایل @${identifier}` : `باز کردن ${token}`)
+            : (token.startsWith('@') ? `View @${identifier}'s profile` : `Open ${token}`)}
         >
           {token}
         </button>

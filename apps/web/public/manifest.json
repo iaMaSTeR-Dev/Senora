@@ -1,6 +1,6 @@
 {
-  "name": "Senora",
-  "short_name": "Senora",
+  "name": "SENORA",
+  "short_name": "SENORA",
   "description": "Secure Self-Hosted Messaging with Signal Protocol E2EE",
   "start_url": "/",
   "display": "standalone",

@@ -1,4 +1,10 @@
-# PROTOCOL SPECIFICATION — Senora v1
+# PROTOCOL SPECIFICATION — SENORA v1
+
+WebSocket server envelopes include `replay: true` for durable catch-up/history
+events and `replay: false` for live events. Consumers must still apply replay
+events to their state, while suppressing transient effects such as sounds,
+desktop notifications and callback-answer popups. Message IDs identify duplicate
+deliveries; a live message should produce at most one notification.
 
 ## 1. REST API Contracts (`/api/v1`)
 
@@ -35,19 +41,19 @@ All requests accept and return `application/json` (unless binary upload). Standa
 - `POST /api/v1/conversations/{id}/messages/{msgId}/reactions`: Toggle emoji reaction.
 - `POST /api/v1/conversations/{id}/pin`: Pin or unpin message in conversation banner.
 
-### Group Voice Chat (Track B)
+### Group Voice Chat
 - `POST /api/v1/conversations/{id}/voice-chat`: Start or join group voice chat room.
 - `GET /api/v1/conversations/{id}/voice-chat`: Get active room details and current participants.
 - `POST /api/v1/conversations/{id}/voice-chat/leave`: Leave active voice chat room.
 - `POST /api/v1/conversations/{id}/voice-chat/state`: Update microphone state (`is_muted`, `is_speaking`).
 - `DELETE /api/v1/conversations/{id}/voice-chat`: End voice chat room for all participants (host / admin).
 
-### Profile Avatars (Track C)
+### Profile Avatars
 - `POST /api/v1/users/avatar`: Upload, validate, crop, and store user avatar image.
 - `DELETE /api/v1/users/avatar`: Remove current profile avatar and restore default placeholder.
 - `GET /api/v1/attachments/avatar/{filename}`: Serve authenticated profile avatar.
 
-### Stickers, Custom Packs & Animated Media (Track E & F)
+### Stickers, Custom Packs & Animated Media
 - `GET /api/v1/stickers/packs`: List all available sticker packs in the catalog.
 - `POST /api/v1/stickers/packs`: Create and publish a custom user sticker pack with share code.
 - `GET /api/v1/stickers/packs/{id}`: Get sticker pack details and stickers.
@@ -134,7 +140,7 @@ Every frame over WebSocket uses a structured JSON envelope:
   - `ice_candidate`: WebRTC ICE candidate exchange.
 - Authorization: Server validates sender is a member of `conversation_id` and is either `caller_id` or `receiver_id`.
 
-#### 5. Group Voice Chat Signaling (Track B)
+#### 5. Group Voice Chat Signaling
 - Type: `voice_chat.signal`
 - Payload:
   ```json
@@ -155,7 +161,7 @@ Every frame over WebSocket uses a structured JSON envelope:
   - `sdp_offer` / `sdp_answer` / `ice_candidate`: Peer-to-peer audio mesh negotiation.
 - Authorization: Sender must be an active member of `conversation_id`. Cross-conversation signal leakage is strictly rejected.
 
-#### 6. Deletion & Mode Outbox Events (Tracks A, G, H, I)
+#### 6. Deletion & Mode Outbox Events
 - `message.deleted_for_me`: Dispatched to caller devices when a message is hidden for oneself.
 - `message.deleted`: Dispatched to all conversation participants when message is soft-deleted for everyone.
 - `conversation.cleared`: Dispatched to caller devices when chat is cleared for me.
@@ -216,7 +222,7 @@ For stickers:
   "attachment": {
     "isSticker": true,
     "stickerPackId": "pack_senora_classic",
-    "stickerId": "stk_senora_rocket",
+    "stickerId": "stk_nc_3",
     "stickerUrl": "data:image/svg+xml;utf8,..."
   }
 }

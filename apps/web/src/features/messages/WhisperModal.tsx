@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Lock, X, Send, User } from 'lucide-react';
 import { User as UserType } from '../../app/types';
@@ -19,6 +20,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
   currentUserId,
   lang = 'fa',
 }) => {
+  const uiLang = useUILanguage(lang);
   const [targetUsername, setTargetUsername] = useState('');
   const [secretText, setSecretText] = useState('');
 
@@ -46,10 +48,10 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-white">
-                {lang === 'fa' ? 'ارسال پیام نجوا (Whisper)' : 'Send Whisper Message'}
+                {lang === "fa" ? 'ارسال پیام نجوا (Whisper)' : 'Send Whisper Message'}
               </h3>
               <p className="text-[11px] text-[#7f91a4]">
-                {lang === 'fa'
+                {lang === "fa"
                   ? 'پیام مخفی که فقط مخاطب مشخص‌شده می‌تواند آن را باز کند'
                   : 'Secret message unlockable only by target recipient'}
               </p>
@@ -68,7 +70,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
         <form onSubmit={handleSubmit} className="mt-4 space-y-4">
           <div>
             <label className="block text-xs font-semibold text-[#7f91a4] mb-1.5">
-              {lang === 'fa' ? 'نام‌کاربری مخاطب:' : 'Recipient Username:'}
+              {lang === "fa" ? 'نام‌کاربری مخاطب:' : 'Recipient Username:'}
             </label>
             <div className="relative">
               <span className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400 font-bold text-sm">@</span>
@@ -76,7 +78,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
                 type="text"
                 value={targetUsername}
                 onChange={(e) => setTargetUsername(e.target.value.replace(/^@/, ''))}
-                placeholder={lang === 'fa' ? 'username' : 'username'}
+                placeholder={lang === "fa" ? 'username' : 'username'}
                 required
                 className="w-full bg-[#101921] border border-[#242f3d] focus:border-purple-500 rounded-2xl pl-8 pr-3 py-2 text-sm text-white placeholder-slate-500 outline-none transition"
               />
@@ -87,7 +89,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
           {candidateUsers.length > 0 && (
             <div>
               <span className="block text-[11px] text-[#7f91a4] mb-1.5">
-                {lang === 'fa' ? 'انتخاب سریع از اعضای چت:' : 'Quick Select from Members:'}
+                {lang === "fa" ? 'انتخاب سریع از اعضای چت:' : 'Quick Select from Members:'}
               </span>
               <div className="flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
                 {candidateUsers.map((u) => (
@@ -111,12 +113,12 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
 
           <div>
             <label className="block text-xs font-semibold text-[#7f91a4] mb-1.5">
-              {lang === 'fa' ? 'متن پیام مخفی:' : 'Secret Message Text:'}
+              {lang === "fa" ? 'متن پیام مخفی:' : 'Secret Message Text:'}
             </label>
             <textarea
               value={secretText}
               onChange={(e) => setSecretText(e.target.value)}
-              placeholder={lang === 'fa' ? 'پیام مخفی خود را اینجا بنویسید...' : 'Type your secret whisper message here...'}
+              placeholder={lang === "fa" ? 'پیام مخفی خود را اینجا بنویسید...' : 'Type your secret whisper message here...'}
               rows={3}
               required
               className="w-full bg-[#101921] border border-[#242f3d] focus:border-purple-500 rounded-2xl p-3 text-sm text-white placeholder-slate-500 outline-none resize-none transition"
@@ -129,7 +131,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
               onClick={onClose}
               className="px-4 py-2 rounded-xl text-xs text-[#7f91a4] hover:text-white hover:bg-[#242f3d] transition cursor-pointer"
             >
-              {lang === 'fa' ? 'انصراف' : 'Cancel'}
+              {lang === "fa" ? uiText("انصراف", uiLang) : uiText("Cancel", uiLang)}
             </button>
             <button
               type="submit"
@@ -137,7 +139,7 @@ export const WhisperModal: React.FC<WhisperModalProps> = ({
               className="px-5 py-2 rounded-xl text-xs font-bold bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-50 text-white transition flex items-center gap-2 cursor-pointer shadow-lg shadow-purple-600/30"
             >
               <Send className="h-3.5 w-3.5" />
-              <span>{lang === 'fa' ? 'ارسال نجوا' : 'Send Whisper'}</span>
+              <span>{lang === "fa" ? 'ارسال نجوا' : 'Send Whisper'}</span>
             </button>
           </div>
         </form>

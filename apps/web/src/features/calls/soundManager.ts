@@ -179,7 +179,7 @@ class SoundManager {
 
     try {
       const now = ctx.currentTime;
-      // Two-tone modern Telegram-style notification chime: F5 (698Hz) -> C6 (1046Hz)
+      // Two-tone notification chime: F5 (698Hz) -> C6 (1046Hz)
       const tone1 = ctx.createOscillator();
       const tone2 = ctx.createOscillator();
       const gain = ctx.createGain();

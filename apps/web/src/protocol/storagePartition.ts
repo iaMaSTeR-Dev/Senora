@@ -1,5 +1,5 @@
 // storagePartition.ts
-// Secure multi-server and per-account storage partitioning for Senora
+// Secure multi-server and per-account storage partitioning for SENORA
 
 /**
  * Normalizes a server URL to a canonical origin key (lowercase scheme + host + port).

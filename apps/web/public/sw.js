@@ -1,63 +1,56 @@
-// Senora PWA Service Worker & Web Push Handler
-const CACHE_NAME = 'senora-v1';
-const ASSETS_TO_CACHE = [
-  '/',
-  '/index.html',
-  '/manifest.json',
-  '/favicon.svg'
-];
+// SENORA PWA Service Worker & Web Push Handler
+// Only bundled static resources belong in CacheStorage. Media stays in the
+// browser's streaming pipeline; cloning a gigabyte response can buffer its body.
+const CACHE_NAME = 'senora-static-v2';
+const ASSETS_TO_CACHE = ['/', '/index.html', '/manifest.json', '/favicon.svg'];
 
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {
-      return cache.addAll(ASSETS_TO_CACHE).catch((err) => {
-        console.warn('SW pre-cache error:', err);
-      });
-    })
-  );
+self.addEventListener('install', event => {
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(ASSETS_TO_CACHE)).catch(error => console.warn('SW pre-cache error:', error)));
   self.skipWaiting();
 });
-
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then((keys) => {
-      return Promise.all(
-        keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key))
-      );
-    })
-  );
-  self.clients.claim();
+self.addEventListener('activate', event => {
+  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key =>
+    key !== CACHE_NAME && key.startsWith('senora-')
+  ).map(key => caches.delete(key)))).then(() => self.clients.claim()));
 });
 
-self.addEventListener('fetch', (event) => {
-  // Only cache GET requests for static assets, skip API and WS calls
-  const url = new URL(event.request.url);
-  if (event.request.method !== 'GET' || url.pathname.startsWith('/api/') || url.pathname.startsWith('/ws')) {
-    return;
+function cacheStaticResponse(event, response) {
+  const length = Number(response.headers.get('Content-Length'));
+  const type = response.headers.get('Content-Type') || '';
+  const policy = response.headers.get('Cache-Control') || '';
+  if (response.status !== 200 || !length || length > 5 * 1024 * 1024 ||
+      /^(video|audio)\//i.test(type) || /private|no-store/i.test(policy)) return;
+  const copy = response.clone();
+  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.put(event.request, copy))
+    .catch(error => console.warn('SW cache write skipped:', error)));
+}
+
+self.addEventListener('fetch', event => {
+  const request = event.request;
+  const url = new URL(request.url);
+  if (request.method !== 'GET' || url.origin !== self.location.origin ||
+      request.headers.has('Range') || request.destination === 'video' || request.destination === 'audio') return;
+  const navigation = request.mode === 'navigate' && (url.pathname === '/' || url.pathname === '/index.html');
+  const asset = !url.search && (['/manifest.json', '/favicon.svg'].includes(url.pathname) ||
+    /^\/assets\/.+\.(js|css|woff2?|ttf|png|svg|ico|json)$/.test(url.pathname));
+  if (!navigation && !asset) return;
+  if (navigation) {
+    // New HTML must win after deployment; old cached HTML references old clients.
+    event.respondWith(fetch(request).then(response => {
+      if (/text\/html/i.test(response.headers.get('Content-Type') || '')) cacheStaticResponse(event, response);
+      return response;
+    }).catch(async () => (await caches.match(request)) || (await caches.match('/')) || Response.error()));
+  } else {
+    event.respondWith(caches.match(request).then(cached => cached || fetch(request).then(response => {
+      cacheStaticResponse(event, response);
+      return response;
+    })));
   }
-
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request)
-        .then((networkResponse) => {
-          if (networkResponse && networkResponse.status === 200) {
-            const clone = networkResponse.clone();
-            caches.open(CACHE_NAME).then((cache) => {
-              cache.put(event.request, clone);
-            });
-          }
-          return networkResponse;
-        })
-        .catch(() => cached);
-
-      return cached || fetchPromise;
-    })
-  );
 });
 
 // Push notification handling
 self.addEventListener('push', (event) => {
-  let data = { title: 'Senora', body: 'New encrypted message', icon: '/favicon.svg' };
+  let data = { title: 'SENORA', body: 'New encrypted message', icon: '/favicon.svg' };
   if (event.data) {
     try {
       data = { ...data, ...event.data.json() };

@@ -1,6 +1,6 @@
-# DEPLOYMENT & OPERATIONS GUIDE — Senora
+# DEPLOYMENT & OPERATIONS GUIDE — SENORA
 
-This guide covers deployment options, environment variables, reverse-proxy configurations, STUN/TURN calling infrastructure, backup procedures, and troubleshooting for self-hosted Senora instances.
+This guide covers deployment options, environment variables, reverse-proxy configurations, STUN/TURN calling infrastructure, backup procedures, and troubleshooting for self-hosted SENORA instances.
 
 ---
 
@@ -36,10 +36,12 @@ Suitable for multi-user organizations requiring automated failover and regular s
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `PORT` | No | `8080` | HTTP and WebSocket listening port for the Go server. |
-| `DB_DRIVER` | No | `sqlite` | Database engine: `sqlite` or `postgres`. |
-| `DB_DSN` | Yes | `file:senora.db?cache=shared` | Database connection string. For PostgreSQL: `postgres://user:pass@host:5432/dbname?sslmode=disable`. |
-| `ALLOWED_ORIGINS` | No | `*` | Comma-separated list of allowed origins for CORS and CSWSH WebSocket validation (e.g., `https://chat.example.com`). |
-| `MAX_UPLOAD_BYTES` | No | `104857600` | Maximum file upload size limit (defaults to 100MB). |
+| `ENVIRONMENT` | Yes in production | `development` | Use `production` for the deployed service. |
+| `DATABASE_URL` | Yes in production | `file:senora.db?cache=shared` in development | PostgreSQL connection URI. Production rejects SQLite and insecure default passwords. Preserve the existing database URL during an upgrade; `DB_DRIVER` and `DB_DSN` are not runtime configuration inputs. |
+| `SESSION_SECRET` | Yes in production | none | At least 32 decoded random bytes, hex or base64; preserve the current secret during an upgrade. |
+| `SENORA_BACKUP_DIR` | No | `/var/lib/senora/backups` on Linux | Private directory outside the served web root, owned by the service user with mode 0700. PostgreSQL backup requires a compatible `pg_dump` executable. |
+| `ALLOWED_ORIGINS` | Yes in production | localhost development origins | Comma-separated list of allowed origins for CORS and CSWSH WebSocket validation (e.g., `https://chat.example.com`). |
+| `MAX_UPLOAD_BYTES` | No | `524288000` | Upload limit (500 MiB); `0` or `unlimited` removes the request limit, but disk safeguards still apply. |
 | `STUN_SERVERS` | No | `stun:stun.l.google.com:19302` | Comma-separated STUN server URLs for WebRTC peer-to-peer media negotiation. |
 | `TURN_URL` | No | `""` | TURN server URL for symmetric NAT traversal (e.g. `turn:turn.example.com:3478`). |
 | `TURN_USERNAME` | No | `""` | Short-lived TURN authentication username. |
@@ -78,10 +80,15 @@ server {
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
 
     # Maximum upload body size (matches backend MAX_UPLOAD_BYTES)
-    client_max_body_size 105M;
+    client_max_body_size 500M;
 
     # REST API endpoints
+    location ^~ /backups/ { return 404; }
+
     location /api/ {
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 300s;
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -116,7 +123,7 @@ server {
 
 ## 4. WebRTC Calling & Coturn Setup
 
-For reliable 1-to-1 audio and video calls across cellular networks or strict enterprise firewalls, deploy a Coturn TURN server:
+For reliable 1-to-1 audio and video calls across cellular networks or strict NAT/corporate firewalls, deploy a Coturn TURN server:
 
 ```ini
 # /etc/turnserver.conf
@@ -159,7 +166,7 @@ gunzip -c backup_YYYYMMDD_HHMMSS.sql.gz | docker exec -i senora-postgres psql -U
   ```json
   {
     "status": "ok",
-    "timestamp": "2026-10-11T11:00:00Z",
+    "timestamp": "2026-01-01T00:00:00Z",
     "database": "connected"
   }
   ```
@@ -168,20 +175,19 @@ gunzip -c backup_YYYYMMDD_HHMMSS.sql.gz | docker exec -i senora-postgres psql -U
 
 ---
 
-## 7. Phase 9 Database Migrations
+## 7. Additive Schema Migrations
 
-For Phase 9 features (Conversation Security Modes, Voice Chat rooms, User-Created Stickers, Deletions, and Clears), apply the additive migration:
+The Go server automatically applies schema migrations on startup. For manual inspection or PostgreSQL pre-provisioning, migrations are in `database/migrations/` (including `000002_security_and_media.sql` for Conversation Security Modes, Voice Chat rooms, User-Created Stickers, Deletions, and Clears):
 
 ```bash
-# SQLite Deployment:
-# The server automatically applies migrations or alterations on startup, or manually:
-sqlite3 senora.db < database/migrations/000002_phase9.sql
+# SQLite Deployment (manual):
+sqlite3 senora.db < database/migrations/000002_security_and_media.sql
 
-# PostgreSQL Deployment:
-psql -U senora -d senora_db -f database/migrations/000002_phase9.sql
+# PostgreSQL Deployment (manual):
+psql -U senora -d senora_db -f database/migrations/000002_security_and_media.sql
 ```
 
-The migration is non-destructive:
+`000002_security_and_media.sql` is additive and non-destructive:
 1. Adds `security_mode VARCHAR(32) NOT NULL DEFAULT 'normal'` to `conversations`.
 2. Adds `creator_id` and `share_code` to `sticker_packs`.
 3. Creates `voice_chat_rooms` and `voice_chat_participants`.
@@ -192,7 +198,7 @@ The migration is non-destructive:
 
 ## 8. Self-Hosted Typography & Zero External Font CDN
 
-Senora frontend strictly avoids external third-party CDN font dependencies (such as Google Fonts or unpkg) to prevent tracking, latency, and air-gapped deployment failures.
+SENORA frontend strictly avoids external third-party CDN font dependencies (such as Google Fonts or unpkg) to prevent tracking, latency, and air-gapped deployment failures.
 
 - **Vazirmatn (Arabic/Persian)**: Included via `@fontsource/vazirmatn` (OFL-1.1 license), bundling WOFF2 and WOFF weights 400, 500, 600, and 700 directly into the frontend assets directory (`dist/assets/`).
 - **Inter (Latin)**: Included via `@fontsource/inter` (OFL-1.1 license) weights 400, 500, 600, and 700.
@@ -202,8 +208,13 @@ Senora frontend strictly avoids external third-party CDN font dependencies (such
 
 ## 9. Group Voice Chat Architecture & Signaling
 
-- **Signaling Transport**: Uses Senora's existing authenticated WebSocket gateway (`/api/v1/ws`) with `voice_chat.signal` event routing.
+- **Signaling Transport**: Uses SENORA's existing authenticated WebSocket gateway (`/api/v1/ws`) with `voice_chat.signal` event routing.
 - **Mesh vs. SFU**:
   - Small group sessions (≤ 6 concurrent speakers) can operate over the built-in authenticated WebSocket signaling mesh.
   - For large auditoriums or high-scale group voice sessions (> 10 participants), configure an external Selective Forwarding Unit (SFU) such as LiveKit or Janus. Token generation endpoints are designed to scope credentials to the authenticated user and conversation ID without exposing administrative secrets to browser clients.
 
+
+## Bot API and seekable streaming
+
+See [BOT_API.md](BOT_API.md) and [STREAMING.md](STREAMING.md). Preserve persistent upload and
+backup volumes when updating Compose; never use `docker compose down -v` to upgrade.

@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Conversation, User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -21,6 +22,7 @@ export const OpenByIdModal: React.FC<OpenByIdModalProps> = ({
   onConversationCreated,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const [identifier, setIdentifier] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -187,7 +189,7 @@ export const OpenByIdModal: React.FC<OpenByIdModalProps> = ({
                   <>
                     <div className="h-11 w-11 rounded-full bg-gradient-to-tr from-[#3ca9e2] to-[#24A1DE] flex items-center justify-center font-bold text-white text-sm shadow-md overflow-hidden flex-shrink-0">
                       {resolved.user.avatar_url ? (
-                        <img src={resolved.user.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                        <img src={api.avatarURL(resolved.user.avatar_url)} alt={uiText("Avatar", uiLang)} className="h-full w-full object-cover" />
                       ) : (
                         resolved.user.display_name.charAt(0).toUpperCase()
                       )}
@@ -216,7 +218,7 @@ export const OpenByIdModal: React.FC<OpenByIdModalProps> = ({
                       <div className="flex items-center gap-2">
                         <p className="text-xs font-bold text-white truncate">{resolved.conversation.title}</p>
                         <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-purple-500/20 text-purple-300">
-                          {isFa ? 'کانال عمومی' : 'Public Channel'}
+                          {isFa ? uiText("کانال عمومی", uiLang) : 'Public Channel'}
                         </span>
                       </div>
                       <p className="text-[11px] text-[#7f91a4]">
@@ -238,7 +240,7 @@ export const OpenByIdModal: React.FC<OpenByIdModalProps> = ({
                       <div className="flex items-center gap-2">
                         <p className="text-xs font-bold text-white truncate">{resolved.conversation.title}</p>
                         <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300">
-                          {isFa ? 'گروه' : 'Group'}
+                          {isFa ? uiText("گروه", uiLang) : uiText("Group", uiLang)}
                         </span>
                       </div>
                       <p className="text-[11px] text-[#7f91a4]">

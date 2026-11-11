@@ -101,6 +101,7 @@ type ClientEnvelope struct {
 	Type    string          `json:"type"`
 	ID      string          `json:"id,omitempty"`
 	Cursor  int64           `json:"cursor,omitempty"`
+	Replay  bool            `json:"replay"`
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
@@ -183,11 +184,11 @@ func (h *Hub) Run(ctx context.Context) {
 			h.mu.RLock()
 			clients := h.userClients[event.RecipientUserID]
 			env := ClientEnvelope{
-				V:      1,
-				Type:   event.EventType,
-				ID:     uuid.New().String(),
-				Cursor: event.ID,
-				Payload: json.RawMessage(event.Payload),
+				V:       1,
+				Type:    event.EventType,
+				ID:      uuid.New().String(),
+				Cursor:  event.ID,
+				Payload: json.RawMessage(storage.RedactLegacyWhisperEvent(ctx, h.store, event.Payload, event.RecipientUserID)),
 			}
 			data, err := json.Marshal(env)
 			if err == nil {
@@ -239,6 +240,12 @@ func (h *Hub) DisconnectUser(userID string) {
 }
 
 // IsUserOnline returns true if the user currently has at least one active WebSocket connection.
+func (h *Hub) OnlineUserCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.userClients)
+}
+
 func (h *Hub) IsUserOnline(userID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -331,7 +338,7 @@ func (h *Hub) BroadcastUserPresence(userID string, isOnline bool, lastSeenAt tim
 			continue
 		}
 		for _, memberID := range members {
-			if memberID != userID && !notified[memberID] {
+			if memberID != userID && !notified[memberID] && storage.CanViewUserField(context.Background(), h.store, userID, memberID, "lastSeenVisibility") {
 				notified[memberID] = true
 				h.SendToUser(memberID, env)
 			}
@@ -388,20 +395,43 @@ func (c *ClientConnection) readPump() {
 		case "sync.request":
 			var syncReq SyncRequestPayload
 			if err := json.Unmarshal(env.Payload, &syncReq); err == nil {
-				// Replay missed events from outbox
-				events, err := c.hub.store.GetOutboxEventsAfter(context.Background(), c.userID, syncReq.LastEventID, 100)
-				if err == nil {
+				// Bound the replay to the snapshot at handshake time. Later events
+				// arrive through live publication or the next reconnect.
+				head, err := c.hub.store.GetOutboxHead(context.Background(), c.userID)
+				if err != nil {
+					continue
+				}
+				for syncReq.LastEventID < head {
+					events, err := c.hub.store.GetOutboxEventsAfter(context.Background(), c.userID, syncReq.LastEventID, 100)
+					if err != nil {
+						break
+					}
+					if len(events) == 0 {
+						break
+					}
 					for _, ev := range events {
+						if ev.ID > head {
+							break
+						}
 						replayEnv := ClientEnvelope{
-							V:      1,
-							Type:   ev.EventType,
-							ID:     uuid.New().String(),
-							Cursor: ev.ID,
-							Payload: json.RawMessage(ev.Payload),
+							V:       1,
+							Type:    ev.EventType,
+							ID:      uuid.New().String(),
+							Cursor:  ev.ID,
+							Replay:  true,
+							Payload: json.RawMessage(storage.RedactLegacyWhisperEvent(context.Background(), c.hub.store, ev.Payload, c.userID)),
 						}
 						if resp, err := json.Marshal(replayEnv); err == nil {
-							c.send <- resp
+							select {
+							case c.send <- resp:
+							case <-time.After(10 * time.Second):
+								return
+							}
 						}
+					}
+					syncReq.LastEventID = events[len(events)-1].ID
+					if len(events) < 100 {
+						break
 					}
 				}
 			}

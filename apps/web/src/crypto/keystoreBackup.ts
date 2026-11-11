@@ -1,11 +1,11 @@
 /**
- * Encrypted Keystore Backup & Restore for Senora
+ * Encrypted Keystore Backup & Restore for SENORA
  * Uses PBKDF2 (100,000 iterations SHA-256) + AES-256-GCM
  * Exports Signal keys, prekeys, and sessions into .senorakeys files
  */
 
 export interface EncryptedBackupContainer {
-  app: 'Senora';
+  app: 'SENORA';
   format: 'senorakeys-v1';
   algorithm: 'PBKDF2-AES-GCM';
   kdf_iterations: number;
@@ -118,7 +118,7 @@ export async function exportEncryptedKeystore(
   if (typeof localStorage !== 'undefined') {
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key && (key.startsWith('senora_') || key.startsWith('senora_') || key.startsWith('signal_'))) {
+      if (key && (key.startsWith('senora_') || key.startsWith('signal_'))) {
         backupPayload.localStorage[key] = localStorage.getItem(key) || '';
       }
     }
@@ -177,7 +177,7 @@ export async function exportEncryptedKeystore(
   );
 
   const container: EncryptedBackupContainer = {
-    app: 'Senora',
+    app: 'SENORA',
     format: 'senorakeys-v1',
     algorithm: 'PBKDF2-AES-GCM',
     kdf_iterations: 100000,
@@ -203,8 +203,9 @@ export async function restoreEncryptedKeystore(
     throw new Error('فایل پشتیبان نامعتبر است (فرمت JSON نیست)');
   }
 
-  if (container.app !== 'Senora' || container.format !== 'senorakeys-v1') {
-    throw new Error('فرمت فایل پشتیبان با Senora همخوانی ندارد');
+  const validFormat = String(container.app).toUpperCase() === 'SENORA' && container.format === 'senorakeys-v1';
+  if (!validFormat) {
+    throw new Error('فرمت فایل پشتیبان با SENORA همخوانی ندارد');
   }
 
   const salt = new Uint8Array(base64ToArrayBuffer(container.salt));

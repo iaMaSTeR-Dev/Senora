@@ -20,19 +20,22 @@ import (
 
 	"github.com/google/uuid"
 
+	"senora/server/internal/botlocale"
 	"senora/server/internal/conversations"
 	"senora/server/internal/events"
 	"senora/server/internal/filestore"
 	"senora/server/internal/messages"
 	"senora/server/internal/models"
+	"senora/server/internal/netguard"
 	"senora/server/internal/storage"
 )
 
 // DownloadRequest represents a parsed /dl command.
 type DownloadRequest struct {
-	TargetURL string
-	ProxyURL  string
-	Quality   string // default "720"
+	TargetURL    string
+	ProxyTrusted bool
+	ProxyURL     string
+	Quality      string // default "720"
 }
 
 // ProxyTestResult holds the health check report of a proxy.
@@ -53,12 +56,15 @@ type ProxyTestResult struct {
 
 // Service manages video download operations, proxy health checks, and chat integrations.
 type Service struct {
-	store     storage.Store
-	fileStore *filestore.StorageManager
-	msgs      *messages.Service
-	convs     *conversations.Service
-	hub       *events.Hub
-	sem       chan struct{} // limits concurrent downloads to protect server memory/CPU
+	// HTTPClient is an explicitly supplied trusted transport for embedded use.
+	// A nil client uses the public-network guard and the external downloader.
+	HTTPClient *http.Client
+	store      storage.Store
+	fileStore  *filestore.StorageManager
+	msgs       *messages.Service
+	convs      *conversations.Service
+	hub        *events.Hub
+	sem        chan struct{} // limits concurrent downloads to protect server memory/CPU
 }
 
 // NewService creates a new downloader service instance.
@@ -75,7 +81,7 @@ func NewService(
 		msgs:      msgs,
 		convs:     convs,
 		hub:       hub,
-		sem:       make(chan struct{}, 2), // max 2 concurrent downloads
+		sem:       make(chan struct{}, 1), // one active job reserves disk space for download and merging
 	}
 }
 
@@ -257,7 +263,7 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 	if proxyClean == "" {
 		return &ProxyTestResult{
 			Healthy:      false,
-			ErrorMessage: "آدرس پروکسی مشخص نشده است.\nنحوه استفاده:\n`/proxy [آدرس_پروکسی]`\nیا تست با دستور:\n`/testproxy http://user:pass@ip:port`",
+			ErrorMessage: botlocale.Text(ctx, "No proxy address supplied.\nUsage:\n`/proxy <proxy_url>`\nExample:\n`/testproxy http://user:pass@ip:port`", "آدرس پروکسی مشخص نشده است.\nنحوه استفاده:\n`/proxy [آدرس_پروکسی]`\nیا تست با دستور:\n`/testproxy http://user:pass@ip:port`"),
 		}
 	}
 
@@ -272,7 +278,7 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 
 	parsedProxy, err := url.Parse(proxyClean)
 	if err != nil {
-		res.ErrorMessage = "فرمت آدرس پروکسی نامعتبر است: " + err.Error()
+		res.ErrorMessage = botlocale.Text(ctx, "Invalid proxy URL: ", "فرمت آدرس پروکسی نامعتبر است: ") + err.Error()
 		return res
 	}
 
@@ -289,7 +295,7 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 	tcpStart := time.Now()
 	conn, err := net.DialTimeout("tcp", hostPort, 5*time.Second)
 	if err != nil {
-		res.ErrorMessage = fmt.Sprintf("ارتباط TCP با سرور پروکسی برقرار نشد (پورت بسته است یا سرور در دسترس نیست): %v", err)
+		res.ErrorMessage = fmt.Sprintf(botlocale.Text(ctx, "TCP connection to proxy failed (closed port or unreachable server): %v", "ارتباط TCP با سرور پروکسی برقرار نشد (پورت بسته است یا سرور در دسترس نیست): %v"), err)
 		return res
 	}
 	res.TCPReachable = true
@@ -308,7 +314,7 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 	}
 
 	httpReq, _ := http.NewRequestWithContext(ctx, "GET", "http://api.ipify.org", nil)
-	httpReq.Header.Set("User-Agent", "Senora-ProxyChecker/1.0")
+	httpReq.Header.Set("User-Agent", "SENORA-ProxyChecker/1.0")
 	httpResp, httpErr := httpClient.Do(httpReq)
 	if httpErr == nil {
 		defer httpResp.Body.Close()
@@ -319,12 +325,12 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 			res.PublicIP = ip
 		}
 	} else {
-		res.HTTPStatus = fmt.Sprintf("خطا: %v", httpErr)
+		res.HTTPStatus = fmt.Sprintf(botlocale.Text(ctx, "Error: %v", "خطا: %v"), httpErr)
 	}
 
 	// 3. HTTPS / CONNECT tunnel test (https://api.ipify.org)
 	httpsReq, _ := http.NewRequestWithContext(ctx, "GET", "https://api.ipify.org", nil)
-	httpsReq.Header.Set("User-Agent", "Senora-ProxyChecker/1.0")
+	httpsReq.Header.Set("User-Agent", "SENORA-ProxyChecker/1.0")
 	httpsResp, httpsErr := httpClient.Do(httpsReq)
 	if httpsErr == nil {
 		defer httpsResp.Body.Close()
@@ -336,7 +342,7 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 		}
 		res.Healthy = true
 	} else {
-		res.HTTPSStatus = fmt.Sprintf("خطا در برقراری تونل امن HTTPS: %v", httpsErr)
+		res.HTTPSStatus = fmt.Sprintf(botlocale.Text(ctx, "HTTPS tunnel failed: %v", "خطا در برقراری تونل امن HTTPS: %v"), httpsErr)
 	}
 
 	// 4. GeoIP lookup for country, city, and ISP detection
@@ -365,6 +371,11 @@ func (s *Service) TestProxy(ctx context.Context, proxyRaw string) *ProxyTestResu
 
 // HandleProxyTest runs proxy diagnostics and reports results in Persian.
 func (s *Service) HandleProxyTest(ctx context.Context, convID, senderID, rawCommand, replyToMsgID string) {
+	ctx = botlocale.WithUser(ctx, s.store, senderID)
+	if owner, err := s.store.IsUserOwner(ctx, senderID); err != nil || !owner {
+		s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "This operation is available only to the server owner.", "این عملیات فقط برای مالک سرور مجاز است."))
+		return
+	}
 	txt := ExtractText(rawCommand)
 	fields := strings.Fields(txt)
 	var proxyArg string
@@ -380,7 +391,7 @@ func (s *Service) HandleProxyTest(ctx context.Context, convID, senderID, rawComm
 	}
 
 	// Send initial checking message
-	statusMsg, _ := s.sendTextMessage(ctx, convID, senderID, "🔍 **در حال تست و بررسی اتصال پروکسی...**\nلطفاً چند لحظه شکیبا باشید.", replyToMsgID)
+	statusMsg, _ := s.sendTextMessage(ctx, convID, senderID, botlocale.Text(ctx, "🔍 **Testing proxy connectivity...**\nPlease wait.", "🔍 **در حال تست و بررسی اتصال پروکسی...**\nلطفاً چند لحظه شکیبا باشید."), replyToMsgID)
 
 	res := s.TestProxy(ctx, proxyArg)
 
@@ -388,38 +399,38 @@ func (s *Service) HandleProxyTest(ctx context.Context, convID, senderID, rawComm
 	if res.Healthy {
 		geoText := ""
 		if res.Country != "" {
-			geoText = fmt.Sprintf("• 🌍 موقعیت سرور: `%s - %s (%s)`\n• 🏢 دیتاسنتر / ISP: `%s`\n",
+			geoText = fmt.Sprintf(botlocale.Text(ctx, "• 🌍 Location: `%s - %s (%s)`\n• 🏢 Datacenter / ISP: `%s`\n", "• 🌍 موقعیت سرور: `%s - %s (%s)`\n• 🏢 دیتاسنتر / ISP: `%s`\n"),
 				res.Country, res.City, res.CountryCode, res.ISP)
 		}
 		turkeyWarn := ""
 		if strings.EqualFold(res.CountryCode, "TR") {
-			turkeyWarn = "\n⚠️ **توجه درباره موقعیت ترکیه:** در کشور ترکیه سایت‌های بزرگسالان (PornHub و ...) طبق قوانین دولتی BTK مسدود هستند. برای دانلود از یوتیوب یا سایر سایت‌ها مناسب است، اما برای PornHub باید از پروکسی کشورهای اروپایی (آلمان، هلند، فرانسه و ...) استفاده کنید.\n"
+			turkeyWarn = botlocale.Text(ctx, "\n⚠️ Access to some websites may be restricted by the proxy network or region. Check the network if the requested website is unreachable.\n", "\n⚠️ **توجه درباره موقعیت ترکیه:** در کشور ترکیه سایت‌های بزرگسالان (PornHub و ...) طبق قوانین دولتی BTK مسدود هستند. برای دانلود از یوتیوب یا سایر سایت‌ها مناسب است، اما برای PornHub باید از پروکسی کشورهای اروپایی (آلمان، هلند، فرانسه و ...) استفاده کنید.\n")
 		}
-		report = fmt.Sprintf("🟢 **تست پروکسی: موفق و کاملاً فعال!**\n\n"+
-			"• 🛡️ آدرس پروکسی: `%s`\n"+
-			"• ⚡ زمان پاسخ (Ping): `%d میلی‌ثانیه`\n"+
-			"• 🌐 آی‌پی خروجی: `%s`\n"+
+		report = fmt.Sprintf(botlocale.Text(ctx, "🟢 **Proxy test successful.**\n\n", "🟢 **تست پروکسی: موفق و کاملاً فعال!**\n\n")+
+			botlocale.Text(ctx, "• 🛡️ Proxy: `%s`\n", "• 🛡️ آدرس پروکسی: `%s`\n")+
+			botlocale.Text(ctx, "• ⚡ Latency: `%d ms`\n", "• ⚡ زمان پاسخ (Ping): `%d میلی‌ثانیه`\n")+
+			botlocale.Text(ctx, "• 🌐 Outbound IP: `%s`\n", "• 🌐 آی‌پی خروجی: `%s`\n")+
 			"%s"+
-			"• 🔒 پشتیبانی از HTTPS: ✅ موفق (%s)\n"+
-			"• 📡 پروتکل HTTP: ✅ موفق (%s)\n"+
+			botlocale.Text(ctx, "• 🔒 HTTPS: ✅ (%s)\n", "• 🔒 پشتیبانی از HTTPS: ✅ موفق (%s)\n")+
+			botlocale.Text(ctx, "• 📡 HTTP: ✅ (%s)\n", "• 📡 پروتکل HTTP: ✅ موفق (%s)\n")+
 			"%s\n"+
-			"💡 *نتیجه:* این پروکسی سالم است و می‌توانید با دستور زیر ویدیو دانلود کنید:\n`/dl [لینک] %s`",
+			botlocale.Text(ctx, "💡 Use this proxy to download media:\n`/dl <url> %s`", "💡 *نتیجه:* این پروکسی سالم است و می‌توانید با دستور زیر ویدیو دانلود کنید:\n`/dl [لینک] %s`"),
 			res.ProxyURL, res.Latency.Milliseconds(), res.PublicIP, geoText, res.HTTPSStatus, res.HTTPStatus, turkeyWarn, res.ProxyURL)
 	} else if res.TCPReachable {
-		report = fmt.Sprintf("🟡 **هشدار: پروکسی نیمه‌فعال است (عدم پشتیبانی از HTTPS)!**\n\n"+
-			"• 🛡️ آدرس پروکسی: `%s`\n"+
-			"• ⚡ زمان پاسخ TCP: `%d میلی‌ثانیه`\n"+
-			"• 🌐 آی‌پی HTTP: `%s`\n"+
-			"• 📡 درخواست HTTP: %s\n"+
-			"• ❌ درخواست HTTPS: %s\n\n"+
-			"⚠️ **دلیل خطا:** این پروکسی به درخواست‌های ساده HTTP پاسخ می‌دهد، اما قابلیت تونل امن HTTPS (CONNECT) را پشتیبانی نمی‌کند یا دسترسی به پورت ۴۴۳ را مسدود کرده است.\n\n"+
-			"💡 *راه حل:* از آنجا که یوتیوب، اینستاگرام، توییتر و اکثر سایت‌ها از HTTPS استفاده می‌کنند، برای دانلود ویدیو به یک پروکسی با پشتیبانی کامل از HTTPS یا پروکسی **SOCKS5** نیاز دارید.",
+		report = fmt.Sprintf(botlocale.Text(ctx, "🟡 **Proxy partially available (HTTPS unsupported).**\n\n", "🟡 **هشدار: پروکسی نیمه‌فعال است (عدم پشتیبانی از HTTPS)!**\n\n")+
+			botlocale.Text(ctx, "• 🛡️ Proxy: `%s`\n", "• 🛡️ آدرس پروکسی: `%s`\n")+
+			botlocale.Text(ctx, "• ⚡ TCP latency: `%d ms`\n", "• ⚡ زمان پاسخ TCP: `%d میلی‌ثانیه`\n")+
+			botlocale.Text(ctx, "• 🌐 HTTP IP: `%s`\n", "• 🌐 آی‌پی HTTP: `%s`\n")+
+			botlocale.Text(ctx, "• 📡 HTTP request: %s\n", "• 📡 درخواست HTTP: %s\n")+
+			botlocale.Text(ctx, "• ❌ HTTPS request: %s\n\n", "• ❌ درخواست HTTPS: %s\n\n")+
+			botlocale.Text(ctx, "⚠️ This proxy supports HTTP requests but cannot establish an HTTPS CONNECT tunnel, or port 443 is blocked.\n\n", "⚠️ **دلیل خطا:** این پروکسی به درخواست‌های ساده HTTP پاسخ می‌دهد، اما قابلیت تونل امن HTTPS (CONNECT) را پشتیبانی نمی‌کند یا دسترسی به پورت ۴۴۳ را مسدود کرده است.\n\n")+
+			botlocale.Text(ctx, "💡 Most video websites use HTTPS. Use a SOCKS5 proxy or an HTTP proxy that supports HTTPS CONNECT.", "💡 *راه حل:* از آنجا که یوتیوب، اینستاگرام، توییتر و اکثر سایت‌ها از HTTPS استفاده می‌کنند، برای دانلود ویدیو به یک پروکسی با پشتیبانی کامل از HTTPS یا پروکسی **SOCKS5** نیاز دارید."),
 			res.ProxyURL, res.Latency.Milliseconds(), res.PublicIP, res.HTTPStatus, res.HTTPSStatus)
 	} else {
-		report = fmt.Sprintf("🔴 **تست پروکسی: ناموفق و غیرقابل دسترس!**\n\n"+
-			"• 🛡️ آدرس ورودی: `%s`\n"+
-			"• ❌ علت خطا: `%s`\n\n"+
-			"💡 لطفاً از صحت IP، پورت و اطلاعات احراز هویت (یوزرنیم و پسورد) پروکسی اطمینان حاصل کنید.",
+		report = fmt.Sprintf(botlocale.Text(ctx, "🔴 **Proxy unavailable.**\n\n", "🔴 **تست پروکسی: ناموفق و غیرقابل دسترس!**\n\n")+
+			botlocale.Text(ctx, "• 🛡️ Address: `%s`\n", "• 🛡️ آدرس ورودی: `%s`\n")+
+			botlocale.Text(ctx, "• ❌ Error: `%s`\n\n", "• ❌ علت خطا: `%s`\n\n")+
+			botlocale.Text(ctx, "💡 Check the proxy IP, port, username and password.", "💡 لطفاً از صحت IP، پورت و اطلاعات احراز هویت (یوزرنیم و پسورد) پروکسی اطمینان حاصل کنید."),
 			res.ProxyURL, res.ErrorMessage)
 	}
 
@@ -432,6 +443,7 @@ func (s *Service) HandleProxyTest(ctx context.Context, convID, senderID, rawComm
 
 // HandleDownload performs the entire download lifecycle asynchronously.
 func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawCommand, replyToMsgID string) {
+	ctx = botlocale.WithUser(ctx, s.store, senderID)
 	txt := ExtractText(rawCommand)
 	fields := strings.Fields(txt)
 	if (len(fields) > 1 && (strings.ToLower(fields[1]) == "update" || strings.ToLower(fields[1]) == "آپدیت")) ||
@@ -443,26 +455,25 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 	req, err := ParseDownloadCommand(rawCommand)
 	if err != nil {
 		if err.Error() == "missing_url" {
-			helpText := "📥 **راهنمای دانلود ویدیو (SenoraDownloader)**\n\n" +
-				"🔹 **فرمت دستور:**\n" +
-				"`/dl [لینک] [پروکسی]`\n\n" +
-				"📌 **مثال‌ها:**\n" +
+			helpText := botlocale.Text(ctx, "📥 **SENORA media downloader**\n\n", "📥 **راهنمای دانلود ویدیو (SENORADownloader)**\n\n") +
+				botlocale.Text(ctx, "🔹 **Usage:**\n", "🔹 **فرمت دستور:**\n") +
+				botlocale.Text(ctx, "`/dl <url> [proxy] [quality]`\n\n", "`/dl [لینک] [پروکسی]`\n\n") +
+				botlocale.Text(ctx, "📌 **Examples:**\n", "📌 **مثال‌ها:**\n") +
 				"• `/dl https://youtu.be/dQw4w9WgXcQ`\n" +
 				"• `/dl https://youtu.be/dQw4w9WgXcQ socks5://127.0.0.1:10808`\n" +
 				"• `/dl https://instagram.com/reel/xxxx http://127.0.0.1:8080 720`\n\n" +
-				"⚙️ **کیفیت پیش‌فرض:** 720p (قابل تغییر به 1080، 480، 360 یا audio)\n" +
-				"🌐 پشتیبانی کامل از یوتیوب، اینستاگرام، توییتر (X)، تیک‌تاک و تمام لینک‌های مستقیم ویدیو.\n" +
-				"🔍 بررسی سلامت پروکسی: `/proxy [آدرس_پروکسی]`\n" +
-				"🔄 آپدیت هسته موتور دانلودر: `/dl update`"
+				botlocale.Text(ctx, "⚙️ **Default quality:** 720p. Options include 1080, 480, 360 or audio.\n", "⚙️ **کیفیت پیش‌فرض:** 720p (قابل تغییر به 1080، 480، 360 یا audio)\n") +
+				botlocale.Text(ctx, "🌐 Supports sites handled by yt-dlp and direct video URLs.\n", "🌐 پشتیبانی کامل از یوتیوب، اینستاگرام، توییتر (X)، تیک‌تاک و تمام لینک‌های مستقیم ویدیو.\n") +
+				botlocale.Text(ctx, "🔍 Test proxy: `/proxy <proxy_url>`\n", "🔍 بررسی سلامت پروکسی: `/proxy [آدرس_پروکسی]`\n") +
+				botlocale.Text(ctx, "🔄 Update downloader: `/dl update`", "🔄 آپدیت هسته موتور دانلودر: `/dl update`")
 			_, _ = s.sendTextMessage(ctx, convID, senderID, helpText, replyToMsgID)
 		}
 		return
 	}
 
 	// Fallback to server default proxy or environment proxy if none was provided
-	targetParsed, _ := url.Parse(req.TargetURL)
-	isLoopback := targetParsed != nil && (targetParsed.Hostname() == "localhost" || targetParsed.Hostname() == "127.0.0.1" || targetParsed.Hostname() == "::1")
-	if req.ProxyURL == "" && !isLoopback {
+	if req.ProxyURL == "" {
+		req.ProxyTrusted = true
 		if defProxy, err := s.store.GetServerSetting(ctx, "default_downloader_proxy", ""); err == nil && defProxy != "" {
 			req.ProxyURL = defProxy
 		} else if envProxy := os.Getenv("ALL_PROXY"); envProxy != "" {
@@ -474,12 +485,25 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 		}
 	}
 
+	if req.ProxyURL != "" && !req.ProxyTrusted {
+		proxyURL, err := url.Parse(req.ProxyURL)
+		if err != nil || proxyURL.Hostname() == "" {
+			s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "Invalid proxy address.", "آدرس پراکسی معتبر نیست."))
+			return
+		}
+		proxyURL.Scheme = "http"
+		proxyURL.User = nil
+		if err = netguard.ValidateURL(ctx, proxyURL.String()); err != nil {
+			s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "The proxy must be on the public network.", "پراکسی باید در شبکهٔ عمومی باشد."))
+			return
+		}
+	}
 	// 1. Post initial progress status message
-	proxyDisplay := "مستقیم (بدون پروکسی)"
+	proxyDisplay := botlocale.Text(ctx, "Direct (no proxy)", "مستقیم (بدون پروکسی)")
 	if req.ProxyURL != "" {
 		proxyDisplay = req.ProxyURL
 	}
-	progressText := fmt.Sprintf("⏳ **در حال دریافت و پردازش ویدیو...**\n🔗 لینک: `%s`\n⚙️ کیفیت: `%sp`\n🛡️ پروکسی: `%s`\n\nلطفاً چند لحظه شکیبا باشید...",
+	progressText := fmt.Sprintf(botlocale.Text(ctx, "⏳ **Downloading and processing media...**\n🔗 URL: `%s`\n⚙️ Quality: `%sp`\n🛡️ Proxy: `%s`\n\nPlease wait...", "⏳ **در حال دریافت و پردازش ویدیو...**\n🔗 لینک: `%s`\n⚙️ کیفیت: `%sp`\n🛡️ پروکسی: `%s`\n\nلطفاً چند لحظه شکیبا باشید..."),
 		req.TargetURL, req.Quality, proxyDisplay)
 
 	progressMsg, _ := s.sendTextMessage(ctx, convID, senderID, progressText, replyToMsgID)
@@ -488,23 +512,23 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 	if req.ProxyURL != "" {
 		pTest := s.TestProxy(ctx, req.ProxyURL)
 		if !pTest.TCPReachable {
-			errorMsg := fmt.Sprintf("❌ **خطای پروکسی: سرور پروکسی در دسترس نیست!**\n\n"+
-				"• 🛡️ آدرس پروکسی: `%s`\n"+
-				"• ❌ علت خطا: `%s`\n\n"+
-				"💡 لطفاً از صحت آدرس و پورت پروکسی اطمینان حاصل کرده یا با دستور زیر پروکسی را تست کنید:\n`/proxy %s`",
+			errorMsg := fmt.Sprintf(botlocale.Text(ctx, "❌ **Proxy server unavailable.**\n\n", "❌ **خطای پروکسی: سرور پروکسی در دسترس نیست!**\n\n")+
+				botlocale.Text(ctx, "• 🛡️ Proxy: `%s`\n", "• 🛡️ آدرس پروکسی: `%s`\n")+
+				botlocale.Text(ctx, "• ❌ Error: `%s`\n\n", "• ❌ علت خطا: `%s`\n\n")+
+				botlocale.Text(ctx, "💡 Check the address/port or test it with:\n`/proxy %s`", "💡 لطفاً از صحت آدرس و پورت پروکسی اطمینان حاصل کرده یا با دستور زیر پروکسی را تست کنید:\n`/proxy %s`"),
 				req.ProxyURL, pTest.ErrorMessage, req.ProxyURL)
 			s.editOrSendError(ctx, convID, senderID, progressMsg, errorMsg)
 			return
 		}
 		if !pTest.Healthy {
-			errorMsg := fmt.Sprintf("⚠️ **خطای پروکسی: عدم پشتیبانی از پروتکل امن HTTPS!**\n\n"+
-				"• 🛡️ آدرس پروکسی: `%s`\n"+
-				"• ⚡ پینگ TCP: `%d میلی‌ثانیه`\n"+
-				"• 🌐 وضعیت HTTP: `%s`\n"+
-				"• ❌ وضعیت HTTPS: `%s`\n\n"+
-				"⚠️ **دلیل خطا:** این پروکسی به درخواست‌های ساده HTTP پاسخ می‌دهد، اما قابلیت تونل امن HTTPS (CONNECT) را پشتیبانی نمی‌کند یا دسترسی به پورت ۴۴۳ بسته است.\n"+
-				"از آنجا که یوتیوب، اینستاگرام، توییتر و اکثر سایت‌های ویدیویی همگی با HTTPS کار می‌کنند، این پروکسی قادر به دانلود ویدیو نخواهد بود.\n\n"+
-				"💡 **راه حل:** لطفاً از یک پروکسی **SOCKS5** یا پروکسی HTTP با قابلیت کامل HTTPS استفاده نمایید.",
+			errorMsg := fmt.Sprintf(botlocale.Text(ctx, "⚠️ **Proxy does not support HTTPS.**\n\n", "⚠️ **خطای پروکسی: عدم پشتیبانی از پروتکل امن HTTPS!**\n\n")+
+				botlocale.Text(ctx, "• 🛡️ Proxy: `%s`\n", "• 🛡️ آدرس پروکسی: `%s`\n")+
+				botlocale.Text(ctx, "• ⚡ TCP latency: `%d ms`\n", "• ⚡ پینگ TCP: `%d میلی‌ثانیه`\n")+
+				botlocale.Text(ctx, "• 🌐 HTTP: `%s`\n", "• 🌐 وضعیت HTTP: `%s`\n")+
+				botlocale.Text(ctx, "• ❌ HTTPS: `%s`\n\n", "• ❌ وضعیت HTTPS: `%s`\n\n")+
+				botlocale.Text(ctx, "⚠️ The proxy cannot establish an HTTPS CONNECT tunnel, or port 443 is blocked.\n", "⚠️ **دلیل خطا:** این پروکسی به درخواست‌های ساده HTTP پاسخ می‌دهد، اما قابلیت تونل امن HTTPS (CONNECT) را پشتیبانی نمی‌کند یا دسترسی به پورت ۴۴۳ بسته است.\n")+
+				botlocale.Text(ctx, "Most video sites require HTTPS, so this proxy cannot download from them.\n\n", "از آنجا که یوتیوب، اینستاگرام، توییتر و اکثر سایت‌های ویدیویی همگی با HTTPS کار می‌کنند، این پروکسی قادر به دانلود ویدیو نخواهد بود.\n\n")+
+				botlocale.Text(ctx, "💡 Use a SOCKS5 proxy or an HTTP proxy with HTTPS CONNECT support.", "💡 **راه حل:** لطفاً از یک پروکسی **SOCKS5** یا پروکسی HTTP با قابلیت کامل HTTPS استفاده نمایید."),
 				req.ProxyURL, pTest.Latency.Milliseconds(), pTest.HTTPStatus, pTest.HTTPSStatus)
 			s.editOrSendError(ctx, convID, senderID, progressMsg, errorMsg)
 			return
@@ -515,15 +539,17 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 	select {
 	case s.sem <- struct{}{}:
 		defer func() { <-s.sem }()
+	case <-ctx.Done():
+		return
 	case <-time.After(3 * time.Minute):
-		s.editOrSendError(ctx, convID, senderID, progressMsg, "صف پردازش دانلود شلوغ است. لطفاً چند دقیقه دیگر مجدداً تلاش کنید.")
+		s.editOrSendError(ctx, convID, senderID, progressMsg, botlocale.Text(ctx, "The download queue is busy. Try again in a few minutes.", "صف پردازش دانلود شلوغ است. لطفاً چند دقیقه دیگر مجدداً تلاش کنید."))
 		return
 	}
 
 	// 4. Execute download
 	filePath, title, dlErr := s.downloadVideo(ctx, req)
 	if dlErr != nil {
-		errorMsg := fmt.Sprintf("❌ **خطا در دانلود ویدیو:**\n`%s`", dlErr.Error())
+		errorMsg := fmt.Sprintf(botlocale.Text(ctx, "❌ **Media download failed:**\n`%s`", "❌ **خطا در دانلود ویدیو:**\n`%s`"), dlErr.Error())
 		urlLower := strings.ToLower(req.TargetURL)
 		isAdult := strings.Contains(urlLower, "pornhub") || strings.Contains(urlLower, "xvideos") || strings.Contains(urlLower, "xnxx")
 		errStr := dlErr.Error()
@@ -532,20 +558,21 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 			strings.Contains(errStr, "SSL_connect") || strings.Contains(errStr, "Connection closed abruptly")
 
 		if isAdult && isBlocked {
-			errorMsg += "\n\n⚠️ **علت خطا (مسدودیت منطقه‌ای سایت PornHub):**\n" +
-				"• سایت PornHub در کشور ترکیه (و داخل ایران) توسط رگولاتوری دولتی به طور کامل فیلتر و مسدود است.\n" +
-				"• اگر پروکسی شما دارای آی‌پی خروجی ترکیه (TR) باشد، فایروال ترکیه اتصال را قطع کرده یا ارور 410/403 برمی‌گرداند.\n\n" +
-				"💡 **راه حل:** برای دانلود از PornHub، حتماً از یک پروکسی با لوکیشن **آلمان (Germany)، هلند (Netherlands)، فرانسه (France) یا آمریکا (USA)** استفاده نمایید:\n" +
-				"`/dl [لینک] [پروکسی_اروپا_یا_آمریکا] 720`\n\n" +
-				"🔄 برای بروزرسانی موتور دانلودر به آخرین نسخه نایتلی، دستور `/dl update` را ارسال کنید."
+			errorMsg += botlocale.Text(ctx, "\n\n⚠️ **Possible regional or network restriction:**\n", "\n\n⚠️ **علت خطا (مسدودیت منطقه‌ای سایت PornHub):**\n") +
+				botlocale.Text(ctx, "• The requested website may be blocked by the network or region.\n", "• سایت PornHub در کشور ترکیه (و داخل ایران) توسط رگولاتوری دولتی به طور کامل فیلتر و مسدود است.\n") +
+				botlocale.Text(ctx, "• A proxy connection can also be rejected by the website. HTTP 403/410 can have several causes.\n\n", "• اگر پروکسی شما دارای آی‌پی خروجی ترکیه (TR) باشد، فایروال ترکیه اتصال را قطع کرده یا ارور 410/403 برمی‌گرداند.\n\n") +
+				botlocale.Text(ctx, "💡 Check access to the requested website from your proxy network:\n", "💡 **راه حل:** برای دانلود از PornHub، حتماً از یک پروکسی با لوکیشن **آلمان (Germany)، هلند (Netherlands)، فرانسه (France) یا آمریکا (USA)** استفاده نمایید:\n") +
+				botlocale.Text(ctx, "`/dl <url> <proxy_url> 720`\n\n", "`/dl [لینک] [پروکسی_اروپا_یا_آمریکا] 720`\n\n") +
+				botlocale.Text(ctx, "🔄 Send `/dl update` to update the downloader.", "🔄 برای بروزرسانی موتور دانلودر به آخرین نسخه نایتلی، دستور `/dl update` را ارسال کنید.")
 		} else if strings.Contains(errStr, "410") || strings.Contains(errStr, "Gone") {
-			errorMsg += "\n\n💡 **راهنمای رفع خطای 410 Gone:** این خطا نشان‌دهنده تغییرات اخیر ساختار سایت و نیاز به بروزرسانی هسته yt-dlp روی سرور است.\n\n🔄 **راه حل خودکار:**\nکافیست در همین چت دستور زیر را ارسال کنید تا هسته دانلودر خودکار آپدیت شود:\n`/dl update`"
+			errorMsg += botlocale.Text(ctx, "\n\n💡 **HTTP 410 Gone:** The media may be unavailable, or the website extractor may need updating.\n\nUpdate the downloader with:\n`/dl update`", "\n\n💡 **راهنمای رفع خطای 410 Gone:** این خطا نشان‌دهنده تغییرات اخیر ساختار سایت و نیاز به بروزرسانی هسته yt-dlp روی سرور است.\n\n🔄 **راه حل خودکار:**\nکافیست در همین چت دستور زیر را ارسال کنید تا هسته دانلودر خودکار آپدیت شود:\n`/dl update`")
 		} else {
-			errorMsg += "\n\n💡 راهنما: ممکن است لینک فیلتر شده باشد یا نیاز به پروکسی معتبر داشته باشد:\n`/dl [لینک] [پروکسی]`"
+			errorMsg += botlocale.Text(ctx, "\n\n💡 Check the media URL and proxy:\n`/dl <url> [proxy]`", "\n\n💡 راهنما: ممکن است لینک فیلتر شده باشد یا نیاز به پروکسی معتبر داشته باشد:\n`/dl [لینک] [پروکسی]`")
 		}
 		s.editOrSendError(ctx, convID, senderID, progressMsg, errorMsg)
 		return
 	}
+	defer os.RemoveAll(filepath.Dir(filePath))
 	ext := strings.ToLower(filepath.Ext(filePath))
 	if ext == "" {
 		ext = ".mp4"
@@ -565,14 +592,14 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 	savedFile, sErr := s.fileStore.MoveFile(ctx, "attachments", attID+ext, contentType, filePath)
 	if sErr != nil {
 		_ = os.Remove(filePath)
-		s.editOrSendError(ctx, convID, senderID, progressMsg, "خطا در ذخیره‌سازی فایل در سرور: "+sErr.Error())
+		s.editOrSendError(ctx, convID, senderID, progressMsg, botlocale.Text(ctx, "Could not save media on the server: ", "خطا در ذخیره‌سازی فایل در سرور: ")+sErr.Error())
 		return
 	}
 
 	// 6. Create attachment record in database
 	cleanTitle := title
 	if cleanTitle == "" {
-		cleanTitle = "ویدیو دانلودی"
+		cleanTitle = botlocale.Text(ctx, "Downloaded media", "ویدیو دانلودی")
 	}
 	att := &models.Attachment{
 		ID:             attID,
@@ -588,7 +615,8 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 		PublicURL:      savedFile.PublicURL,
 	}
 	if err := s.store.CreateAttachment(ctx, att); err != nil {
-		s.editOrSendError(ctx, convID, senderID, progressMsg, "خطا در ثبت رسانه در پایگاه داده: "+err.Error())
+		_ = s.fileStore.DiscardNewFile(context.WithoutCancel(ctx), savedFile)
+		s.editOrSendError(ctx, convID, senderID, progressMsg, botlocale.Text(ctx, "Could not register media in the database: ", "خطا در ثبت رسانه در پایگاه داده: ")+err.Error())
 		return
 	}
 
@@ -607,7 +635,7 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 		"publicUrl":   att.PublicURL,
 	}
 
-	caption := fmt.Sprintf("🎬 **%s**\n📊 کیفیت: %sp | حجم: %s\n🔗 منبع: %s",
+	caption := fmt.Sprintf(botlocale.Text(ctx, "🎬 **%s**\n📊 Quality: %sp | Size: %s\n🔗 Source: %s", "🎬 **%s**\n📊 کیفیت: %sp | حجم: %s\n🔗 منبع: %s"),
 		cleanTitle, req.Quality, formatSize(savedFile.SizeBytes), req.TargetURL)
 
 	msgPayload := map[string]interface{}{
@@ -623,13 +651,23 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 		effectiveSender = "usr_senoramasterbot"
 	}
 
-	_, _ = s.msgs.SubmitMessage(ctx, messages.SubmitMessageParams{
+	_, sendErr := s.msgs.SubmitMessage(ctx, messages.SubmitMessageParams{
 		ConversationID: convID,
 		SenderID:       effectiveSender,
 		Ciphertext:     string(payloadBytes),
 		Nonce:          "normal",
 		ReplyToID:      replyToMsgID,
 	})
+
+	if sendErr != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+		defer cancel()
+		if deleted, err := s.store.DeleteUnreferencedAttachment(cleanupCtx, att.ID); err == nil && deleted {
+			_ = s.fileStore.DiscardNewFile(cleanupCtx, savedFile)
+		}
+		s.editOrSendError(ctx, convID, senderID, progressMsg, "Could not publish downloaded media: "+sendErr.Error())
+		return
+	}
 
 	// 8. Clean up the temporary "in progress" status message
 	if progressMsg != nil {
@@ -639,18 +677,23 @@ func (s *Service) HandleDownload(ctx context.Context, convID, senderID, rawComma
 
 // HandleUpdateYtDlp updates the yt-dlp binary to the latest version and notifies the user.
 func (s *Service) HandleUpdateYtDlp(ctx context.Context, convID, senderID, replyToMsgID string) {
-	statusMsg, _ := s.sendTextMessage(ctx, convID, senderID, "🔄 **در حال بررسی و آپدیت خودکار موتور yt-dlp به آخرین نسخه رسمی...**\nلطفاً چند لحظه شکیبا باشید.", replyToMsgID)
+	ctx = botlocale.WithUser(ctx, s.store, senderID)
+	if owner, err := s.store.IsUserOwner(ctx, senderID); err != nil || !owner {
+		s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "This operation is available only to the server owner.", "این عملیات فقط برای مالک سرور مجاز است."))
+		return
+	}
+	statusMsg, _ := s.sendTextMessage(ctx, convID, senderID, botlocale.Text(ctx, "🔄 **Checking for an official yt-dlp update...**\nPlease wait.", "🔄 **در حال بررسی و آپدیت خودکار موتور yt-dlp به آخرین نسخه رسمی...**\nلطفاً چند لحظه شکیبا باشید."), replyToMsgID)
 
 	ver, err := s.UpdateYtDlp(ctx)
 	if err != nil {
-		s.editOrSendError(ctx, convID, senderID, statusMsg, fmt.Sprintf("❌ **خطا در آپدیت خودکار:**\n`%s`\n\n💡 پیشنهاد: در ترمینال سرور دستور زیر را اجرا فرمایید:\n`sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp`", err.Error()))
+		s.editOrSendError(ctx, convID, senderID, statusMsg, fmt.Sprintf(botlocale.Text(ctx, "❌ **Downloader update failed:**\n`%s`\n\n💡 On the server, run:\n`sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp`", "❌ **خطا در آپدیت خودکار:**\n`%s`\n\n💡 پیشنهاد: در ترمینال سرور دستور زیر را اجرا فرمایید:\n`sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp`"), err.Error()))
 		return
 	}
 
-	report := fmt.Sprintf("✅ **موتور yt-dlp با موفقیت به آخرین نسخه به‌روزرسانی شد!**\n\n"+
-		"• 📌 نسخه جدید فعال: `%s`\n"+
-		"• 🌐 تمام تغییرات ساختاری سایت‌ها (از جمله خطای 410 سایت PornHub) برطرف شد.\n\n"+
-		"اکنون می‌توانید مجدداً دستور `/dl [لینک] [پروکسی]` را ارسال فرمایید.", ver)
+	report := fmt.Sprintf(botlocale.Text(ctx, "✅ **yt-dlp updated successfully.**\n\n", "✅ **موتور yt-dlp با موفقیت به آخرین نسخه به‌روزرسانی شد!**\n\n")+
+		botlocale.Text(ctx, "• 📌 Active version: `%s`\n", "• 📌 نسخه جدید فعال: `%s`\n")+
+		botlocale.Text(ctx, "• 🌐 The latest extractor updates are now installed.\n\n", "• 🌐 تمام تغییرات ساختاری سایت‌ها (از جمله خطای 410 سایت PornHub) برطرف شد.\n\n")+
+		botlocale.Text(ctx, "Try the download again with `/dl <url> [proxy]`.", "اکنون می‌توانید مجدداً دستور `/dl [لینک] [پروکسی]` را ارسال فرمایید."), ver)
 	s.editOrSendError(ctx, convID, senderID, statusMsg, report)
 }
 
@@ -688,22 +731,22 @@ func (s *Service) UpdateYtDlp(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (Senora Server Updater)")
+	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (SENORA Server Updater)")
 
 	client := &http.Client{Timeout: 90 * time.Second}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("خطا در اتصال به گیت‌هاب: %v", err)
+		return "", fmt.Errorf(botlocale.Text(ctx, "Could not connect to GitHub: %v", "خطا در اتصال به گیت‌هاب: %v"), err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("سرور گیت‌هاب پاسخ %d داد", resp.StatusCode)
+		return "", fmt.Errorf(botlocale.Text(ctx, "GitHub returned HTTP %d", "سرور گیت‌هاب پاسخ %d داد"), resp.StatusCode)
 	}
 
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil || len(bodyBytes) < 1000000 {
-		return "", fmt.Errorf("فایل دریافتی از گیت‌هاب ناقص است (%d بایت)", len(bodyBytes))
+		return "", fmt.Errorf(botlocale.Text(ctx, "Incomplete GitHub download (%d bytes)", "فایل دریافتی از گیت‌هاب ناقص است (%d بایت)"), len(bodyBytes))
 	}
 
 	targetCandidates := []string{
@@ -747,35 +790,83 @@ func (s *Service) UpdateYtDlp(ctx context.Context) (string, error) {
 		if verErr == nil && len(verOut) > 0 {
 			updatedPath = target
 			ver := strings.TrimSpace(string(verOut))
-			return fmt.Sprintf("%s (در مسیر %s)", ver, updatedPath), nil
+			return fmt.Sprintf(botlocale.Text(ctx, "%s (path: %s)", "%s (در مسیر %s)"), ver, updatedPath), nil
 		}
 		updatedPath = target
 	}
 
 	if updatedPath == "" {
-		return "", fmt.Errorf("عدم دسترسی برای نوشتن فایل در مسیرهای سیستمی: %v", writeErr)
+		return "", fmt.Errorf(botlocale.Text(ctx, "Cannot write to the system installation paths: %v", "عدم دسترسی برای نوشتن فایل در مسیرهای سیستمی: %v"), writeErr)
 	}
 
-	return "آخرین نسخه رسمی (GitHub)", nil
+	return botlocale.Text(ctx, "Latest official release (GitHub)", "آخرین نسخه رسمی (GitHub)"), nil
 }
 
 // downloadVideo tries yt-dlp first, then falls back to direct streaming HTTP download.
 func (s *Service) downloadVideo(ctx context.Context, req *DownloadRequest) (filePath string, title string, err error) {
-	tempDir := filepath.Join(s.fileStore.GetUploadsDir(), "temp")
-	_ = os.MkdirAll(tempDir, 0755)
+	if err := netguard.ValidateURL(ctx, req.TargetURL); err != nil {
+		return "", "", err
+	}
+	client := s.HTTPClient
+	proxyAddress := ""
+	if client == nil {
+		var closeProxy func()
+		proxyAddress, closeProxy, err = netguard.StartProxy(ctx, req.ProxyURL, req.ProxyTrusted)
+		if err != nil {
+			return "", "", err
+		}
+		defer closeProxy()
+		u, _ := url.Parse(proxyAddress)
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(u)
+		client = &http.Client{Transport: transport, Timeout: 15 * time.Minute}
+		defer transport.CloseIdleConnections()
+	}
+	tempRoot := filepath.Join(s.fileStore.GetUploadsDir(), "temp")
+	if err = os.MkdirAll(tempRoot, 0700); err != nil {
+		return "", "", err
+	}
+	cleanupDownloadWorkspaces(tempRoot, time.Now())
+	limit, reserve, budgetErr := downloadBudget(tempRoot)
+	if budgetErr != nil {
+		return "", "", budgetErr
+	}
+	tempDir, err := os.MkdirTemp(tempRoot, "senora-dl-")
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		if err != nil {
+			_ = os.RemoveAll(tempDir)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
+	defer cancel()
+	stopped := make(chan error, 1)
+	go monitorDownload(ctx, cancel, tempDir, limit, reserve, stopped)
+	defer func() {
+		select {
+		case reason := <-stopped:
+			err = reason
+		default:
+		}
+	}()
 	fileUUID := uuid.New().String()[:8]
 
 	ytdlpBin, hasYtDlp := findYtDlp()
 	var ytdlpErr string
 
-	if hasYtDlp {
+	if hasYtDlp && s.HTTPClient == nil {
 		outputPattern := filepath.Join(tempDir, fmt.Sprintf("senoradl_%s_%%(title).50s.%%(ext)s", fileUUID))
 		args := []string{
 			"--no-simulate",
 			"--no-playlist",
-			"--max-filesize", "500M",
+			"--max-filesize", strconv.FormatInt(limit, 10),
+			"--no-cache-dir",
+			"--paths", "temp:" + tempDir,
 			"--no-warnings",
-			"--no-check-certificates",
+			"--hls-prefer-native",
+			"--downloader", "native",
 			"--socket-timeout", "30",
 			"--retries", "3",
 			"--print", "title:%(title)s",
@@ -789,13 +880,14 @@ func (s *Service) downloadVideo(ctx context.Context, req *DownloadRequest) (file
 				height = h
 			}
 			args = append(args,
-				"-f", fmt.Sprintf("bestvideo[height<=%d]+bestaudio/best[height<=%d]/best", height, height),
+				"-f", fmt.Sprintf("bestvideo[ext=mp4][vcodec^=avc1][height<=%d]+bestaudio[ext=m4a]/best[ext=mp4][height<=%d]/best[height<=%d]", height, height, height),
 				"--merge-output-format", "mp4",
+				"--postprocessor-args", "ffmpeg:-movflags +faststart",
 			)
 		}
 
-		if req.ProxyURL != "" {
-			args = append(args, "--proxy", req.ProxyURL)
+		if proxyAddress != "" {
+			args = append(args, "--proxy", proxyAddress)
 		}
 
 		args = append(args, "-o", outputPattern, req.TargetURL)
@@ -811,8 +903,13 @@ func (s *Service) downloadVideo(ctx context.Context, req *DownloadRequest) (file
 			cmd = exec.CommandContext(downloadCtx, ytdlpBin, args...)
 		}
 
-		outBytes, cmdErr := cmd.CombinedOutput()
-		outStr := string(outBytes)
+		cmd.Env = append(os.Environ(), "HTTP_PROXY="+proxyAddress, "HTTPS_PROXY="+proxyAddress, "ALL_PROXY="+proxyAddress, "http_proxy="+proxyAddress, "https_proxy="+proxyAddress, "NO_PROXY=", "no_proxy=")
+		ownProcessTree(cmd)
+		var output boundedOutput
+		cmd.Stdout = &output
+		cmd.Stderr = &output
+		cmdErr := cmd.Run()
+		outStr := string(output.data)
 
 		// Parse title from stdout if present
 		for _, line := range strings.Split(outStr, "\n") {
@@ -825,8 +922,21 @@ func (s *Service) downloadVideo(ctx context.Context, req *DownloadRequest) (file
 
 		// Check for generated file matching prefix
 		matches, _ := filepath.Glob(filepath.Join(tempDir, fmt.Sprintf("senoradl_%s_*", fileUUID)))
-		if len(matches) > 0 {
-			filePath = matches[0]
+		if cmdErr == nil {
+			for _, candidate := range matches {
+				ext := strings.ToLower(filepath.Ext(candidate))
+				info, statErr := os.Stat(candidate)
+				if statErr != nil || !info.Mode().IsRegular() || info.Size() == 0 || info.Size() > limit {
+					continue
+				}
+				if ext != ".mp4" && ext != ".webm" && ext != ".mkv" && ext != ".mov" && ext != ".mp3" && ext != ".m4a" && ext != ".ogg" {
+					continue
+				}
+				filePath = candidate
+				break
+			}
+		}
+		if filePath != "" {
 			if title == "" {
 				base := filepath.Base(filePath)
 				base = strings.TrimPrefix(base, fmt.Sprintf("senoradl_%s_", fileUUID))
@@ -854,49 +964,54 @@ func (s *Service) downloadVideo(ctx context.Context, req *DownloadRequest) (file
 			}
 		}
 
-		log.Printf("[SenoraDownloader] yt-dlp execution failed (%v: %s), testing direct HTTP fallback for: %s", cmdErr, outStr, req.TargetURL)
+		log.Printf("[SENORADownloader] yt-dlp execution failed (%v: %s), testing direct HTTP fallback for: %s", cmdErr, outStr, req.TargetURL)
 	}
 
 	// Fallback: Direct HTTP Streaming Downloader
 	directPattern := filepath.Join(tempDir, fmt.Sprintf("senoradl_%s_direct.mp4", fileUUID))
-	savedPath, dErr := downloadDirectHTTP(ctx, req.TargetURL, req.ProxyURL, directPattern)
+	savedPath, dErr := downloadDirectHTTPBounded(ctx, req.TargetURL, req.ProxyURL, directPattern, limit, client)
 	if dErr == nil {
 		title = filepath.Base(savedPath)
 		title = strings.TrimSuffix(title, filepath.Ext(title))
 		title = strings.TrimPrefix(title, fmt.Sprintf("senoradl_%s_", fileUUID))
 		if title == "direct" || title == "" {
-			title = "ویدیو دانلودی"
+			title = botlocale.Text(ctx, "Downloaded media", "ویدیو دانلودی")
 		}
 		return savedPath, title, nil
 	}
 
 	if !hasYtDlp {
-		return "", "", fmt.Errorf("ابزار yt-dlp روی سرور نصب نیست و دانلود مستقیم نیز با خطا مواجه شد: %v\n\nنحوه نصب yt-dlp در سرور لینوکس:\nsudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp", dErr)
+		return "", "", fmt.Errorf(botlocale.Text(ctx, "yt-dlp is not installed and direct download failed: %v\n\nInstall yt-dlp on Linux:\nsudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp", "ابزار yt-dlp روی سرور نصب نیست و دانلود مستقیم نیز با خطا مواجه شد: %v\n\nنحوه نصب yt-dlp در سرور لینوکس:\nsudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && sudo chmod a+rx /usr/local/bin/yt-dlp"), dErr)
 	}
 
 	if ytdlpErr != "" {
-		return "", "", fmt.Errorf("خطای موتور yt-dlp:\n%s\n\nخطای دانلود مستقیم: %v", ytdlpErr, dErr)
+		return "", "", fmt.Errorf(botlocale.Text(ctx, "yt-dlp failed:\n%s\n\nDirect download failed: %v", "خطای موتور yt-dlp:\n%s\n\nخطای دانلود مستقیم: %v"), ytdlpErr, dErr)
 	}
 
-	return "", "", fmt.Errorf("دانلود ناموفق بود: %v (در صورت فیلتر بودن لینک، حتماً از پروکسی معتبر استفاده کنید)", dErr)
+	return "", "", fmt.Errorf(botlocale.Text(ctx, "Download failed: %v (check network access and proxy settings)", "دانلود ناموفق بود: %v (در صورت فیلتر بودن لینک، حتماً از پروکسی معتبر استفاده کنید)"), dErr)
 }
 
 // downloadDirectHTTP streams a file directly from a URL to disk with optional proxy.
-func downloadDirectHTTP(ctx context.Context, targetURL, proxyURL, outputPath string) (string, error) {
-	transport := &http.Transport{
-		TLSHandshakeTimeout: 15 * time.Second,
-		DisableKeepAlives:   true,
-	}
-	if proxyURL != "" {
-		pURL, err := url.Parse(proxyURL)
-		if err == nil {
-			transport.Proxy = http.ProxyURL(pURL)
-		}
-	}
+func downloadDirectHTTP(ctx context.Context, targetURL, proxyURL, outputPath string, trustedClients ...*http.Client) (string, error) {
+	return downloadDirectHTTPBounded(ctx, targetURL, proxyURL, outputPath, positiveEnv("SENORA_DL_MAX_FILE_BYTES", 500<<20), trustedClients...)
+}
 
-	client := &http.Client{
-		Transport: transport,
-		Timeout:   15 * time.Minute,
+func downloadDirectHTTPBounded(ctx context.Context, targetURL, proxyURL, outputPath string, maxBytes int64, trustedClients ...*http.Client) (string, error) {
+	client := netguard.Client(15 * time.Minute)
+	if proxyURL != "" && (len(trustedClients) == 0 || trustedClients[0] == nil) {
+		address, closeProxy, err := netguard.StartProxy(ctx, proxyURL, false)
+		if err != nil {
+			return "", err
+		}
+		defer closeProxy()
+		u, _ := url.Parse(address)
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.Proxy = http.ProxyURL(u)
+		defer transport.CloseIdleConnections()
+		client = &http.Client{Transport: transport, Timeout: 15 * time.Minute}
+	}
+	if len(trustedClients) > 0 && trustedClients[0] != nil {
+		client = trustedClients[0]
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -915,10 +1030,6 @@ func downloadDirectHTTP(ctx context.Context, targetURL, proxyURL, outputPath str
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", fmt.Errorf("HTTP error %d: %s", resp.StatusCode, resp.Status)
-	}
-
-	if resp.ContentLength > 500*1024*1024 {
-		return "", fmt.Errorf("حجم فایل بیش از حد مجاز سرور (حداکثر ۵۰۰ مگابایت) است")
 	}
 
 	// Detect proper extension from Content-Type or URL
@@ -942,25 +1053,40 @@ func downloadDirectHTTP(ctx context.Context, targetURL, proxyURL, outputPath str
 		}
 	}
 
+	if resp.ContentLength > maxBytes {
+		return "", fmt.Errorf("media exceeds the available download budget (%d bytes)", maxBytes)
+	}
 	finalPath := strings.TrimSuffix(outputPath, filepath.Ext(outputPath)) + ext
 	out, err := os.Create(finalPath)
 	if err != nil {
 		return "", err
 	}
-	defer out.Close()
+	success := false
+	defer func() {
+		out.Close()
+		if !success {
+			_ = os.Remove(finalPath)
+		}
+	}()
 
-	// Stream safely to disk, capped at 500MB
-	limitReader := io.LimitReader(resp.Body, 500*1024*1024+1)
+	// Stream safely to disk using the admitted byte budget
+	limitReader := io.LimitReader(resp.Body, maxBytes+1)
 	written, err := io.Copy(out, limitReader)
 	if err != nil {
 		_ = os.Remove(finalPath)
 		return "", err
 	}
-	if written > 500*1024*1024 {
-		_ = os.Remove(finalPath)
-		return "", fmt.Errorf("حجم فایل بیش از سقف ۵۰۰ مگابایت است")
+	if written > maxBytes {
+		return "", fmt.Errorf("media exceeds the available download budget (%d bytes)", maxBytes)
+	}
+	if written == 0 {
+		return "", errors.New("empty media response")
 	}
 
+	if err := out.Close(); err != nil {
+		return "", err
+	}
+	success = true
 	return finalPath, nil
 }
 
@@ -988,11 +1114,13 @@ func findYtDlp() (string, bool) {
 		return p, true
 	}
 
-	// 3. Fall back to standard Linux distribution locations
+	// 3. Fall back to standard distribution and user local bin locations
 	fallbackCandidates := []string{
 		"/usr/bin/yt-dlp",
 		"/bin/yt-dlp",
-		"/root/.local/bin/yt-dlp",
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		fallbackCandidates = append(fallbackCandidates, filepath.Join(home, ".local", "bin", "yt-dlp"))
 	}
 	for _, c := range fallbackCandidates {
 		if fi, err := os.Stat(c); err == nil && !fi.IsDir() {
@@ -1058,41 +1186,46 @@ func formatSize(bytes int64) string {
 
 // HandleSyncS3 migrates all local files to ArvanCloud S3 and reports status in chat.
 func (s *Service) HandleSyncS3(ctx context.Context, convID, senderID, ciphertext, replyToMsgID string) {
+	ctx = botlocale.WithUser(ctx, s.store, senderID)
+	if owner, err := s.store.IsUserOwner(ctx, senderID); err != nil || !owner {
+		s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "Only the server owner may migrate files.", "فقط مالک سرور اجازهٔ انتقال فایل‌ها را دارد."))
+		return
+	}
 	if s.fileStore == nil {
-		s.editOrSendError(ctx, convID, senderID, nil, "❌ خطای سیستمی: سرویس فایل استور فعال نیست.")
+		s.editOrSendError(ctx, convID, senderID, nil, botlocale.Text(ctx, "❌ File storage service is unavailable.", "❌ خطای سیستمی: سرویس فایل استور فعال نیست."))
 		return
 	}
 
-	progressText := "🚀 **شروع انتقال و سینک فایل‌ها به فضای ابری آروان (ArvanCloud S3)...**\n\n" +
-		"⏳ در حال بررسی ارتباط با باکت آروان و انتقال فایل‌های محلی سرور...\n" +
-		"لطفاً صبور باشید، این عملیات بدون قطعی و در پس‌زمینه اجرا می‌شود."
+	progressText := botlocale.Text(ctx, "🚀 **Starting transfer to configured ArvanCloud S3 storage...**\n\n", "🚀 **شروع انتقال و سینک فایل‌ها به فضای ابری آروان (ArvanCloud S3)...**\n\n") +
+		botlocale.Text(ctx, "⏳ Checking bucket connectivity and transferring local media...\n", "⏳ در حال بررسی ارتباط با باکت آروان و انتقال فایل‌های محلی سرور...\n") +
+		botlocale.Text(ctx, "Please wait. This operation runs in the background.", "لطفاً صبور باشید، این عملیات بدون قطعی و در پس‌زمینه اجرا می‌شود.")
 	progressMsg, _ := s.sendTextMessage(ctx, convID, senderID, progressText, replyToMsgID)
 
 	report, err := s.fileStore.MigrateLocalFilesToS3(ctx, s.store)
 	if err != nil {
-		errorMsg := fmt.Sprintf("❌ **خطا در اتصال یا انتقال به فضای ابری آروان:**\n`%s`\n\n"+
-			"💡 **راهنما:** لطفاً بررسی فرمایید متغیرهای محیطی زیر در سرویس تنظیم شده باشند:\n"+
+		errorMsg := fmt.Sprintf(botlocale.Text(ctx, "❌ **Cloud connection or transfer failed:**\n`%s`\n\n", "❌ **خطا در اتصال یا انتقال به فضای ابری آروان:**\n`%s`\n\n")+
+			botlocale.Text(ctx, "💡 Check these environment variables in the service configuration:\n", "💡 **راهنما:** لطفاً بررسی فرمایید متغیرهای محیطی زیر در سرویس تنظیم شده باشند:\n")+
 			"• `ARVAN_S3_ACCESS_KEY`\n"+
 			"• `ARVAN_S3_SECRET_KEY`\n"+
 			"• `ARVAN_S3_BUCKET`\n"+
 			"• `ARVAN_S3_ENDPOINT`\n"+
 			"• `ARVAN_S3_REGION`\n\n"+
-			"پس از تنظیم مشخصات در `/etc/systemd/system/senora.service` و ریستارت سرویس، مجدداً دستور `/sync_s3` را ارسال کنید.", err.Error())
+			botlocale.Text(ctx, "Update the existing service configuration, restart it, and send `/sync_s3` again.", "پس از تنظیم مشخصات در `/etc/systemd/system/senora.service` و ریستارت سرویس، مجدداً دستور `/sync_s3` را ارسال کنید."), err.Error())
 		s.editOrSendError(ctx, convID, senderID, progressMsg, errorMsg)
 		return
 	}
 
-	successMsg := fmt.Sprintf("✅ **همگام‌سازی با فضای ابری آروان با موفقیت کامل انجام شد!** 🎉\n\n"+
-		"📊 **گزارش انتقال و بهینه‌سازی دیسک:**\n"+
-		"• 📦 تعداد فایل‌های منتقل‌شده به آروان: **%d** فایل\n"+
-		"• 💾 فضای آزاد شده از هارد سرور: **%s**\n"+
-		"• ⏭️ فایل‌های بدون تغییر / قبلی: **%d**\n"+
-		"• ⏱️ زمان پردازش: **%s**\n\n"+
-		"🌐 **توجه:** تمام ویدیوها و فایل‌ها اکنون مستقیماً از کلاد آروان استریم و پخش می‌شوند و هیچ فایلی از چت حذف نشده است. هارد سرور اکنون آزاد و سبک شد.",
+	successMsg := fmt.Sprintf(botlocale.Text(ctx, "✅ **S3 synchronization completed.**\n\n", "✅ **همگام‌سازی با فضای ابری آروان با موفقیت کامل انجام شد!** 🎉\n\n")+
+		botlocale.Text(ctx, "📊 **Transfer report:**\n", "📊 **گزارش انتقال و بهینه‌سازی دیسک:**\n")+
+		botlocale.Text(ctx, "• 📦 Files transferred: **%d**\n", "• 📦 تعداد فایل‌های منتقل‌شده به آروان: **%d** فایل\n")+
+		botlocale.Text(ctx, "• 💾 Local disk space freed: **%s**\n", "• 💾 فضای آزاد شده از هارد سرور: **%s**\n")+
+		botlocale.Text(ctx, "• ⏭️ Unchanged/existing files: **%d**\n", "• ⏭️ فایل‌های بدون تغییر / قبلی: **%d**\n")+
+		botlocale.Text(ctx, "• ⏱️ Duration: **%s**\n\n", "• ⏱️ زمان پردازش: **%s**\n\n")+
+		botlocale.Text(ctx, "🌐 Migrated media is served from cloud storage. Existing chat messages are preserved.", "🌐 **توجه:** تمام ویدیوها و فایل‌ها اکنون مستقیماً از کلاد آروان استریم و پخش می‌شوند و هیچ فایلی از چت حذف نشده است. هارد سرور اکنون آزاد و سبک شد."),
 		report.MigratedCount, formatSize(report.BytesFreed), report.SkippedCount, report.Duration.Round(time.Millisecond))
 
 	if len(report.Errors) > 0 {
-		successMsg += fmt.Sprintf("\n\n⚠️ تعداد خطاهای جزیی: %d", len(report.Errors))
+		successMsg += fmt.Sprintf(botlocale.Text(ctx, "\n\n⚠️ Transfer errors: %d", "\n\n⚠️ تعداد خطاهای جزیی: %d"), len(report.Errors))
 	}
 
 	s.editOrSendError(ctx, convID, senderID, progressMsg, successMsg)

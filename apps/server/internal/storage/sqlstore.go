@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,14 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
@@ -33,6 +28,16 @@ type SQLStore struct {
 }
 
 func NewSQLStore(driverName, dataSourceName string) (*SQLStore, error) {
+	if driverName != "postgres" {
+		if dataSourceName == ":memory:" {
+			dataSourceName = "file:senora_" + uuid.New().String() + "?mode=memory&cache=shared"
+		}
+		separator := "?"
+		if strings.Contains(dataSourceName, "?") {
+			separator = "&"
+		}
+		dataSourceName += separator + "_pragma=foreign_keys(1)&_pragma=busy_timeout(10000)&_txlock=immediate"
+	}
 	db, err := sql.Open(driverName, dataSourceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
@@ -59,6 +64,7 @@ func NewSQLStore(driverName, dataSourceName string) (*SQLStore, error) {
 	}
 
 	if err := s.Migrate(); err != nil {
+		_ = db.Close()
 		return nil, fmt.Errorf("failed to run migrations: %w", err)
 	}
 
@@ -67,14 +73,6 @@ func NewSQLStore(driverName, dataSourceName string) (*SQLStore, error) {
 
 func (s *SQLStore) Close() error {
 	return s.db.Close()
-}
-
-func (s *SQLStore) ResetForTesting(ctx context.Context) error {
-	if s.driverName == "postgres" {
-		_, err := s.db.ExecContext(ctx, `TRUNCATE TABLE users, conversations, bot_tokens, banned_ips CASCADE;`)
-		return err
-	}
-	return nil
 }
 
 func (s *SQLStore) Migrate() error {
@@ -409,6 +407,7 @@ CREATE TABLE IF NOT EXISTS server_settings (
     value TEXT NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
 
 CREATE TABLE IF NOT EXISTS banned_ips (
     ip VARCHAR(64) PRIMARY KEY,
@@ -769,6 +768,7 @@ CREATE TABLE IF NOT EXISTS server_settings (
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+
 CREATE TABLE IF NOT EXISTS banned_ips (
     ip TEXT PRIMARY KEY,
     reason TEXT DEFAULT '',
@@ -960,10 +960,40 @@ CREATE INDEX IF NOT EXISTS idx_media_shares_created ON media_shares(created_at D
 		}
 	}
 	for _, alterStmt := range alterCols {
-		_, _ = s.db.Exec(alterStmt) // ignore if column already exists
+		if _, err := s.db.Exec(alterStmt); err != nil {
+			if s.driverName != "postgres" && strings.Contains(strings.ToLower(err.Error()), "duplicate column name:") {
+				continue
+			}
+			return fmt.Errorf("additive migration failed: %w", err)
+		}
 	}
 
-	_ = s.seedBuiltinStickers()
+	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS attachment_access (
+		attachment_id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+		revoked BOOLEAN NOT NULL DEFAULT FALSE
+	); CREATE TABLE IF NOT EXISTS attachment_views (
+		attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+		viewer_id TEXT NOT NULL,
+		PRIMARY KEY(attachment_id,viewer_id)
+	); CREATE TABLE IF NOT EXISTS message_attachments (
+		message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+		attachment_id TEXT NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+		PRIMARY KEY(message_id,attachment_id)
+	)`); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("CREATE TABLE IF NOT EXISTS account_expiry_policies (user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, activated_at TIMESTAMP NOT NULL)"); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec("ALTER TABLE scheduled_messages ADD COLUMN delivery_error TEXT NOT NULL DEFAULT ''"); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") && !strings.Contains(strings.ToLower(err.Error()), "already exists") {
+		return err
+	}
+	if err := s.migrateBots(); err != nil {
+		return err
+	}
+	if err := s.seedBuiltinStickers(); err != nil {
+		return fmt.Errorf("seed built-in stickers: %w", err)
+	}
 
 	return nil
 }
@@ -1000,11 +1030,27 @@ func (s *SQLStore) CreateUser(ctx context.Context, u *models.User) error {
 		bannedVal = 1
 	}
 
-	var err error
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	if s.driverName == "postgres" {
-		_, err = s.db.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, u.IsApproved, u.IsOwner, u.IsBanned, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
+		if _, err = tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock(hashtext(lower($1)))", u.Username); err != nil {
+			return err
+		}
+	}
+	var count int
+	if err = tx.QueryRowContext(ctx, s.bind("SELECT COUNT(*) FROM users WHERE LOWER(username) = LOWER(?)"), u.Username).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return ErrAlreadyExists
+	}
+	if s.driverName == "postgres" {
+		_, err = tx.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, u.IsApproved, u.IsOwner, u.IsBanned, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
 	} else {
-		_, err = s.db.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, apprVal, ownerVal, bannedVal, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
+		_, err = tx.ExecContext(ctx, query, u.ID, u.Username, u.DisplayName, u.PasswordHash, apprVal, ownerVal, bannedVal, u.RegistrationIP, u.CreatedAt, u.UpdatedAt)
 	}
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") || strings.Contains(strings.ToLower(err.Error()), "duplicate") {
@@ -1013,6 +1059,9 @@ func (s *SQLStore) CreateUser(ctx context.Context, u *models.User) error {
 		return err
 	}
 
+	if err := tx.Commit(); err != nil {
+		return err
+	}
 	instQuery := `INSERT OR IGNORE INTO user_installed_stickers (user_id, pack_id, installed_at)
 	              SELECT ?, id, ? FROM sticker_packs WHERE is_builtin = 1 OR id LIKE 'pack_senora_%' OR id LIKE 'pack_crypto_%' OR id LIKE 'pack_builtin_%'`
 	if s.driverName == "postgres" {
@@ -1042,16 +1091,19 @@ func (s *SQLStore) GetUserByID(ctx context.Context, id string) (*models.User, er
 	u.IsApproved = isApproved
 	u.IsOwner = isOwner
 	u.IsBanned = isBanned
+	if err := s.db.QueryRowContext(ctx, s.bind("SELECT EXISTS(SELECT 1 FROM account_expiry_policies WHERE user_id=?)"), u.ID).Scan(&u.SelfDestructEnabled); err != nil {
+		return nil, err
+	}
 	return &u, nil
 }
 
 func (s *SQLStore) GetUserByUsername(ctx context.Context, username string) (*models.User, error) {
-	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER(?)`
+	query := `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, 1), COALESCE(is_owner, 0), COALESCE(is_banned, 0), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER(?) ORDER BY CASE WHEN username = ? THEN 0 ELSE 1 END, created_at LIMIT 1`
 	if s.driverName == "postgres" {
-		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER($1)`
+		query = `SELECT id, username, display_name, password_hash, COALESCE(bio, ''), COALESCE(avatar_url, ''), COALESCE(is_approved, TRUE), COALESCE(is_owner, FALSE), COALESCE(is_banned, FALSE), COALESCE(registration_ip, ''), COALESCE(self_destruct_months, 6), created_at, updated_at FROM users WHERE LOWER(username) = LOWER($1) ORDER BY CASE WHEN username = $2 THEN 0 ELSE 1 END, created_at LIMIT 1`
 	}
 
-	row := s.db.QueryRowContext(ctx, query, username)
+	row := s.db.QueryRowContext(ctx, query, username, username)
 	var u models.User
 	var isApproved, isOwner, isBanned bool
 	if err := row.Scan(&u.ID, &u.Username, &u.DisplayName, &u.PasswordHash, &u.Bio, &u.AvatarURL, &isApproved, &isOwner, &isBanned, &u.RegistrationIP, &u.SelfDestructMonths, &u.CreatedAt, &u.UpdatedAt); err != nil {
@@ -1063,6 +1115,9 @@ func (s *SQLStore) GetUserByUsername(ctx context.Context, username string) (*mod
 	u.IsApproved = isApproved
 	u.IsOwner = isOwner
 	u.IsBanned = isBanned
+	if err := s.db.QueryRowContext(ctx, s.bind("SELECT EXISTS(SELECT 1 FROM account_expiry_policies WHERE user_id=?)"), u.ID).Scan(&u.SelfDestructEnabled); err != nil {
+		return nil, err
+	}
 	return &u, nil
 }
 
@@ -1113,23 +1168,15 @@ func (s *SQLStore) UpdateUser(ctx context.Context, u *models.User) error {
 }
 
 func (s *SQLStore) UpdateUserSelfDestruct(ctx context.Context, userID string, months int) error {
-	if months <= 0 {
-		months = 6
-	}
-	query := `UPDATE users SET self_destruct_months = ?, updated_at = ? WHERE id = ?`
-	if s.driverName == "postgres" {
-		query = `UPDATE users SET self_destruct_months = $1, updated_at = $2 WHERE id = $3`
-	}
-	_, err := s.db.ExecContext(ctx, query, months, time.Now().UTC(), userID)
-	return err
+	return s.setAccountExpiry(ctx, userID, months)
 }
 
 func (s *SQLStore) UpdateUserLastSeen(ctx context.Context, userID string) error {
-	query := `UPDATE users SET last_seen_at = ? WHERE id = ?`
+	query := `UPDATE users SET last_seen_at = ? WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)`
 	if s.driverName == "postgres" {
-		query = `UPDATE users SET last_seen_at = $1 WHERE id = $2`
+		query = `UPDATE users SET last_seen_at = $1 WHERE id = $2 AND (last_seen_at IS NULL OR last_seen_at < $3)`
 	}
-	_, err := s.db.ExecContext(ctx, query, time.Now().UTC(), userID)
+	_, err := s.db.ExecContext(ctx, query, time.Now().UTC(), userID, time.Now().UTC().Add(-time.Minute))
 	return err
 }
 
@@ -1680,6 +1727,9 @@ func (s *SQLStore) GetConversationMemberDetails(ctx context.Context, conversatio
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) CreateMessageWithOutbox(ctx context.Context, msg *models.Message, recipientUserIDs []string) (*models.Message, []*models.EventOutbox, error) {
+	if err := validatePrivatePayload(msg.Ciphertext); err != nil {
+		return nil, nil, err
+	}
 	if msg.ID == "" {
 		msg.ID = "msg_" + uuid.New().String()
 	}
@@ -1805,7 +1855,14 @@ func (s *SQLStore) CreateMessageWithOutbox(ctx context.Context, msg *models.Mess
 	}
 	_ = tx.QueryRowContext(ctx, convQuery, msg.ConversationID).Scan(&convTitle, &convType)
 
+	if err := s.linkMessageAttachments(ctx, tx, msg); err != nil {
+		return nil, nil, err
+	}
+
 	// 3. Insert outbox events for all participants (atomically in same transaction)
+	if err := s.enqueueMessageBots(ctx, tx, msg, "message.created"); err != nil {
+		return nil, nil, err
+	}
 	payloadMap := map[string]interface{}{
 		"id":                   msg.ID,
 		"message_id":           msg.ID,
@@ -2582,42 +2639,20 @@ func (s *SQLStore) SaveKeyPackages(ctx context.Context, pkgs []*models.KeyPackag
 }
 
 func (s *SQLStore) GetAvailableKeyPackage(ctx context.Context, deviceID string) (*models.KeyPackage, error) {
-	query := `SELECT id, device_id, one_time_pre_key, used, created_at FROM key_packages WHERE device_id = ? AND used = 0 LIMIT 1`
+	query := `UPDATE key_packages SET used = 1 WHERE id = (SELECT id FROM key_packages WHERE device_id = ? AND used = 0 ORDER BY created_at LIMIT 1) AND used = 0 RETURNING id, device_id, one_time_pre_key, used, created_at`
 	if s.driverName == "postgres" {
-		query = `SELECT id, device_id, one_time_pre_key, used, created_at FROM key_packages WHERE device_id = $1 AND used = FALSE LIMIT 1`
+		query = `UPDATE key_packages SET used = TRUE WHERE id = (SELECT id FROM key_packages WHERE device_id = $1 AND used = FALSE ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1) AND used = FALSE RETURNING id, device_id, one_time_pre_key, used, created_at`
 	}
-
-	row := s.db.QueryRowContext(ctx, query, deviceID)
 	var p models.KeyPackage
-	var usedInt int
-	var err error
-	if s.driverName == "postgres" {
-		err = row.Scan(&p.ID, &p.DeviceID, &p.OneTimePreKey, &p.Used, &p.CreatedAt)
-	} else {
-		err = row.Scan(&p.ID, &p.DeviceID, &p.OneTimePreKey, &usedInt, &p.CreatedAt)
-		p.Used = (usedInt != 0)
-	}
-
+	err := s.db.QueryRowContext(ctx, query, deviceID).Scan(&p.ID, &p.DeviceID, &p.OneTimePreKey, &p.Used, &p.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-
-	// Mark as used
-	upQuery := `UPDATE key_packages SET used = 1 WHERE id = ?`
-	if s.driverName == "postgres" {
-		upQuery = `UPDATE key_packages SET used = TRUE WHERE id = $1`
-	}
-	_, _ = s.db.ExecContext(ctx, upQuery, p.ID)
-
 	return &p, nil
 }
-
-// ---------------------------------------------------------------------
-// Conversation Member Roles
-// ---------------------------------------------------------------------
 
 func (s *SQLStore) GetMemberRole(ctx context.Context, conversationID, userID string) (string, error) {
 	query := `SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ?`
@@ -2872,18 +2907,18 @@ func (s *SQLStore) seedBuiltinStickers() error {
 	}
 
 	now := time.Now().UTC()
-	// Builtin Pack 1: Senora Classic
+	// Builtin Pack 1: SENORA Classic
 	p1Query := `INSERT INTO sticker_packs (id, name, title, thumbnail_url, author, sticker_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
 		p1Query = `INSERT INTO sticker_packs (id, name, title, thumbnail_url, author, sticker_count, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	}
 
 	thumb1 := "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%2324A1DE'/><text x='50' y='65' font-size='45' text-anchor='middle'>⚡</text></svg>"
-	_, _ = s.db.Exec(p1Query, "pack_senora_classic", "senora_classic", "Senora Classic", thumb1, "Senora Team", 6, now)
+	_, _ = s.db.Exec(p1Query, "pack_senora_classic", "senora_classic", "SENORA Classic", thumb1, "SENORA Team", 6, now)
 
 	// Builtin Pack 2: Crypto Animals
 	thumb2 := "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%2310b981'/><text x='50' y='65' font-size='45' text-anchor='middle'>🦊</text></svg>"
-	_, _ = s.db.Exec(p1Query, "pack_crypto_animals", "crypto_animals", "Crypto Animals", thumb2, "Senora Team", 6, now)
+	_, _ = s.db.Exec(p1Query, "pack_crypto_animals", "crypto_animals", "Crypto Animals", thumb2, "SENORA Team", 6, now)
 
 	stQuery := `INSERT INTO stickers (id, pack_id, emoji, asset_url, width, height) VALUES (?, ?, ?, ?, ?, ?)`
 	if s.driverName == "postgres" {
@@ -2997,7 +3032,7 @@ func (s *SQLStore) GetCallLogs(ctx context.Context, userID string) ([]*models.Ca
 }
 
 // ---------------------------------------------------------------------
-// Phase 9: Security Modes, Deletion, Avatars, Voice Chat, Stickers
+// Security Modes, Deletion, Avatars, Voice Chat, Stickers
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) SetConversationSecurityMode(ctx context.Context, conversationID string, mode string) error {
@@ -3033,7 +3068,7 @@ func (s *SQLStore) DeleteMessageForEveryone(ctx context.Context, conversationID,
 		if err != nil {
 			return err
 		}
-		// In direct 1-on-1 chats, Telegram allows either participant to delete for both
+		// In direct 1-on-1 chats, either participant may delete a message for both
 		isDirect := conv.Type == "direct"
 		if !isDirect {
 			role, _ := s.GetMemberRole(ctx, conversationID, authorID)
@@ -3625,6 +3660,16 @@ func (s *SQLStore) VotePoll(ctx context.Context, pollID string, userID string, o
 	if err != nil {
 		return nil, err
 	}
+	validOption := false
+	for _, option := range p.Options {
+		if option.ID == optionID {
+			validOption = true
+			break
+		}
+	}
+	if !validOption {
+		return nil, errors.New("invalid poll option")
+	}
 	if p.IsClosed {
 		return nil, errors.New("poll is closed")
 	}
@@ -3789,6 +3834,9 @@ func (s *SQLStore) DeleteStory(ctx context.Context, storyID, userID string) erro
 }
 
 func (s *SQLStore) CreateScheduledMessage(ctx context.Context, sm *models.ScheduledMessage) error {
+	if err := validatePrivatePayload(sm.Ciphertext); err != nil {
+		return err
+	}
 	if sm.ID == "" {
 		sm.ID = uuid.New().String()
 	}
@@ -3802,9 +3850,9 @@ func (s *SQLStore) CreateScheduledMessage(ctx context.Context, sm *models.Schedu
 }
 
 func (s *SQLStore) GetScheduledMessages(ctx context.Context, conversationID, senderID string) ([]*models.ScheduledMessage, error) {
-	query := `SELECT id, conversation_id, sender_id, ciphertext, nonce, scheduled_for, created_at FROM scheduled_messages WHERE conversation_id = ? AND sender_id = ? AND is_sent = 0 ORDER BY scheduled_for ASC`
+	query := `SELECT id, conversation_id, sender_id, ciphertext, nonce, scheduled_for, delivery_error, created_at FROM scheduled_messages WHERE conversation_id = ? AND sender_id = ? AND is_sent = 0 ORDER BY scheduled_for ASC`
 	if s.driverName == "postgres" {
-		query = `SELECT id, conversation_id, sender_id, ciphertext, nonce, scheduled_for, created_at FROM scheduled_messages WHERE conversation_id = $1 AND sender_id = $2 AND is_sent = FALSE ORDER BY scheduled_for ASC`
+		query = `SELECT id, conversation_id, sender_id, ciphertext, nonce, scheduled_for, delivery_error, created_at FROM scheduled_messages WHERE conversation_id = $1 AND sender_id = $2 AND is_sent = FALSE ORDER BY scheduled_for ASC`
 	}
 	rows, err := s.db.QueryContext(ctx, query, conversationID, senderID)
 	if err != nil {
@@ -3816,7 +3864,7 @@ func (s *SQLStore) GetScheduledMessages(ctx context.Context, conversationID, sen
 	for rows.Next() {
 		var sm models.ScheduledMessage
 		sm.IsSent = false
-		if err := rows.Scan(&sm.ID, &sm.ConversationID, &sm.SenderID, &sm.Ciphertext, &sm.Nonce, &sm.ScheduledFor, &sm.CreatedAt); err != nil {
+		if err := rows.Scan(&sm.ID, &sm.ConversationID, &sm.SenderID, &sm.Ciphertext, &sm.Nonce, &sm.ScheduledFor, &sm.DeliveryError, &sm.CreatedAt); err != nil {
 			return nil, err
 		}
 		list = append(list, &sm)
@@ -3841,7 +3889,7 @@ func (s *SQLStore) DeleteScheduledMessage(ctx context.Context, id, senderID stri
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Member Role Management
+// Member Role Management
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) UpdateMemberRole(ctx context.Context, conversationID, targetUserID, newRole string) error {
@@ -3872,7 +3920,7 @@ func (s *SQLStore) UpdateMemberRole(ctx context.Context, conversationID, targetU
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Read Receipts & Unread Tracking
+// Read Receipts & Unread Tracking
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) RecordMessageRead(ctx context.Context, messageID, userID, conversationID string) error {
@@ -3951,10 +3999,17 @@ func (s *SQLStore) GetConversationReadState(ctx context.Context, conversationID,
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Conversation Invites
+// Conversation Invites
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) CreateConversationInvite(ctx context.Context, inv *models.ConversationInvite) error {
+	conv, err := s.GetConversationByID(ctx, inv.ConversationID)
+	if err != nil {
+		return err
+	}
+	if conv.Type == "direct" {
+		return ErrUnauthorized
+	}
 	if inv.ID == "" {
 		inv.ID = uuid.New().String()
 	}
@@ -3967,7 +4022,7 @@ func (s *SQLStore) CreateConversationInvite(ctx context.Context, inv *models.Con
 	if s.driverName == "postgres" {
 		query = `INSERT INTO conversation_invites (id, conversation_id, creator_id, invite_code, max_uses, uses_count, expires_at, is_revoked, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, $8)`
 	}
-	_, err := s.db.ExecContext(ctx, query, inv.ID, inv.ConversationID, inv.CreatorID, inv.InviteCode, inv.MaxUses, inv.UsesCount, expVal, inv.CreatedAt)
+	_, err = s.db.ExecContext(ctx, query, inv.ID, inv.ConversationID, inv.CreatorID, inv.InviteCode, inv.MaxUses, inv.UsesCount, expVal, inv.CreatedAt)
 	return err
 }
 
@@ -4073,6 +4128,10 @@ func (s *SQLStore) UseConversationInvite(ctx context.Context, code, userID strin
 		return nil, errors.New("invite link has reached its maximum usage limit")
 	}
 
+	conv, err := s.GetConversationByID(ctx, inv.ConversationID)
+	if err != nil || conv.Type == "direct" {
+		return nil, ErrUnauthorized
+	}
 	// Check if user is already a member
 	isMember, _ := s.IsMember(ctx, inv.ConversationID, userID)
 	if !isMember {
@@ -4099,7 +4158,7 @@ func (s *SQLStore) UseConversationInvite(ctx context.Context, code, userID strin
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Channel Message Views
+// Channel Message Views
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) RecordMessageView(ctx context.Context, messageID, userID, conversationID string) (int, error) {
@@ -4126,7 +4185,7 @@ func (s *SQLStore) GetMessageViewsCount(ctx context.Context, messageID string) (
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Disappearing Messages (TTL)
+// Disappearing Messages (TTL)
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) SetConversationTTL(ctx context.Context, conversationID string, ttlSeconds int) error {
@@ -4139,7 +4198,7 @@ func (s *SQLStore) SetConversationTTL(ctx context.Context, conversationID string
 }
 
 // ---------------------------------------------------------------------
-// Phase 16: Global Search
+// Global Search
 // ---------------------------------------------------------------------
 
 func (s *SQLStore) GlobalSearch(ctx context.Context, userID, query string) (map[string]interface{}, error) {
@@ -4783,7 +4842,7 @@ func (s *SQLStore) GetServerStats(ctx context.Context) (*models.ServerStats, err
 
 	// Users counts
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id != 'usr_senoramasterbot'`).Scan(&stats.TotalUsers)
-	
+
 	if s.driverName == "postgres" {
 		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_approved = FALSE AND id != 'usr_senoramasterbot'`).Scan(&stats.PendingUsers)
 		_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE is_banned = TRUE AND id != 'usr_senoramasterbot'`).Scan(&stats.BannedUsers)
@@ -4799,11 +4858,13 @@ func (s *SQLStore) GetServerStats(ctx context.Context) (*models.ServerStats, err
 		sessQuery = `SELECT COUNT(*) FROM sessions WHERE expires_at > $1`
 	}
 	_ = s.db.QueryRowContext(ctx, sessQuery, now).Scan(&stats.ActiveSessions)
-	stats.OnlineUsers = stats.ActiveSessions
+	// OnlineUsers is supplied by the live hub, never by persistent sessions.
 
 	// Conversations & Messages
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversations`).Scan(&stats.TotalConversations)
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE is_deleted = 0 OR is_deleted IS FALSE`).Scan(&stats.TotalMessages)
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM messages WHERE NOT is_deleted`).Scan(&stats.TotalMessages); err != nil {
+		return nil, err
+	}
 
 	// Attachments & Storage
 	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(size_bytes), 0) FROM attachments`).Scan(&stats.TotalAttachments, &stats.TotalStorageBytes)
@@ -4848,6 +4909,10 @@ func (s *SQLStore) GetStorageAnalytics(ctx context.Context) (*models.StorageAnal
 
 	return analytics, nil
 }
+
+// ---------------------------------------------------------------------
+// Conversation lookup and administration metadata
+// ---------------------------------------------------------------------
 
 func (s *SQLStore) GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error) {
 	query := `SELECT c.id, c.type, COALESCE(c.title, ''), COALESCE(c.description, ''), COALESCE(c.avatar_url, ''), COALESCE(c.pinned_message_id, ''), COALESCE(c.security_mode, 'normal'), c.created_at, c.updated_at
@@ -5035,296 +5100,6 @@ func (s *SQLStore) ListBannedIPs(ctx context.Context) ([]*models.BannedIP, error
 // ---------------------------------------------------------------------
 // Database Backup
 // ---------------------------------------------------------------------
-
-func formatSQLValue(v interface{}) string {
-	if v == nil {
-		return "NULL"
-	}
-	switch val := v.(type) {
-	case bool:
-		if val {
-			return "TRUE"
-		}
-		return "FALSE"
-	case int, int8, int16, int32, int64:
-		return fmt.Sprintf("%d", val)
-	case uint, uint8, uint16, uint32, uint64:
-		return fmt.Sprintf("%d", val)
-	case float32, float64:
-		return fmt.Sprintf("%f", val)
-	case time.Time:
-		return fmt.Sprintf("'%s'", val.UTC().Format("2006-01-02 15:04:05.999999-07"))
-	case []byte:
-		if utf8.Valid(val) {
-			s := strings.ReplaceAll(string(val), "'", "''")
-			return fmt.Sprintf("'%s'", s)
-		}
-		return fmt.Sprintf("decode('%x', 'hex')", val)
-	case string:
-		s := strings.ReplaceAll(val, "'", "''")
-		return fmt.Sprintf("'%s'", s)
-	default:
-		s := fmt.Sprintf("%v", val)
-		s = strings.ReplaceAll(s, "'", "''")
-		return fmt.Sprintf("'%s'", s)
-	}
-}
-
-func (s *SQLStore) backupPostgres(ctx context.Context, destPath string) error {
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create postgres backup file: %w", err)
-	}
-	defer f.Close()
-
-	w := bufio.NewWriter(f)
-	defer w.Flush()
-
-	fmt.Fprintf(w, "-- ========================================================\n")
-	fmt.Fprintf(w, "-- Senora PostgreSQL Database Snapshot Backup\n")
-	fmt.Fprintf(w, "-- Generated at: %s UTC\n", time.Now().UTC().Format(time.RFC3339))
-	fmt.Fprintf(w, "-- ========================================================\n\n")
-	fmt.Fprintf(w, "BEGIN;\n")
-	fmt.Fprintf(w, "SET statement_timeout = 0;\n")
-	fmt.Fprintf(w, "SET client_encoding = 'UTF8';\n")
-	fmt.Fprintf(w, "SET standard_conforming_strings = on;\n\n")
-
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT table_name 
-		FROM information_schema.tables 
-		WHERE table_schema = 'public' AND table_type = 'BASE TABLE' 
-		ORDER BY table_name;
-	`)
-	if err != nil {
-		return fmt.Errorf("failed to query postgres tables: %w", err)
-	}
-	defer rows.Close()
-
-	var tables []string
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err == nil && t != "" {
-			tables = append(tables, t)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("error reading postgres tables: %w", err)
-	}
-	rows.Close()
-
-	for _, tbl := range tables {
-		fmt.Fprintf(w, "\n-- Table: %s\n", tbl)
-
-		colRows, err := s.db.QueryContext(ctx, `
-			SELECT column_name 
-			FROM information_schema.columns 
-			WHERE table_schema = 'public' AND table_name = $1 
-			ORDER BY ordinal_position;
-		`, tbl)
-		if err != nil {
-			continue
-		}
-
-		var cols []string
-		for colRows.Next() {
-			var col string
-			if err := colRows.Scan(&col); err == nil {
-				cols = append(cols, col)
-			}
-		}
-		if err := colRows.Err(); err != nil {
-			colRows.Close()
-			continue
-		}
-		colRows.Close()
-
-		if len(cols) == 0 {
-			continue
-		}
-
-		quotedCols := make([]string, len(cols))
-		for i, c := range cols {
-			quotedCols[i] = fmt.Sprintf("%q", c)
-		}
-		colList := strings.Join(quotedCols, ", ")
-
-		dataRows, err := s.db.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %q", colList, tbl))
-		if err != nil {
-			continue
-		}
-
-		colCount := len(cols)
-		for dataRows.Next() {
-			values := make([]interface{}, colCount)
-			valuePtrs := make([]interface{}, colCount)
-			for i := range values {
-				valuePtrs[i] = &values[i]
-			}
-
-			if err := dataRows.Scan(valuePtrs...); err != nil {
-				continue
-			}
-
-			valStrs := make([]string, colCount)
-			for i, v := range values {
-				valStrs[i] = formatSQLValue(v)
-			}
-
-			fmt.Fprintf(w, "INSERT INTO %q (%s) VALUES (%s);\n", tbl, colList, strings.Join(valStrs, ", "))
-		}
-		if err := dataRows.Err(); err != nil {
-			dataRows.Close()
-			continue
-		}
-		dataRows.Close()
-	}
-
-	fmt.Fprintf(w, "\nCOMMIT;\n-- End of Backup\n")
-	return nil
-}
-
-func (s *SQLStore) dumpSQLiteTables(ctx context.Context, destPath string) error {
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return fmt.Errorf("failed to create sqlite backup file: %w", err)
-	}
-	defer f.Close()
-
-	w := bufio.NewWriter(f)
-	defer w.Flush()
-
-	fmt.Fprintf(w, "-- Senora SQLite Database Dump\nBEGIN;\n")
-	rows, err := s.db.QueryContext(ctx, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var tables []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err == nil {
-			tables = append(tables, name)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	rows.Close()
-
-	for _, tbl := range tables {
-		colRows, err := s.db.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%q)", tbl))
-		if err != nil {
-			continue
-		}
-		var cols []string
-		for colRows.Next() {
-			var cid int
-			var cname, ctype string
-			var notnull, pk int
-			var dflt interface{}
-			if err := colRows.Scan(&cid, &cname, &ctype, &notnull, &dflt, &pk); err == nil {
-				cols = append(cols, cname)
-			}
-		}
-		if err := colRows.Err(); err != nil {
-			colRows.Close()
-			continue
-		}
-		colRows.Close()
-
-		if len(cols) == 0 {
-			continue
-		}
-
-		quotedCols := make([]string, len(cols))
-		for i, c := range cols {
-			quotedCols[i] = fmt.Sprintf("%q", c)
-		}
-		colList := strings.Join(quotedCols, ", ")
-
-		dataRows, err := s.db.QueryContext(ctx, fmt.Sprintf("SELECT %s FROM %q", colList, tbl))
-		if err != nil {
-			continue
-		}
-
-		for dataRows.Next() {
-			values := make([]interface{}, len(cols))
-			valuePtrs := make([]interface{}, len(cols))
-			for i := range values {
-				valuePtrs[i] = &values[i]
-			}
-			if err := dataRows.Scan(valuePtrs...); err != nil {
-				continue
-			}
-			valStrs := make([]string, len(cols))
-			for i, v := range values {
-				valStrs[i] = formatSQLValue(v)
-			}
-			fmt.Fprintf(w, "INSERT INTO %q (%s) VALUES (%s);\n", tbl, colList, strings.Join(valStrs, ", "))
-		}
-		if err := dataRows.Err(); err != nil {
-			dataRows.Close()
-			continue
-		}
-		dataRows.Close()
-	}
-	fmt.Fprintf(w, "COMMIT;\n")
-	return nil
-}
-
-func (s *SQLStore) BackupDatabase(ctx context.Context, destPath string) error {
-	destPath = strings.TrimSpace(destPath)
-	if destPath == "" {
-		return errors.New("destination path cannot be empty")
-	}
-
-	dir := filepath.Dir(destPath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create backup directory: %w", err)
-	}
-
-	if s.driverName == "postgres" {
-		return s.backupPostgres(ctx, destPath)
-	}
-
-	// SQLite: flush WAL checkpoint first
-	_, _ = s.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)")
-
-	// Attempt VACUUM INTO
-	cleanPath := strings.ReplaceAll(destPath, "'", "''")
-	cleanPath = filepath.ToSlash(cleanPath)
-	_ = os.Remove(destPath) // Remove if already exists so VACUUM INTO doesn't fail
-	vacuumQuery := fmt.Sprintf("VACUUM INTO '%s'", cleanPath)
-	if _, err := s.db.ExecContext(ctx, vacuumQuery); err == nil {
-		if fi, statErr := os.Stat(destPath); statErr == nil && fi.Size() > 0 {
-			return nil
-		}
-	}
-
-	// Fallback 1: Direct file copy of source db file
-	srcFile := s.dataSourceName
-	if idx := strings.Index(srcFile, "?"); idx != -1 {
-		srcFile = srcFile[:idx]
-	}
-	srcFile = strings.TrimPrefix(srcFile, "file:")
-	if srcFile != ":memory:" && srcFile != "" {
-		if in, err := os.Open(srcFile); err == nil {
-			defer in.Close()
-			if out, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644); err == nil {
-				defer out.Close()
-				if _, err := io.Copy(out, in); err == nil {
-					if fi, statErr := os.Stat(destPath); statErr == nil && fi.Size() > 0 {
-						return nil
-					}
-				}
-			}
-		}
-	}
-
-	// Fallback 2: Comprehensive table dump
-	return s.dumpSQLiteTables(ctx, destPath)
-}
 
 // ---------------------------------------------------------------------
 // Forum Topics & Supergroups
@@ -5623,8 +5398,3 @@ func (s *SQLStore) DeleteMediaShare(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, query, id)
 	return err
 }
-
-
-
-
-

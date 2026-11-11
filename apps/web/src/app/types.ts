@@ -9,6 +9,7 @@ export interface User {
   is_owner?: boolean;
   is_banned?: boolean;
   self_destruct_months?: number;
+  self_destruct_enabled?: boolean;
   last_seen_at?: string;
 }
 
@@ -92,6 +93,8 @@ export interface Attachment {
 }
 
 export interface Message {
+  game_action?: import('../features/messages/gameRules').GameAction;
+  dice_result?: import('../features/messages/dice').DiceResult;
   id: string;
   conversation_id: string;
   sender_id: string;
@@ -159,6 +162,8 @@ export interface Message {
     target_username: string;
     target_id?: string;
     secret_text: string;
+    encrypted_secret?: string;
+    secret_nonce?: string;
     sender_username?: string;
     sender_id?: string;
   };
@@ -173,6 +178,8 @@ export interface Message {
 
 export interface BotActionButton {
   text: string;
+  callback_data?: string;
+  url?: string;
   command?: string;
   action?: string;
   conversation_id?: string;
@@ -204,7 +211,9 @@ export interface ServerStats {
   db_dialect: string;
 }
 
+
 export interface Device {
+	identity_public_key?: string;
   id: string;
   user_id: string;
   device_name: string;
@@ -341,6 +350,7 @@ export interface Story {
 }
 
 export interface ScheduledMessage {
+	delivery_error?: string;
   id: string;
   conversation_id: string;
   sender_id: string;

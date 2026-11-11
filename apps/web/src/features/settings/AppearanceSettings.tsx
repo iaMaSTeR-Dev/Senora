@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React from 'react';
 import {
   AppSettings,
@@ -22,6 +23,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
   onChange,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const t = translations[lang];
 
   return (
@@ -29,20 +31,18 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
       {/* Header */}
       <div className="pb-3 border-b border-[#242f3d]">
         <h3 className="text-sm font-bold text-white">{t.settings_appearance}</h3>
-        <p className="text-[11px] text-[#7f91a4] mt-0.5">
-          Customize themes, colors, message bubbles, wallpapers, and typography
-        </p>
+        <p className="text-[11px] text-[#7f91a4] mt-0.5">{uiText("Customize themes, colors, message bubbles, wallpapers, and typography", uiLang)}</p>
       </div>
 
       {/* 1. Theme Selection */}
       <div className="space-y-2">
-        <label className="block text-xs font-semibold text-slate-300">Theme Mode</label>
+        <label className="block text-xs font-semibold text-slate-300">{uiText("Theme Mode", uiLang)}</label>
         <div className="grid grid-cols-3 gap-2">
           {(
             [
               { id: 'dark', label: t.theme_dark, icon: Moon },
               { id: 'light', label: t.theme_light, icon: Sun },
-              { id: 'system', label: 'System', icon: Monitor },
+              { id: 'system', label: uiText("System", uiLang), icon: Monitor },
             ] as const
           ).map((item) => {
             const Icon = item.icon;
@@ -59,7 +59,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                 }`}
               >
                 <Icon className={`h-5 w-5 ${isSelected ? 'text-[#24A1DE]' : ''}`} />
-                <span className="font-semibold text-xs">{item.label}</span>
+                <span className="font-semibold text-xs">{uiText(item.label, uiLang)}</span>
               </button>
             );
           })}
@@ -82,7 +82,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                     ? 'border-white bg-[#242f3d] shadow-lg'
                     : 'border-[#242f3d] bg-[#242f3d]/30 hover:bg-[#242f3d]/60'
                 }`}
-                title={c.name}
+                title={uiText(c.name, uiLang)}
               >
                 <div
                   className="h-6 w-6 rounded-full flex items-center justify-center shadow-inner"
@@ -90,7 +90,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                 >
                   {isSelected && <Check className="h-3.5 w-3.5 text-white" />}
                 </div>
-                <span className="text-[10px] text-[#7f91a4] truncate max-w-full">{c.name}</span>
+                <span className="text-[10px] text-[#7f91a4] truncate max-w-full">{uiText(c.name, uiLang)}</span>
               </button>
             );
           })}
@@ -103,9 +103,9 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
         <div className="grid grid-cols-3 gap-2">
           {(
             [
-              { id: 'small', label: 'Small (13px)', desc: 'Compact' },
-              { id: 'medium', label: 'Medium (15px)', desc: 'Standard' },
-              { id: 'large', label: 'Large (17px)', desc: 'Spacious' },
+              { id: 'small', label: uiText("Small (13px)", uiLang), desc: uiText("Compact", uiLang) },
+              { id: 'medium', label: uiText("Medium (15px)", uiLang), desc: uiText("Standard", uiLang) },
+              { id: 'large', label: uiText("Large (17px)", uiLang), desc: uiText("Spacious", uiLang) },
             ] as const
           ).map((f) => (
             <button
@@ -118,8 +118,8 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                   : 'bg-[#242f3d]/40 border-[#242f3d] text-[#7f91a4] hover:text-white'
               }`}
             >
-              <div className="font-semibold text-xs">{f.label}</div>
-              <div className="text-[10px] text-[#7f91a4] mt-0.5">{f.desc}</div>
+              <div className="font-semibold text-xs">{uiText(f.label, uiLang)}</div>
+              <div className="text-[10px] text-[#7f91a4] mt-0.5">{uiText(f.desc, uiLang)}</div>
             </button>
           ))}
         </div>
@@ -127,12 +127,12 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
 
       {/* 4. Chat Bubble Style */}
       <div className="space-y-2">
-        <label className="block text-xs font-semibold text-slate-300">Message Bubble Style</label>
+        <label className="block text-xs font-semibold text-slate-300">{uiText("Message Bubble Style", uiLang)}</label>
         <div className="grid grid-cols-2 gap-2">
           {(
             [
-              { id: 'modern', label: 'Modern Rounded', desc: 'Curved 18px corners' },
-              { id: 'classic', label: 'Classic Compact', desc: 'Subtle 8px corners' },
+              { id: 'modern', label: uiText("Modern Rounded", uiLang), desc: uiText("Curved 18px corners", uiLang) },
+              { id: 'classic', label: uiText("Classic Compact", uiLang), desc: uiText("Subtle 8px corners", uiLang) },
             ] as const
           ).map((b) => (
             <button
@@ -145,8 +145,8 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                   : 'bg-[#242f3d]/40 border-[#242f3d] text-[#7f91a4] hover:text-white'
               }`}
             >
-              <div className="font-semibold text-xs">{b.label}</div>
-              <div className="text-[10px] text-[#7f91a4] mt-0.5">{b.desc}</div>
+              <div className="font-semibold text-xs">{uiText(b.label, uiLang)}</div>
+              <div className="text-[10px] text-[#7f91a4] mt-0.5">{uiText(b.desc, uiLang)}</div>
             </button>
           ))}
         </div>
@@ -175,7 +175,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                   {isSelected && <Check className="h-4 w-4 text-white drop-shadow" />}
                 </div>
                 <span className="text-[10px] font-medium text-[#7f91a4] truncate max-w-full">
-                  {w.label}
+                  {uiText(w.label, uiLang)}
                 </span>
               </button>
             );
@@ -187,9 +187,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
       <div className="p-3.5 rounded-xl bg-[#242f3d]/40 border border-[#242f3d] flex items-center justify-between">
         <div>
           <span className="font-semibold text-white block">{t.reduced_motion}</span>
-          <span className="text-[11px] text-[#7f91a4]">
-            Disable heavy transitions and smooth scroll effects
-          </span>
+          <span className="text-[11px] text-[#7f91a4]">{uiText("Disable heavy transitions and smooth scroll effects", uiLang)}</span>
         </div>
         <button
           type="button"
@@ -208,9 +206,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
 
       {/* 7. Live Preview Card */}
       <div className="p-4 rounded-xl bg-[#17212b] border border-[#242f3d] space-y-3 select-none">
-        <span className="text-[11px] font-bold text-[#7f91a4] uppercase tracking-wider block">
-          Live Chat Appearance Preview
-        </span>
+        <span className="text-[11px] font-bold text-[#7f91a4] uppercase tracking-wider block">{uiText("Live Chat Appearance Preview", uiLang)}</span>
 
         <div
           className={`p-4 rounded-xl border border-white/5 space-y-3 ${
@@ -233,7 +229,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
               }}
             >
               <div className="text-[11px] font-bold text-[#24A1DE] mb-0.5">Alice</div>
-              <p className="leading-snug">Hello! How do you like this chat styling?</p>
+              <p className="leading-snug">{uiText("Hello! How do you like this chat styling?", uiLang)}</p>
               <span className="text-[10px] text-[#7f91a4] block text-right mt-1">10:42 AM</span>
             </div>
           </div>
@@ -254,7 +250,7 @@ export const AppearanceSettings: React.FC<AppearanceSettingsProps> = ({
                     : '15px',
               }}
             >
-              <p className="leading-snug">It looks gorgeous! The live preview is working perfectly.</p>
+              <p className="leading-snug">{uiText("It looks gorgeous! The live preview is working perfectly.", uiLang)}</p>
               <span className="text-[10px] text-white/70 block text-right mt-1">10:43 AM ✓✓</span>
             </div>
           </div>

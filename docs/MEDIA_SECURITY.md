@@ -1,4 +1,4 @@
-# Senora Client-Side Media Encryption Architecture
+# SENORA Client-Side Media Encryption Architecture
 
 ## 1. Principles
 
@@ -72,11 +72,11 @@ $$\text{Server Storage} \xrightarrow{\text{GET /api/v1/attachments/id}} \text{En
 | **Tampered Ciphertext on Storage** | AES-GCM authentication tag verification fails immediately upon client decryption; client displays tamper warning. |
 | **Unauthorized File Download** | `GET /api/v1/attachments/{id}` requires valid session token AND membership in the conversation owning the attachment. |
 | **Path Traversal Attacks** | Storage paths are server-assigned UUIDs (`filepath.Join("uploads", attID)`). Client-supplied filenames are never used as disk paths. |
-| **Oversized Media DoS** | Enforced 25 MB upload limit using Go `http.MaxBytesReader`. |
+| **Oversized Media DoS** | Configurable upload limit (default 500 MiB via `MAX_UPLOAD_BYTES`) using Go `http.MaxBytesReader`. |
 
 ---
 
-## 5. Media Policies by Conversation Security Mode (Phase 9 Track A)
+## 5. Media Policies by Conversation Security Mode
 
 ### Normal Chat Media Policy
 1. Normal Chat uses HTTPS/TLS transport with authenticated session verification.
@@ -91,7 +91,7 @@ $$\text{Server Storage} \xrightarrow{\text{GET /api/v1/attachments/id}} \text{En
 
 ---
 
-## 6. Profile Avatar Management & Validation (Track C)
+## 6. Profile Avatar Management & Validation
 
 1. **Header Sniffing**: Avatar uploads enforce binary header inspection (magic numbers for PNG `\x89PNG\r\n\x1a\n`, JPEG `\xff\xd8\xff`, and WebP `RIFF....WEBP`). Client-provided `Content-Type` headers are untrusted.
 2. **Dimension & Size Boundaries**: Maximum upload size is bounded to 5 MB. Image dimensions are capped to 2048x2048 pixels to mitigate pixel-flood decompression bombs.

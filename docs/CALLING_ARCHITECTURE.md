@@ -9,8 +9,7 @@ Senora implements real-time audio and video communications through WebRTC standa
 - **Media Security**: DTLS 1.2/1.3 and SRTP (AES-128-GCM / AES-256-GCM) end-to-end between browsers. The server routes signaling only and never touches media packets.
 - **NAT Traversal**: Configured with standard public STUN servers (`stun:stun.l.google.com:19302`) and optional self-hosted TURN credentials.
 
-### 1.2 Group Voice Chat (Track B — Implemented in Phase 9)
-- **Status**: **IMPLEMENTED AND VERIFIED**
+### 1.2 Group Voice Chat
 - **Architecture**: Persistent, joinable audio rooms attached to group conversations.
 - **Backend Room Lifecycle**:
   - `voice_chat_rooms` table tracks active rooms, creator, title, timestamps, and termination markers.

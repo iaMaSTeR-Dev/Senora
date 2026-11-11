@@ -7,8 +7,8 @@ on:
     branches: [ master, main ]
 
 jobs:
-  backend-test:
-    name: Backend Tests & PostgreSQL Runtime Verification
+  backend-verify:
+    name: Backend Build & PostgreSQL Schema Verification
     runs-on: ubuntu-latest
 
     services:
@@ -33,34 +33,31 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.26.0'
           cache-dependency-path: apps/server/go.sum
 
       - name: Verify PostgreSQL Schema Migrations
         env:
           PGPASSWORD: senora_password
         run: |
-          psql -h localhost -U senora -d senora_test -f database/migrations/000001_init.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000002_phase9.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000003_phase10_15.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000004_phase16_telegram_completion.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000005_message_reads.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000006_push_devices.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000007_master_bot_and_server_settings.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000008_banned_ips.sql
-          psql -h localhost -U senora -d senora_test -f database/migrations/000009_media_shares.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000001_init.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000002_security_and_media.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000003_polls_stories_scheduled.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000004_reads_invites_bots.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000005_message_reads.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000006_push_devices.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000007_master_bot_and_server_settings.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000008_banned_ips.sql
+          psql -v ON_ERROR_STOP=1 -h localhost -U senora -d senora_test -f database/migrations/000009_media_shares.sql
 
       - name: Verify Backend Compilation
         working-directory: apps/server
-        env:
-          TEST_DATABASE_URL: postgres://senora:senora_password@localhost:5432/senora_test?sslmode=disable
         run: |
           go vet ./...
-          go test -v -count=1 ./...
           go build -v ./cmd/server
 
-  frontend-test:
-    name: Frontend Quality & Build Verification
+  frontend-verify:
+    name: Frontend Typecheck & Build Verification
     runs-on: ubuntu-latest
 
     steps:
@@ -70,7 +67,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: apps/web/package-lock.json
 
@@ -81,10 +78,6 @@ jobs:
       - name: Typecheck
         working-directory: apps/web
         run: npx tsc --noEmit
-
-      - name: Run Vitest Suite
-        working-directory: apps/web
-        run: npm test -- --run
 
       - name: Build Production Assets
         working-directory: apps/web

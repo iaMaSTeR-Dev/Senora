@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useCallback } from 'react';
 import { X, Trophy, RotateCcw, Send, Gamepad2 } from 'lucide-react';
 
@@ -12,6 +13,7 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
   onShareScore,
   lang = 'fa',
 }) => {
+  const uiLang = useUILanguage(lang);
   // 2048 State
   const [grid, setGrid] = useState<number[][]>(() => init2048());
   const [score, setScore] = useState(0);
@@ -159,8 +161,8 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
               <Gamepad2 size={20} />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">2048 Mini App</h3>
-              <p className="text-[10px] text-[#7f91a4]">{lang === 'fa' ? 'مینی‌گیم تلگرامی' : 'Telegram WebApp Game'}</p>
+              <h3 className="text-sm font-bold text-white">{uiText("2048 Mini App", uiLang)}</h3>
+              <p className="text-[10px] text-[#7f91a4]">{lang === "fa" ? 'مینی‌گیم تلگرامی' : 'Telegram WebApp Game'}</p>
             </div>
           </div>
           <button
@@ -175,12 +177,12 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
         {/* Scores Bar */}
         <div className="flex items-center justify-between mb-4 gap-2">
           <div className="flex-1 bg-[#101921] py-2 px-3 rounded-xl border border-slate-700/40 text-center">
-            <span className="text-[10px] text-slate-400 block uppercase font-bold">{lang === 'fa' ? 'امتیاز' : 'Score'}</span>
+            <span className="text-[10px] text-slate-400 block uppercase font-bold">{lang === "fa" ? 'امتیاز' : 'Score'}</span>
             <span className="text-base font-black text-white">{score}</span>
           </div>
           <div className="flex-1 bg-[#101921] py-2 px-3 rounded-xl border border-slate-700/40 text-center">
             <span className="text-[10px] text-amber-400 block uppercase font-bold flex items-center justify-center gap-1">
-              <Trophy size={11} /> {lang === 'fa' ? 'بهترین' : 'Best'}
+              <Trophy size={11} /> {lang === "fa" ? 'بهترین' : 'Best'}
             </span>
             <span className="text-base font-black text-amber-300">{bestScore}</span>
           </div>
@@ -188,7 +190,7 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
             type="button"
             onClick={restart}
             className="h-12 w-12 rounded-xl bg-[#242f3d] hover:bg-[#202b36] flex items-center justify-center text-[#24A1DE] transition cursor-pointer flex-shrink-0"
-            title="Restart"
+            title={uiText("Restart", uiLang)}
           >
             <RotateCcw size={18} />
           </button>
@@ -209,15 +211,15 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
 
           {gameOver && (
             <div className="absolute inset-0 bg-black/85 backdrop-blur-xs rounded-2xl flex flex-col items-center justify-center gap-3 animate-in fade-in">
-              <span className="text-base font-black text-rose-400">{lang === 'fa' ? 'باختید! بازی تمام شد' : 'Game Over!'}</span>
-              <p className="text-xs text-slate-300">{lang === 'fa' ? `امتیاز نهایی: ${score}` : `Final Score: ${score}`}</p>
+              <span className="text-base font-black text-rose-400">{lang === "fa" ? 'باختید! بازی تمام شد' : 'Game Over!'}</span>
+              <p className="text-xs text-slate-300">{lang === "fa" ? `امتیاز نهایی: ${score}` : `Final Score: ${score}`}</p>
               <div className="flex items-center gap-2 mt-2">
                 <button
                   type="button"
                   onClick={restart}
                   className="px-4 py-2 rounded-xl bg-[#24A1DE] text-white text-xs font-bold shadow-md hover:bg-[#1f93cb] cursor-pointer"
                 >
-                  {lang === 'fa' ? 'تلاش دوباره' : 'Try Again'}
+                  {lang === "fa" ? 'تلاش دوباره' : 'Try Again'}
                 </button>
                 <button
                   type="button"
@@ -228,7 +230,7 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
                   className="px-4 py-2 rounded-xl bg-amber-500 text-white text-xs font-bold shadow-md hover:bg-amber-600 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Send size={13} />
-                  <span>{lang === 'fa' ? 'اشتراک رکورد' : 'Share'}</span>
+                  <span>{lang === "fa" ? 'اشتراک رکورد' : uiText("Share", uiLang)}</span>
                 </button>
               </div>
             </div>
@@ -279,7 +281,7 @@ export const MiniGameModal: React.FC<MiniGameModalProps> = ({
           className="w-full py-2.5 rounded-xl bg-[#24A1DE] hover:bg-[#1f93cb] text-white text-xs font-bold shadow-md transition flex items-center justify-center gap-2 cursor-pointer"
         >
           <Send size={14} />
-          <span>{lang === 'fa' ? `اشتراک امتیاز (${score}) در گفتگو` : `Share Score (${score}) in Chat`}</span>
+          <span>{lang === "fa" ? `اشتراک امتیاز (${score}) در گفتگو` : `Share Score (${score}) in Chat`}</span>
         </button>
       </div>
     </div>

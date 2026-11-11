@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import { Message } from '../../app/types';
 import { X, Image, FileText, Mic, Link as LinkIcon, Download, Play, ExternalLink } from 'lucide-react';
@@ -17,6 +18,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
   onDownloadFile,
   onPlayVoice,
 }) => {
+  const uiLang = useUILanguage();
   const [tab, setTab] = useState<'media' | 'files' | 'voice' | 'links'>('media');
 
   // Categorize messages
@@ -62,7 +64,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
     <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-80 md:w-96 max-w-full bg-[#17212b] border-l border-[#242f3d] shadow-2xl flex flex-col animate-slideInRight select-none">
       {/* Drawer Header */}
       <div className="p-4 border-b border-[#242f3d] flex items-center justify-between">
-        <h3 className="text-sm font-bold text-white">Shared Media</h3>
+        <h3 className="text-sm font-bold text-white">{uiText("Shared Media", uiLang)}</h3>
         <button onClick={onClose} className="text-[#7f91a4] hover:text-white cursor-pointer">
           <X size={18} />
         </button>
@@ -79,7 +81,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
           }`}
         >
           <Image size={14} />
-          <span>Media</span>
+          <span>{uiText("Media", uiLang)}</span>
         </button>
 
         <button
@@ -91,7 +93,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
           }`}
         >
           <FileText size={14} />
-          <span>Files</span>
+          <span>{uiText("Files", uiLang)}</span>
         </button>
 
         <button
@@ -103,7 +105,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
           }`}
         >
           <Mic size={14} />
-          <span>Voice</span>
+          <span>{uiText("Voice", uiLang)}</span>
         </button>
 
         <button
@@ -115,7 +117,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
           }`}
         >
           <LinkIcon size={14} />
-          <span>Links</span>
+          <span>{uiText("Links", uiLang)}</span>
         </button>
       </div>
 
@@ -124,9 +126,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
         {/* Media Grid */}
         {tab === 'media' && (
           photosAndVideos.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">
-              No media shared yet
-            </div>
+            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">{uiText("No media shared yet", uiLang)}</div>
           ) : (
             <div className="grid grid-cols-3 gap-1.5">
               {photosAndVideos.map((m) => (
@@ -155,9 +155,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
         {/* Files List */}
         {tab === 'files' && (
           files.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">
-              No files shared yet
-            </div>
+            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">{uiText("No files shared yet", uiLang)}</div>
           ) : (
             <div className="space-y-2">
               {files.map((m) => (
@@ -172,12 +170,12 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
                     </div>
                     <div className="truncate">
                       <p className="text-xs font-semibold text-white truncate">
-                        {m.attachmentMeta?.filename || 'Document'}
+                        {m.attachmentMeta?.filename || uiText("Document", uiLang)}
                       </p>
                       <p className="text-[10px] text-[#7f91a4]">
                         {m.attachmentMeta?.sizeBytes
                           ? `${Math.round(m.attachmentMeta.sizeBytes / 1024)} KB`
-                          : 'File'}
+                          : uiText("File", uiLang)}
                       </p>
                     </div>
                   </div>
@@ -191,9 +189,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
         {/* Voice Notes */}
         {tab === 'voice' && (
           voiceNotes.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">
-              No voice notes shared yet
-            </div>
+            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">{uiText("No voice notes shared yet", uiLang)}</div>
           ) : (
             <div className="space-y-2">
               {voiceNotes.map((m) => (
@@ -207,9 +203,9 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
                       <Play size={14} />
                     </div>
                     <div>
-                      <p className="text-xs font-semibold text-white">Voice Message</p>
+                      <p className="text-xs font-semibold text-white">{uiText("Voice Message", uiLang)}</p>
                       <p className="text-[10px] text-[#7f91a4]">
-                        {new Date(m.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })}
+                        {new Date(m.created_at).toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US', { month: 'short', day: 'numeric' })}
                       </p>
                     </div>
                   </div>
@@ -223,9 +219,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
         {/* Links */}
         {tab === 'links' && (
           linkMessages.length === 0 ? (
-            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">
-              No links found in messages
-            </div>
+            <div className="h-48 flex items-center justify-center text-xs text-[#7f91a4]">{uiText("No links found in messages", uiLang)}</div>
           ) : (
             <div className="space-y-2">
               {linkMessages.map((item, idx) => (
@@ -245,7 +239,7 @@ export const SharedMediaDrawer: React.FC<SharedMediaDrawerProps> = ({
                         {item.url}
                       </p>
                       <p className="text-[10px] text-[#7f91a4]">
-                        {new Date(item.date).toLocaleDateString()}
+                        {new Date(item.date).toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US')}
                       </p>
                     </div>
                   </div>

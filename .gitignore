@@ -30,8 +30,20 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Uploaded test media and attachments
+# Uploaded media and attachments
 uploads/
 **/uploads/
 backups/
 **/backups/
+
+# Local build artifacts and packages
+senora-server-linux-amd64
+senora-server-linux-arm64
+*.zip
+*.tar.gz
+*.dump
+*.sql.gz
+__pycache__/
+*.pyc
+.env.*
+!.env.example

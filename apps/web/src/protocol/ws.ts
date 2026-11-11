@@ -4,6 +4,7 @@ import { serverManager } from './serverManager';
 export type WebSocketEventListener = (event: {
   type: string;
   cursor?: number;
+  replay?: boolean;
   payload: any;
 }) => void;
 
@@ -12,17 +13,20 @@ class WebSocketManager {
   private token: string | null = null;
   private listeners: Set<WebSocketEventListener> = new Set();
   private lastCursor = 0;
+  private cursorScope = "";
   private reconnectTimeout: any = null;
   private pingInterval: any = null;
   private isConnected = false;
+  private connectedAt = 0;
 
   connect(token: string) {
+    clearTimeout(this.reconnectTimeout);
+    this.cleanup();
     this.token = token;
-    if (this.ws) {
-      this.disconnect();
-    }
 
     const activeServer = serverManager.getActiveServer();
+    const scope = `${activeServer.id}:${token}`;
+    if (scope !== this.cursorScope) { this.lastCursor = 0; this.cursorScope = scope; }
     let wsUrl: string;
     if (activeServer.wsUrl && typeof window !== 'undefined' && window.location && !activeServer.wsUrl.includes(window.location.host)) {
       const baseWs = activeServer.wsUrl.split('?')[0];
@@ -37,10 +41,11 @@ class WebSocketManager {
 
       this.ws.onopen = () => {
         this.isConnected = true;
+        this.connectedAt = Date.now();
         this.startHeartbeat();
 
         // Perform cursor sync catch-up on connect
-        if (this.lastCursor > 0) {
+        {
           this.send({
             type: 'sync.request',
             payload: { last_event_id: this.lastCursor },
@@ -60,15 +65,23 @@ class WebSocketManager {
           }
 
           // Notify all listeners
+          // Older servers do not mark replay frames. Their pre-connection
+          // messages are also history; updated servers explicitly mark both
+          // live and replay frames, without relying on the client's clock.
+          const replay = typeof envelope.replay === 'boolean'
+            ? envelope.replay
+            : envelope.type === 'message.created' &&
+              Date.parse(envelope.payload?.created_at || '') <= this.connectedAt;
           for (const listener of this.listeners) {
             listener({
               type: envelope.type,
               cursor: envelope.cursor,
+              replay,
               payload: envelope.payload,
             });
           }
         } catch (e) {
-          console.error('[Senora WS] Failed to parse frame:', e);
+          console.error('[SENORA WS] Failed to parse frame:', e);
         }
       };
 
@@ -78,10 +91,10 @@ class WebSocketManager {
       };
 
       this.ws.onerror = (e) => {
-        console.warn('[Senora WS] Error:', e);
+        console.warn('[SENORA WS] Error:', e);
       };
     } catch (e) {
-      console.error('[Senora WS] Connection error:', e);
+      console.error('[SENORA WS] Connection error:', e);
       this.scheduleReconnect();
     }
   }

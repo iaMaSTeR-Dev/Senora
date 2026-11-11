@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState } from 'react';
 import {
   Bold,
@@ -25,6 +26,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
   onApply,
   onClose,
 }) => {
+  const uiLang = useUILanguage();
   const [showLinkInput, setShowLinkInput] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
 
@@ -71,7 +73,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
           <button
             type="submit"
             className="p-1.5 rounded-lg bg-[#24A1DE] text-white hover:bg-[#208fc4] transition cursor-pointer"
-            title="Insert Link"
+            title={uiText("Insert Link", uiLang)}
           >
             <Check size={14} />
           </button>
@@ -79,7 +81,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => setShowLinkInput(false)}
             className="p-1.5 rounded-lg hover:bg-white/10 text-slate-400 hover:text-white transition cursor-pointer"
-            title="Cancel"
+            title={uiText("Cancel", uiLang)}
           >
             <X size={14} />
           </button>
@@ -90,7 +92,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('bold')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Bold (Ctrl+B)"
+            title={uiText("Bold (Ctrl+B)", uiLang)}
           >
             <Bold size={15} />
           </button>
@@ -98,7 +100,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('italic')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Italic (Ctrl+I)"
+            title={uiText("Italic (Ctrl+I)", uiLang)}
           >
             <Italic size={15} />
           </button>
@@ -106,7 +108,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('underline')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Underline (Ctrl+U)"
+            title={uiText("Underline (Ctrl+U)", uiLang)}
           >
             <Underline size={15} />
           </button>
@@ -114,7 +116,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('strike')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Strikethrough (Ctrl+Shift+X)"
+            title={uiText("Strikethrough (Ctrl+Shift+X)", uiLang)}
           >
             <Strikethrough size={15} />
           </button>
@@ -122,7 +124,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('code')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Monospace Code"
+            title={uiText("Monospace Code", uiLang)}
           >
             <Code size={15} />
           </button>
@@ -130,7 +132,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('codeblock')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Code Block"
+            title={uiText("Code Block", uiLang)}
           >
             <Terminal size={15} />
           </button>
@@ -138,7 +140,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('spoiler')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Spoiler ||text||"
+            title={uiText("Spoiler ||text||", uiLang)}
           >
             <EyeOff size={15} />
           </button>
@@ -146,7 +148,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => handleFormat('quote')}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Quote"
+            title={uiText("Quote", uiLang)}
           >
             <Quote size={15} />
           </button>
@@ -154,7 +156,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
             type="button"
             onClick={() => setShowLinkInput(true)}
             className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title="Add Link (Ctrl+K)"
+            title={uiText("Add Link (Ctrl+K)", uiLang)}
           >
             <LinkIcon size={15} />
           </button>
@@ -163,7 +165,7 @@ export const FormattingToolbar: React.FC<FormattingToolbarProps> = ({
               type="button"
               onClick={onClose}
               className="p-1.5 rounded-xl hover:bg-white/10 text-slate-400 hover:text-white transition ml-1 cursor-pointer"
-              title="Close"
+              title={uiText("Close", uiLang)}
             >
               <X size={14} />
             </button>

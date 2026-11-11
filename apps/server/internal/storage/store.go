@@ -17,9 +17,10 @@ var (
 )
 
 type Store interface {
+	BotRepository
 	Close() error
 	Migrate() error
-	ResetForTesting(ctx context.Context) error
+	BackupFileExtension() string
 
 	// User repository
 	CreateUser(ctx context.Context, u *models.User) error
@@ -44,6 +45,10 @@ type Store interface {
 	CreateSession(ctx context.Context, s *models.Session) error
 	GetSessionByToken(ctx context.Context, token string) (*models.Session, error)
 	DeleteSession(ctx context.Context, token string) error
+	DeleteUserSessions(ctx context.Context, userID string) error
+	GetAvatarOwner(ctx context.Context, filename string) (string, error)
+	AuthorizeAttachmentDownload(ctx context.Context, id, viewer string, consume bool) error
+	CanReadAttachmentReference(ctx context.Context, id, viewer string) (bool, error)
 
 	// Conversation repository
 	CreateConversation(ctx context.Context, c *models.Conversation, memberUserIDs []string) error
@@ -66,6 +71,7 @@ type Store interface {
 	GetMessages(ctx context.Context, conversationID string, beforeID string, limit int) ([]*models.Message, error)
 	GetMessagesForUser(ctx context.Context, conversationID, userID, beforeID string, limit int) ([]*models.Message, error)
 	GetMessageByID(ctx context.Context, messageID string) (*models.Message, error)
+	MutateMessageWithOutbox(ctx context.Context, conversationID, messageID, actorID, kind, value, nonce string) (*models.Message, []*models.EventOutbox, error)
 	UpdateMessageCiphertext(ctx context.Context, messageID string, ciphertext string, nonce string) (*models.Message, error)
 	DeleteMessage(ctx context.Context, messageID string) error
 	DeleteMessageForMe(ctx context.Context, userID, messageID string) error
@@ -73,6 +79,7 @@ type Store interface {
 	AddMessageReaction(ctx context.Context, messageID string, userID string, emoji string) (string, error)
 	PinMessage(ctx context.Context, conversationID string, messageID string, isPinned bool) error
 	GetOutboxEventsAfter(ctx context.Context, recipientUserID string, afterID int64, limit int) ([]*models.EventOutbox, error)
+	GetOutboxHead(ctx context.Context, recipientUserID string) (int64, error)
 
 	// Attachments
 	CreateAttachment(ctx context.Context, att *models.Attachment) error
@@ -162,6 +169,9 @@ type Store interface {
 	CreateScheduledMessage(ctx context.Context, sm *models.ScheduledMessage) error
 	GetScheduledMessages(ctx context.Context, conversationID, senderID string) ([]*models.ScheduledMessage, error)
 	DeleteScheduledMessage(ctx context.Context, id, senderID string) error
+	ListDueScheduledMessages(ctx context.Context, now time.Time) ([]*models.ScheduledMessage, error)
+	FinishScheduledMessage(ctx context.Context, id, deliveryError string) error
+	ExpireInactiveAccounts(ctx context.Context, now time.Time) ([]string, error)
 
 	// Message Readers & Reads
 	RecordMessageRead(ctx context.Context, messageID, userID, conversationID string) error
@@ -196,6 +206,7 @@ type Store interface {
 	GetServerSetting(ctx context.Context, key, defaultValue string) (string, error)
 	SetServerSetting(ctx context.Context, key, value string) error
 
+	// Conversation lookup and administration metadata
 	GetDirectConversationBetween(ctx context.Context, user1ID, user2ID string) (*models.Conversation, error)
 	ListAllConversations(ctx context.Context, limit int) ([]*models.Conversation, error)
 
@@ -226,6 +237,3 @@ type Store interface {
 	IncrementMediaShareDownloads(ctx context.Context, id string) error
 	DeleteMediaShare(ctx context.Context, id string) error
 }
-
-
-

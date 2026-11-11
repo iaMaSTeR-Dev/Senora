@@ -1,4 +1,4 @@
-// Media Device Manager for Senora
+// Media Device Manager for SENORA
 // Manages real microphone, camera, and speaker enumeration, selection, persistence, and routing
 
 export interface MediaDeviceState {

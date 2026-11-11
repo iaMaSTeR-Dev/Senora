@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { Conversation, Message, User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -16,6 +17,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
   onClose,
   onForward,
 }) => {
+  const uiLang = useUILanguage();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string | null>(null);
   const [hideAttribution, setHideAttribution] = useState(false);
@@ -66,9 +68,8 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-[#242f3d]">
           <div>
-            <h3 className="text-base font-bold text-white">Forward Message</h3>
-            <p className="text-[11px] text-[#7f91a4]">
-              Forwarding {messages.length} {messages.length === 1 ? 'message' : 'messages'}
+            <h3 className="text-base font-bold text-white">{uiText("Forward Message", uiLang)}</h3>
+            <p className="text-[11px] text-[#7f91a4]">{uiText("Forwarding", uiLang)}{messages.length} {messages.length === 1 ? uiText("message", uiLang) : uiText("messages", uiLang)}
             </p>
           </div>
           <button onClick={onClose} className="text-[#7f91a4] hover:text-white cursor-pointer">
@@ -78,16 +79,13 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
 
         {/* Message preview snippet */}
         <div className="my-3 p-2.5 rounded-xl bg-[#202b36] border border-[#242f3d] text-xs text-slate-300">
-          <span className="text-[10px] font-bold text-[#24A1DE] uppercase tracking-wider block mb-0.5">
-            Preview
-          </span>
+          <span className="text-[10px] font-bold text-[#24A1DE] uppercase tracking-wider block mb-0.5">{uiText("Preview", uiLang)}</span>
           <p className="line-clamp-2 text-slate-200 font-medium">
-            {messages[0]?.plaintext || 'Attachment/Media message'}
+            {messages[0]?.plaintext || uiText("Attachment/Media message", uiLang)}
           </p>
           {messages.length > 1 && (
             <span className="text-[10px] text-[#7f91a4] mt-1 block">
-              + {messages.length - 1} more
-            </span>
+              + {messages.length - 1}{uiText("more", uiLang)}</span>
           )}
         </div>
 
@@ -101,12 +99,12 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
             )}
             <div>
               <p className="text-xs font-semibold text-white">
-                {hideAttribution ? 'Hide Sender Name' : 'Show Original Sender'}
+                {hideAttribution ? uiText("Hide Sender Name", uiLang) : uiText("Show Original Sender", uiLang)}
               </p>
               <p className="text-[10px] text-[#7f91a4]">
                 {hideAttribution
-                  ? 'Forwards message anonymously without original attribution'
-                  : 'Preserves original sender name and timestamp'}
+                  ? uiText("Forwards message anonymously without original attribution", uiLang)
+                  : uiText("Preserves original sender name and timestamp", uiLang)}
               </p>
             </div>
           </div>
@@ -119,7 +117,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
                 : 'bg-[#242f3d] text-[#7f91a4] hover:text-white'
             }`}
           >
-            {hideAttribution ? 'Hidden' : 'Show'}
+            {hideAttribution ? uiText("Hidden", uiLang) : uiText("Show", uiLang)}
           </button>
         </div>
 
@@ -128,7 +126,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
           <Search size={14} className="absolute left-3 top-2.5 text-[#7f91a4]" />
           <input
             type="text"
-            placeholder="Search conversation..."
+            placeholder={uiText("Search conversation...", uiLang)}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="w-full pl-8 pr-3 py-1.5 bg-[#242f3d] border border-[#101921] rounded-xl text-white text-xs placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
@@ -138,9 +136,9 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
         {/* Destination List */}
         <div className="flex-1 overflow-y-auto space-y-1.5 my-2 pr-1 no-scrollbar">
           {loading ? (
-            <div className="p-4 text-center text-xs text-[#7f91a4]">Loading chats...</div>
+            <div className="p-4 text-center text-xs text-[#7f91a4]">{uiText("Loading chats...", uiLang)}</div>
           ) : filteredConvs.length === 0 ? (
-            <div className="p-4 text-center text-xs text-[#7f91a4]">No conversations found</div>
+            <div className="p-4 text-center text-xs text-[#7f91a4]">{uiText("No conversations found", uiLang)}</div>
           ) : (
             filteredConvs.map((conv) => {
               const isSelected = selectedConvId === conv.id;
@@ -205,9 +203,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
             type="button"
             onClick={onClose}
             className="px-4 py-2 text-xs font-semibold text-[#7f91a4] hover:text-white transition cursor-pointer"
-          >
-            Cancel
-          </button>
+          >{uiText("Cancel", uiLang)}</button>
           <button
             type="button"
             disabled={!selectedConvId || sending}
@@ -215,7 +211,7 @@ export const ForwardModal: React.FC<ForwardModalProps> = ({
             className="px-5 py-2 text-xs font-bold bg-[#24A1DE] hover:bg-[#1b8bc2] text-white rounded-xl transition disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-md"
           >
             <Send size={14} />
-            <span>{sending ? 'Sending...' : 'Forward'}</span>
+            <span>{sending ? uiText("Sending...", uiLang) : uiText("Forward", uiLang)}</span>
           </button>
         </div>
       </div>

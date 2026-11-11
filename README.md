@@ -8,7 +8,7 @@
 
 <br/>
 
-[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat-square&logo=go&logoColor=white)](https://golang.org)
 [![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![License](https://img.shields.io/badge/License-GPL--3.0--only-9B7BC8?style=flat-square)](LICENSE)
@@ -19,54 +19,54 @@
 
 ## A communication space you control
 
-**Senora** is a high-performance, self-hosted messaging platform engineered from the ground up around three core principles:
+**Senora** is a self-hosted messaging platform built around three core areas:
 
-- **Cryptographic Privacy by Design:** Signal Protocol Double Ratchet sessions, X3DH prekeys, and AES-256-GCM client-side encryption. In E2EE mode, the server persists zero plaintext.
-- **A Complete Telegram-Class Experience:** Direct chats, groups, channels, saved messages, voice waveforms, round video notes, stickers, reactions, polls, 24-hour stories, synchronized watch parties, and WebRTC calling.
-- **Infrastructure You Own:** A modular-monolith Go backend, React 19 single-page application, and zero-dependency embedded SQLite or clustered PostgreSQL storage options.
-
-Senora delivers the responsiveness, fluid micro-interactions, and feature density of leading messaging applications to a private server you control.
+- **End-to-End Encryption:** Signal Protocol Double Ratchet sessions, X3DH prekeys, and AES-256-GCM client-side encryption. In E2EE mode, the server stores ciphertext only.
+- **Messaging & Media:** Direct chats, groups, channels, saved messages, voice waveforms, round video notes, stickers, reactions, polls, 24-hour stories, synchronized watch parties, and WebRTC calling.
+- **Self-Hosted Control:** Go modular-monolith backend, React 19 single-page application, and SQLite or PostgreSQL 16 storage.
 
 ---
 
 ## Experience
 
-### 💬 Messaging & Telegram-Class UX
+### 💬 Messaging & User Experience
 
 - **Conversations & Categories:** Categorized tabs for All, Direct Chats, Groups, Channels, Saved Messages, and Archived Chats.
 - **Rich-Text Formatting:** Floating formatting toolbar and keyboard shortcuts supporting Bold, Italic, Underline, Strikethrough, Monospace, Spoilers, Clickable Markdown Links, and Syntax-Highlighted Code Blocks with one-click copying.
-- **Interactive Message Actions:** Viewport-bounded context menu with quick emoji reactions, threaded replies, multi-destination forwarding (with optional sender attribution privacy), pinning, inline editing, and granular deletions ("Delete for Me" vs "Delete for Everyone").
-- **Voice & Video Notes:** Live AudioContext waveform voice note recorder with seekable playback, and circular video notes with genuine circular SVG progress indicators.
-- **Client-Side Media Gallery:** Client-encrypted media previews with blurred placeholders, progressive download indicators, full-screen lightbox viewing with zoom/pan, and full-resolution downloads.
-- **Interactive Polls & Quizzes:** Real-time anonymous voting, multi-choice selection, percentage visualization, and instant quiz explanations.
+- **Interactive Message Actions:** Context menu with quick emoji reactions, threaded replies, multi-destination forwarding (with optional sender attribution hiding), pinning, inline editing, and per-user or global deletions.
+- **Voice & Video Notes:** AudioContext waveform voice note recorder with seekable playback, and circular video notes with SVG progress indicators.
+- **Client-Side Media Gallery:** Encrypted media previews with blurred placeholders, progressive download indicators, lightbox viewer with zoom/pan, and full-resolution downloads.
+- **Interactive Polls & Quizzes:** Anonymous voting, multi-choice selection, percentage breakdowns, and quiz explanations.
 - **24-Hour Stories:** Stories bar with full-screen viewer, pause/resume, and auto-advancement.
-- **Channel Broadcasts:** Public channel posts with unique viewer IP/account deduplication and authentic formatted view counts (e.g., `42`, `1.5K`, `2.4M`).
+- **Channel Broadcasts:** Public channel posts with unique viewer deduplication and formatted view counts (`42`, `1.5K`, `2.4M`).
 - **Disappearing Messages:** Configurable TTL (Off, 1 hour, 1 day, 1 week) with automated physical database purging.
-- **Message Read Receipts:** Accurate per-message read tracking with reader inspection (`Read by` modal) and double blue checkmark transitions.
+- **Message Read Receipts:** Per-message read tracking with reader list (`Read by`) and double blue checkmark states.
 - **Secret Whisper Messages:** Recipient-locked private messages within group conversations.
-- **Custom Sticker Studio:** Searchable emoji picker, animated WebP/SVG stickers, and user-created sticker packs with instant share links.
+- **Custom Sticker Studio:** Searchable emoji picker, animated WebP/SVG stickers, and user-created sticker packs with share links.
 
 ### 📞 WebRTC Audio & Video Calling
 
-- **1-to-1 Calling:** Peer-to-peer WebRTC voice and video calls with authenticated WebSocket signaling.
-- **Screen Sharing:** High-framerate display capture via `getDisplayMedia` with dynamic track adaptation, Theater Mode, Aspect Fit/Fill toggles, and full-screen view.
-- **Synthesized Audio Engine:** Integrated Web Audio tone generator providing ITU-T standard 440+480Hz ringback tones and melodious incoming ringtones without external audio files.
-- **Group Voice Chat:** Multi-participant voice chat room with live AudioContext frequency analyzer waveform visualization.
+- **1-to-1 Calling:** Peer-to-peer WebRTC voice and video calls over authenticated WebSocket signaling.
+- **Screen Sharing:** Display capture via `getDisplayMedia` with track adaptation, Theater Mode, Aspect Fit/Fill toggles, and full-screen view.
+- **Synthesized Audio Engine:** Web Audio tone generator for ITU-T standard 440+480Hz ringback tones and incoming ringtones without external audio files.
+- **Group Voice Chat:** Multi-participant voice chat rooms with live AudioContext frequency waveform visualization.
 - **Dynamic ICE & Recovery:** Automatic STUN/TURN server resolution with connection recovery.
 
 ### 🤖 Automation, Downloader & Media Ecosystem
 
-- **SenoraMasterBot:** In-chat server management for the instance owner, providing automated user registration approvals, server health diagnostics, IP blacklisting, database backup generation, and maintenance controls.
-  > **Privacy Boundary:** The Master Bot and server administration have **zero access** to inspect, eavesdrop on, or read users' private chats and attachments. User privacy is strictly safeguarded.
-- **Media Downloader Engine:** Built-in `/dl` service supporting direct streaming downloads, S3/local disk failover, and configurable proxy routing.
-- **Interactive Mini-Games:** Seamless multiplayer games directly in conversations including Tic-Tac-Toe, Rock-Paper-Scissors, and animated dice.
-- **Watch Party & Standalone Media Player:** In-chat synchronized media viewing (سینما پارتی همزمان) with drift correction and public streaming links featuring RFC 7233 byte-range HTTP streaming.
-- **IP Ban & Abuse Prevention:** Automatic abuse tracking, brute-force mitigation, and CIDR subnet IP blacklisting.
+- **SenoraMasterBot:** In-chat server management for the instance owner, providing user registration approvals, server statistics, IP blacklisting, database backups, and maintenance controls.
+- **Native Bot API & BotFather:** Every approved account can create bots, rotate API keys and manage commands/privacy. Independent programs support long polling or signed-secret webhooks, messages, files, buttons/callbacks and conversation administration. See [Bot API](docs/BOT_API.md).
+- **Media Downloader Engine:** Built-in `/dl` with size/time budgets, free-disk reserves, cancellation, abandoned-download cleanup, S3/local storage and proxy routing.
+- **Seekable Streaming:** Shared player for chats, public watch links and Watch Party; native byte ranges and in-memory indexing for supported H.264 MPEG-TS sources. Full indexed duration, direct seeking and a bounded browser fragment cache. Playback creates no server-side video copies. Codec/source limits are documented in [Streaming](docs/STREAMING.md).
+- **Interactive Mini-Games:** Multiplayer Tic-Tac-Toe, Rock-Paper-Scissors, 2048, and animated dice directly in chat.
+- **Watch Party & Standalone Media Player:** In-chat synchronized media viewing with drift correction and public streaming links featuring RFC 7233 byte-range HTTP streaming.
+- **IP Ban & Abuse Prevention:** Abuse tracking, brute-force rate limiting, and CIDR subnet IP blacklisting.
 
 ### 🎨 Client Experience
 
-- **React 19 + TypeScript SPA:** Ultra-responsive client built with Vite and Tailwind CSS.
-- **Theme Coherence:** Telegram-inspired dark and light visual themes with glassmorphism touches.
+- **Language & Notifications:** English by default, selectable Persian/RTL, localized built-in bots, and silent history replay when reopening or refreshing.
+- **React 19 + TypeScript SPA:** Built with Vite and Tailwind CSS.
+- **Themes:** Dark and light themes.
 - **Bidirectional Typography:** Full LTR and RTL layout support with self-hosted Vazirmatn typography for Persian and Arabic text alongside Inter.
 - **Passcode Lock Gate:** Client-side PBKDF2-HMAC-SHA256 (100k iterations) passcode lock with auto-lock timers and attempt rate limiting.
 
@@ -79,8 +79,8 @@ Senora uses a clean, decoupled architecture. The browser client manages the cryp
 ```mermaid
 flowchart TB
     subgraph CLIENT["CLIENT · React 19 / TypeScript"]
-      UI[Messaging & Telegram UX]
-      STATE[Zustand + TanStack Query]
+      UI[Messaging & UI]
+      STATE[React State + Local Persistence]
       CRYPTO[Web Crypto · Signal Double Ratchet]
       TRANSPORT[REST Fetcher + WebSocket Manager]
       UI --> STATE
@@ -116,9 +116,9 @@ flowchart TB
 
 | Layer | Technology |
 |---|---|
-| **Backend** | Go 1.23+ (Modular Monolith) |
+| **Backend** | Go 1.26+ (Modular Monolith) |
 | **Web Client** | React 19, TypeScript 5, Tailwind CSS, Vite |
-| **Client State** | Zustand, TanStack Query |
+| **Client State** | React hooks, browser persistence and synchronized protocol state |
 | **Real-Time Transport** | WebSocket (`gorilla/websocket`) with transactional outbox fan-out |
 | **Voice & Video** | WebRTC (`RTCPeerConnection`), Web Audio API |
 | **Cryptography** | Signal Protocol (Double Ratchet, X3DH), Web Crypto API, AES-256-GCM, Argon2id |
@@ -139,7 +139,7 @@ Security-sensitive behavior depends on correct implementation, deployment hygien
 ### 2. Client-Side End-to-End Encryption (E2EE)
 - **Signal Protocol & Web Crypto:** Employs X3DH (Extended Triple Diffie-Hellman) prekey bundles and Double Ratchet session evolution for forward secrecy and post-compromise security.
 - **Payload Cipher:** AES-256-GCM with 96-bit unique IVs and 128-bit authentication tags.
-- **Key Boundaries:** Private keys and ratchet states remain exclusively stored in client-side non-extractable IndexedDB via `SubtleCrypto`. Private keys never leave the browser.
+- **Key Boundaries:** Private keys and ratchet states remain exclusively stored in client-side IndexedDB using the client crypto store. Private keys never leave the browser.
 - **Associated Data (AAD):** Encrypted payloads bind conversation ID, message ID, and sender ID into AES-GCM Associated Data to prevent cipher replay across conversations.
 - **Zero Plaintext on Server:** The server stores ciphertexts and cryptographic metadata only. Plaintext content is never processed or persisted by the server in E2EE mode.
 
@@ -155,10 +155,10 @@ Security-sensitive behavior depends on correct implementation, deployment hygien
 
 ### Prerequisites
 
-- **Go**: Version 1.23 or newer (tested with Go 1.23 and 1.26).
-- **Node.js**: Version 20 or newer (tested with Node.js v24.16.0 / npm 12.0.2).
+- **Go**: Version 1.26 or newer (module toolchain: Go 1.26.0).
+- **Node.js**: Version 24 or newer.
 - **Operating System**: Windows, Linux, or macOS.
-- **Database** *(optional)*: PostgreSQL 16 (if not specified, Senora defaults to an embedded pure-Go SQLite database).
+- **Database**: PostgreSQL 16 in production; embedded pure-Go SQLite is available for development and standalone nodes.
 
 ### 1. Clone the repository
 
@@ -182,7 +182,7 @@ In a second terminal:
 
 ```bash
 cd apps/web
-npm install
+npm ci
 npm run dev
 ```
 
@@ -207,33 +207,21 @@ Configure the backend using environment variables or a `.env` file:
 
 ---
 
-## Development & Testing
+## Build & Verification
 
-### Backend test suite
+### Backend vet & build
 
 ```bash
 cd apps/server
-go test -v -count=1 ./...
+go vet ./...
+go build -o senora-server ./cmd/server
 ```
 
-### Frontend test suite
-
-```bash
-cd apps/web
-npm test -- --run
-```
-
-### TypeScript check
+### TypeScript check & production frontend build
 
 ```bash
 cd apps/web
 npx tsc --noEmit
-```
-
-### Production frontend build
-
-```bash
-cd apps/web
 npm run build
 ```
 
@@ -255,7 +243,7 @@ npm run build
 
 ### Option B: Standalone Linux Binary
 
-Compile the optimized standalone Linux binary:
+Compile the standalone Linux binary (preserve database configuration, `SESSION_SECRET`, allowed origins, and persistent upload/backup directories across upgrades):
 
 ```bash
 cd apps/server
@@ -272,18 +260,22 @@ Senora/
 │   ├── server/             # Go modular monolith backend
 │   │   ├── cmd/server/     # Server entry point (main.go)
 │   │   ├── internal/
-│   │   │   ├── api/        # REST router, middleware, handlers & tests
+│   │   │   ├── api/        # REST router, middleware, and handlers
 │   │   │   ├── auth/       # Argon2id password hashing & session management
+│   │   │   ├── botlocale/  # Localized responses for built-in bots & downloader
 │   │   │   ├── config/     # Environment parsing & validation
 │   │   │   ├── conversations/ # Conversation management & roles
 │   │   │   ├── crypto/     # Prekey registry & cryptographic verification
+│   │   │   ├── diskguard/  # Disk space guards for uploads & downloads
 │   │   │   ├── downloader/ # Asynchronous media downloader & proxy manager
 │   │   │   ├── events/     # Real-time WebSocket hub & presence tracking
 │   │   │   ├── filestore/  # S3 Object Storage with automatic local failover
 │   │   │   ├── identity/   # User identity & profile management
 │   │   │   ├── masterbot/  # Administrative bot service & interactive commands
+│   │   │   ├── mediaindex/ # Bounded MPEG-TS keyframe index & HLS slices
 │   │   │   ├── messages/   # Message service, validation & outbox events
 │   │   │   ├── models/     # Domain data models & structures
+│   │   │   ├── netguard/   # SSRF / URL safety checks
 │   │   │   └── storage/    # Dual-dialect SQL store (SQLite / PostgreSQL)
 │   │   └── go.mod          # Go module definitions
 │   └── web/                # React 19 + TypeScript frontend SPA
@@ -300,12 +292,14 @@ Senora/
 ├── deployments/
 │   ├── compose/            # Docker Compose & .env.example
 │   └── docker/             # Dockerfiles (server, web), Caddyfile, Nginx config
-├── docs/                   # Architectural blueprints, threat model, protocol specs
+├── docs/                   # Architecture, threat model, protocol, bot & streaming docs
+├── examples/
+│   └── bots/               # Example Python polling and webhook bots
 ├── packages/
 │   └── protocol/           # OpenAPI 3.1 specification (openapi.yaml)
 ├── .github/workflows/      # GitHub Actions CI workflow (ci.yml)
 ├── CONTRIBUTING.md         # Contribution guidelines
-├── Makefile                # Multi-target build and test orchestration
+├── Makefile                # Multi-target build orchestration
 ├── README.md               # Public project documentation
 └── SECURITY.md             # Security policy and disclosure process
 ```
@@ -318,7 +312,7 @@ Senora/
 |---|---|
 | **Camera or microphone unavailable** | Ensure the site is served over HTTPS or `localhost`. Browsers restrict WebRTC media devices on insecure HTTP origins. |
 | **WebSocket connection fails** | Confirm the client browser origin is included in `ALLOWED_ORIGINS`. In development, `http://localhost:5173` is allowed by default. |
-| **Database busy or locking errors** | On SQLite edge nodes, ensure WAL mode is active (default in Senora). For high-concurrency enterprise workloads, connect to PostgreSQL 16. |
+| **Database busy or locking errors** | On SQLite edge nodes, ensure WAL mode is active (default in Senora). For high-concurrency workloads, connect to PostgreSQL 16. |
 
 ---
 

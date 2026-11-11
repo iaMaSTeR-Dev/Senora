@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -49,11 +50,12 @@ type AuthResult struct {
 
 func (s *Service) Register(ctx context.Context, p RegisterParams) (*AuthResult, error) {
 	username := strings.TrimSpace(p.Username)
+    if strings.EqualFold(username,models.BotFatherUsername) { return nil,errors.New("username is reserved for the system bot") }
 	displayName := strings.TrimSpace(p.DisplayName)
 	if len(username) < 3 || len(username) > 32 {
 		return nil, errors.New("username must be between 3 and 32 characters")
 	}
-	if len(displayName) < 1 || len(displayName) > 64 {
+	if utf8.RuneCountInString(displayName) < 1 || utf8.RuneCountInString(displayName) > 64 {
 		return nil, errors.New("display name must be between 1 and 64 characters")
 	}
 	if len(p.Password) < 8 {

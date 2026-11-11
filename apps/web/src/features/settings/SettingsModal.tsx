@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -73,6 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onToggleTheme,
   initialTab = 'profile',
 }) => {
+  const uiLang = useUILanguage(lang);
   // Normalize legacy initialTab
   const normalizedInitialTab: SettingsTab =
     initialTab === 'security' ? 'privacy' : (initialTab as SettingsTab) || 'profile';
@@ -134,7 +136,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleDeleteAvatar = async () => {
-    if (!confirm('Are you sure you want to remove your avatar?')) return;
+    if (!confirm(uiText("Are you sure you want to remove your avatar?", uiLang))) return;
     try {
       const updated = await api.deleteAvatar();
       setAvatarUrl('');
@@ -241,7 +243,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const filteredCategories = categories.filter((c) => {
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
-    return c.label.toLowerCase().includes(q) || c.desc.toLowerCase().includes(q);
+    return uiText(c.label, uiLang).toLowerCase().includes(q) || uiText(c.desc, uiLang).toLowerCase().includes(q);
   });
 
   return (
@@ -265,7 +267,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             type="button"
             onClick={onClose}
             className="p-1.5 rounded-lg text-[#7f91a4] hover:text-white hover:bg-[#2b3a4a] transition cursor-pointer"
-            title="Close Settings (Esc)"
+            title={uiText("Close Settings (Esc)", uiLang)}
           >
             <X className="h-5 w-5" />
           </button>
@@ -326,9 +328,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           <Icon className="h-4 w-4" />
                         </div>
                         <div>
-                          <span className="text-xs font-semibold block text-white">{c.label}</span>
+                          <span className="text-xs font-semibold block text-white">{uiText(c.label, uiLang)}</span>
                           <span className="text-[10px] text-[#7f91a4] truncate max-w-[150px] block">
-                            {c.desc}
+                            {uiText(c.desc, uiLang)}
                           </span>
                         </div>
                       </div>
@@ -344,7 +346,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="flex items-center gap-2 truncate">
                 <div className="h-7 w-7 rounded-full bg-[#24A1DE] flex items-center justify-center font-bold text-white text-[11px] overflow-hidden">
                   {currentUser.avatar_url ? (
-                    <img src={currentUser.avatar_url} alt="Avatar" className="h-full w-full object-cover" />
+                    <img src={api.avatarURL(currentUser.avatar_url)} alt={uiText("Avatar", uiLang)} className="h-full w-full object-cover" />
                   ) : (
                     currentUser.username.charAt(0).toUpperCase()
                   )}
@@ -370,9 +372,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <div className="space-y-6 text-xs text-white">
                 <div className="pb-3 border-b border-[#242f3d]">
                   <h3 className="text-sm font-bold text-white">{t.profile}</h3>
-                  <p className="text-[11px] text-[#7f91a4] mt-0.5">
-                    Update personal profile, avatar photo, and bio description
-                  </p>
+                  <p className="text-[11px] text-[#7f91a4] mt-0.5">{uiText("Update personal profile, avatar photo, and bio description", uiLang)}</p>
                 </div>
 
                 <form onSubmit={handleSaveProfile} className="space-y-4">
@@ -381,7 +381,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="relative group">
                       <div className="h-20 w-20 rounded-full bg-gradient-to-tr from-[#24A1DE] to-[#60a5fa] flex items-center justify-center text-2xl font-bold text-white shadow-xl overflow-hidden flex-shrink-0">
                         {avatarUrl ? (
-                          <img src={avatarUrl} alt="Avatar" className="h-full w-full object-cover" />
+                          <img src={avatarUrl} alt={uiText("Avatar", uiLang)} className="h-full w-full object-cover" />
                         ) : (
                           (displayName || currentUser.username).charAt(0).toUpperCase()
                         )}
@@ -390,7 +390,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="button"
                         onClick={() => setShowAvatarModal(true)}
                         className="absolute inset-0 rounded-full bg-black/50 opacity-0 group-hover:opacity-100 flex items-center justify-center transition cursor-pointer text-white"
-                        title="Upload photo"
+                        title={uiText("Upload photo", uiLang)}
                       >
                         <Camera className="h-6 w-6" />
                       </button>
@@ -404,7 +404,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           className="px-3 py-1.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow"
                         >
                           <Camera className="h-3.5 w-3.5" />
-                          <span>Change Photo</span>
+                          <span>{uiText("Change Photo", uiLang)}</span>
                         </button>
                         {avatarUrl && (
                           <button
@@ -413,13 +413,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="px-3 py-1.5 rounded-xl bg-red-500/10 hover:bg-red-500/20 text-red-400 border border-red-500/20 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
-                            <span>Remove</span>
+                            <span>{uiText("Remove", uiLang)}</span>
                           </button>
                         )}
                       </div>
-                      <p className="text-[11px] text-[#7f91a4]">
-                        JPG, PNG, or WebP. Maximum 10MB.
-                      </p>
+                      <p className="text-[11px] text-[#7f91a4]">{uiText("JPG, PNG, or WebP. Maximum 10MB.", uiLang)}</p>
                     </div>
                   </div>
 
@@ -432,7 +430,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       type="text"
                       value={displayName}
                       onChange={(e) => setDisplayName(e.target.value)}
-                      placeholder="Your name"
+                      placeholder={uiText("Your name", uiLang)}
                       className="w-full rounded-xl bg-[#242f3d] px-3.5 py-2.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE]"
                     />
                   </div>
@@ -450,7 +448,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         type="button"
                         onClick={handleCopyUsername}
                         className="p-2.5 rounded-xl bg-[#242f3d] hover:bg-[#2b3a4a] text-[#7f91a4] hover:text-white transition cursor-pointer"
-                        title="Copy username"
+                        title={uiText("Copy username", uiLang)}
                       >
                         {copiedUsername ? (
                           <Check className="h-4 w-4 text-emerald-400" />
@@ -470,7 +468,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       value={bio}
                       onChange={(e) => setBio(e.target.value)}
                       rows={3}
-                      placeholder="A few words about you..."
+                      placeholder={uiText("A few words about you...", uiLang)}
                       className="w-full rounded-xl bg-[#242f3d] px-3.5 py-2.5 text-xs text-white placeholder-[#7f91a4] focus:outline-none focus:ring-1 focus:ring-[#24A1DE] resize-none"
                     />
                   </div>
@@ -478,7 +476,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {profileSuccess && (
                     <div className="p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 text-xs flex items-center gap-2">
                       <CheckCircle className="h-4 w-4 flex-shrink-0" />
-                      <span>Profile updated successfully!</span>
+                      <span>{uiText("Profile updated successfully!", uiLang)}</span>
                     </div>
                   )}
 
@@ -488,7 +486,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="w-full py-2.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs font-bold text-white flex items-center justify-center gap-2 transition disabled:opacity-50 cursor-pointer shadow-lg shadow-[#24A1DE]/20"
                   >
                     <Save className="h-4 w-4" />
-                    <span>{savingProfile ? 'Saving...' : t.save}</span>
+                    <span>{savingProfile ? uiText("Saving...", uiLang) : t.save}</span>
                   </button>
                 </form>
 
@@ -497,7 +495,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <button
                     type="button"
                     onClick={async () => {
-                      if (confirm('Are you sure you want to log out?')) {
+                      if (confirm(uiText("Are you sure you want to log out?", uiLang))) {
                         await api.logout();
                         window.location.reload();
                       }

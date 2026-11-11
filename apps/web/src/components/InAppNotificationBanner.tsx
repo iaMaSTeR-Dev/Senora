@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../app/language";
 import React, { useEffect } from 'react';
 import { Conversation } from '../app/types';
 import { X, MessageSquare, Bell } from 'lucide-react';
@@ -22,6 +23,7 @@ export const InAppNotificationBanner: React.FC<InAppNotificationBannerProps> = (
   onSelect,
   onDismiss,
 }) => {
+  const uiLang = useUILanguage();
   useEffect(() => {
     if (!notification) return;
     const timer = setTimeout(() => {
@@ -77,7 +79,7 @@ export const InAppNotificationBanner: React.FC<InAppNotificationBannerProps> = (
             onDismiss();
           }}
           className="p-1 rounded-lg text-[#7f91a4] hover:text-white hover:bg-white/10 transition cursor-pointer flex-shrink-0"
-          title="Dismiss"
+          title={uiText("Dismiss", uiLang)}
         >
           <X size={15} />
         </button>

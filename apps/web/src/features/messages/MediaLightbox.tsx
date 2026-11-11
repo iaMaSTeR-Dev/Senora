@@ -1,3 +1,5 @@
+import { StreamingVideo } from './StreamingVideo';
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useEffect, useRef, useState } from 'react';
 import {
   X,
@@ -51,6 +53,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
   onStartWatchParty,
   onShareMedia,
 }) => {
+  const uiLang = useUILanguage();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState<number>(1);
@@ -193,7 +196,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
         <div className="text-white flex items-center gap-3">
           <div>
             <div className="flex items-center gap-2">
-              <h4 className="text-sm font-semibold">{media.senderName || 'Media'}</h4>
+              <h4 className="text-sm font-semibold">{media.senderName || uiText("Media", uiLang)}</h4>
               {media.totalCount && media.totalCount > 1 && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-white/10 text-slate-300 font-mono">
                   {(media.currentIndex ?? 0) + 1} / {media.totalCount}
@@ -207,9 +210,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
               type="button"
               onClick={() => onJumpToMessage(media.id)}
               className="text-xs text-[#24A1DE] hover:underline px-2 py-1 rounded hover:bg-white/5 transition cursor-pointer"
-            >
-              Show in Chat
-            </button>
+            >{uiText("Show in Chat", uiLang)}</button>
           )}
         </div>
 
@@ -222,7 +223,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                 onClick={zoomOut}
                 disabled={zoom <= 0.5}
                 className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition disabled:opacity-30 cursor-pointer"
-                title="Zoom Out (-)"
+                title={uiText("Zoom Out (-)", uiLang)}
               >
                 <ZoomOut size={18} />
               </button>
@@ -234,7 +235,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                 onClick={zoomIn}
                 disabled={zoom >= 4}
                 className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition disabled:opacity-30 cursor-pointer"
-                title="Zoom In (+)"
+                title={uiText("Zoom In (+)", uiLang)}
               >
                 <ZoomIn size={18} />
               </button>
@@ -242,7 +243,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                 type="button"
                 onClick={resetZoom}
                 className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
-                title="Reset Zoom (0)"
+                title={uiText("Reset Zoom (0)", uiLang)}
               >
                 <RotateCcw size={18} />
               </button>
@@ -255,7 +256,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                 type="button"
                 onClick={cycleVideoSpeed}
                 className="px-2 py-1 text-xs font-bold text-[#24A1DE] bg-[#24A1DE]/10 hover:bg-[#24A1DE]/20 rounded-lg border border-[#24A1DE]/30 transition cursor-pointer"
-                title="تغییر سرعت ویدیو (1x, 1.5x, 2x)"
+                title={uiText("تغییر سرعت ویدیو (1x, 1.5x, 2x)", uiLang)}
               >
                 {videoSpeed}x
               </button>
@@ -264,7 +265,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                   type="button"
                   onClick={togglePiP}
                   className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
-                  title="تصویر در تصویر (Picture-in-Picture)"
+                  title={uiText("تصویر در تصویر (Picture-in-Picture)", uiLang)}
                 >
                   <Tv size={18} />
                 </button>
@@ -274,10 +275,10 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                   type="button"
                   onClick={() => onStartWatchParty(media)}
                   className="px-2.5 py-1 text-xs font-semibold text-emerald-400 bg-emerald-500/10 hover:bg-emerald-500/20 rounded-lg border border-emerald-500/30 transition flex items-center gap-1 cursor-pointer"
-                  title="سینما پارتی (تماشای همزمان)"
+                  title={uiText("سینما پارتی (تماشای همزمان)", uiLang)}
                 >
                   <Film size={14} />
-                  <span>سینما پارتی</span>
+                  <span>{uiText("سینما پارتی", uiLang)}</span>
                 </button>
               )}
               {onShareMedia && (
@@ -285,10 +286,10 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
                   type="button"
                   onClick={() => onShareMedia(media)}
                   className="px-2.5 py-1 text-xs font-semibold text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20 rounded-lg border border-indigo-500/30 transition flex items-center gap-1 cursor-pointer"
-                  title="لینک استریم مستقیم و وب پلیر"
+                  title={uiText("لینک استریم مستقیم و وب پلیر", uiLang)}
                 >
                   <Share2 size={14} />
-                  <span>اشتراک استریم</span>
+                  <span>{uiText("اشتراک استریم", uiLang)}</span>
                 </button>
               )}
             </>
@@ -298,7 +299,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
             type="button"
             onClick={handleCopy}
             className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
-            title="Copy Image"
+            title={uiText("Copy Image", uiLang)}
           >
             {copied ? <Check size={18} className="text-emerald-400" /> : <Copy size={18} />}
           </button>
@@ -307,7 +308,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
             type="button"
             onClick={handleDownload}
             className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
-            title="Download Original"
+            title={uiText("Download Original", uiLang)}
           >
             <Download size={18} />
           </button>
@@ -316,7 +317,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
             type="button"
             onClick={onClose}
             className="p-2 text-slate-300 hover:text-white rounded-full hover:bg-white/10 transition cursor-pointer"
-            title="Close (Esc)"
+            title={uiText("Close (Esc)", uiLang)}
           >
             <X size={22} />
           </button>
@@ -332,7 +333,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
             onPrev();
           }}
           className="absolute left-4 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all transform hover:scale-110 z-20 cursor-pointer"
-          title="Previous (ArrowLeft)"
+          title={uiText("Previous (ArrowLeft)", uiLang)}
         >
           <ChevronLeft size={30} />
         </button>
@@ -346,7 +347,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
             onNext();
           }}
           className="absolute right-4 p-3 rounded-full bg-white/10 hover:bg-white/20 text-white transition-all transform hover:scale-110 z-20 cursor-pointer"
-          title="Next (ArrowRight)"
+          title={uiText("Next (ArrowRight)", uiLang)}
         >
           <ChevronRight size={30} />
         </button>
@@ -358,7 +359,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
         onMouseDown={handleMouseDown}
       >
         {media.type === 'video' ? (
-          <video
+          <StreamingVideo
             ref={videoRef}
             src={media.url}
             controls
@@ -374,7 +375,7 @@ export const MediaLightbox: React.FC<MediaLightboxProps> = ({
           >
             <img
               src={media.url}
-              alt={media.filename || 'Media'}
+              alt={media.filename || uiText("Media", uiLang)}
               draggable={false}
               className="max-w-[90vw] max-h-[82vh] rounded-2xl shadow-2xl object-contain select-none transition-transform duration-75"
               style={{

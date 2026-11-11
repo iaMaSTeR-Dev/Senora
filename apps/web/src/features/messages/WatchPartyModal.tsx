@@ -1,3 +1,10 @@
+import { sharedWatchPartyURL, watchPartyPlaybackURL } from './watchPartyMediaURL';
+import { clampVideoSeek } from './videoSeeking';
+import { VideoTimeline } from './VideoTimeline';
+import { formatMediaTime } from './mediaTime';
+import { StreamingVideo } from './StreamingVideo';
+import { mediaPlaybackError } from './mediaPlaybackError';
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Conversation, User, WatchPartySession, Message } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -55,6 +62,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
   decryptedMediaUrls = {},
   onSendInviteMessage,
 }) => {
+  const uiLang = useUILanguage();
   const [session, setSession] = useState<WatchPartySession | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isMinimized, setIsMinimized] = useState(false);
@@ -221,6 +229,26 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
     initParty();
   }, [isOpen, conversation.id, initialMediaUrl, initialMediaTitle]);
 
+  // A late joiner must begin at the shared timeline, including an unbuffered
+  // position. Wait for finite HLS/native duration instead of clamping to zero
+  // while the source index and first metadata are still loading.
+  useEffect(() => {
+    const video=videoRef.current;
+    if(!session||!video)return;
+    const receivedAt=performance.now();let applied=false;
+    const apply=()=>{
+      if(applied||!Number.isFinite(video.duration)||video.duration<=0)return;
+      applied=true;
+      const rate=session.playback_rate||1;
+      const elapsed=session.state==='playing'?(performance.now()-receivedAt)/1000*rate:0;
+      video.currentTime=clampVideoSeek(video,session.current_time+elapsed);
+      video.playbackRate=rate;setPlaybackRate(rate);setCurrentTime(video.currentTime);
+      if(session.state==='playing')void video.play().catch(()=>setIsPlaying(false));else video.pause();
+    };
+    video.addEventListener('loadedmetadata',apply);video.addEventListener('durationchange',apply);apply();
+    return()=>{video.removeEventListener('loadedmetadata',apply);video.removeEventListener('durationchange',apply);};
+  },[session]);
+
   // Subscribe to real-time Watch Party WebSocket events
   useEffect(() => {
     if (!isOpen) return;
@@ -328,14 +356,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
     setIsStarting(true);
     setPlaybackError(null);
     try {
-      // Ensure attachment URLs have auth token attached so any viewer can play
-      let targetUrl = url;
-      if (targetUrl.startsWith('/api/v1/attachments/') && !targetUrl.includes('auth=') && !targetUrl.includes('token=')) {
-        const token = api.getToken();
-        if (token) {
-          targetUrl += (targetUrl.includes('?') ? '&' : '?') + 'auth=' + encodeURIComponent(token);
-        }
-      }
+      const targetUrl = sharedWatchPartyURL(url);
 
       const startRes = await api.sendWatchPartyAction(conversation.id, {
         action: 'start',
@@ -357,7 +378,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
 
   const togglePlay = () => {
     const video = videoRef.current;
-    if (!video) return;
+    if (!video || video.readyState === 0) return;
 
     if (video.paused) {
       video.play().then(() => {
@@ -377,7 +398,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
   const handleSeek = (seconds: number) => {
     const video = videoRef.current;
     if (!video) return;
-    video.currentTime = Math.max(0, Math.min(duration, seconds));
+    video.currentTime = clampVideoSeek(video, seconds);
     setCurrentTime(video.currentTime);
     broadcastSync('seeking');
   };
@@ -445,7 +466,9 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
     if (!session) return;
     try {
       const invitePayload = {
-        text: `🎬 سینما پارتی همزمان: ${session.media_title} (میزبان: ${session.leader_name})`,
+        text: uiLang === 'fa'
+          ? `🎬 سینما پارتی همزمان: ${session.media_title} (میزبان: ${session.leader_name})`
+          : `🎬 Watch Party: ${session.media_title} (Host: ${session.leader_name})`,
         type: 'watch_party_invite',
         session_id: session.conversation_id,
         media_title: session.media_title,
@@ -487,12 +510,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
     });
   };
 
-  const formatTime = (secs: number) => {
-    if (isNaN(secs)) return '0:00';
-    const mins = Math.floor(secs / 60);
-    const remainingSecs = Math.floor(secs % 60);
-    return `${mins}:${remainingSecs < 10 ? '0' : ''}${remainingSecs}`;
-  };
+  const formatTime = formatMediaTime;
 
   if (!isOpen) return null;
 
@@ -516,15 +534,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
         return decryptedUrl;
       }
     }
-    // If it's a relative attachment URL without auth param, append token
-    let url = session.media_url;
-    if (url.startsWith('/api/v1/attachments/') && !url.includes('auth=') && !url.includes('token=')) {
-      const token = api.getToken();
-      if (token) {
-        url += (url.includes('?') ? '&' : '?') + 'auth=' + encodeURIComponent(token);
-      }
-    }
-    return url;
+    return watchPartyPlaybackURL(session.media_url, api.getToken());
   };
 
   // -------------------------------------------------------------
@@ -541,8 +551,8 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <Film className="w-5 h-5" />
               </div>
               <div>
-                <h2 className="text-base font-bold text-white">سینما پارتی همزمان (Watch Party)</h2>
-                <p className="text-xs text-slate-400">تماشای همزمان ویدیو با اعضای گفتگو با همگام‌سازی زنده</p>
+                <h2 className="text-base font-bold text-white">{uiText("سینما پارتی همزمان (Watch Party)", uiLang)}</h2>
+                <p className="text-xs text-slate-400">{uiText("تماشای همزمان ویدیو با اعضای گفتگو با همگام‌سازی زنده", uiLang)}</p>
               </div>
             </div>
             <button
@@ -564,7 +574,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               }`}
             >
               <Film className="w-4 h-4" />
-              <span>ویدیوهای این گفتگو ({videoMessages.length})</span>
+              <span>{uiText("ویدیوهای این گفتگو (", uiLang)}{videoMessages.length})</span>
             </button>
 
             <button
@@ -576,7 +586,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               }`}
             >
               <Link2 className="w-4 h-4" />
-              <span>لینک مستقیم یا استریم</span>
+              <span>{uiText("لینک مستقیم یا استریم", uiLang)}</span>
             </button>
 
             <button
@@ -588,7 +598,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               }`}
             >
               <Upload className="w-4 h-4" />
-              <span>آپلود از دستگاه</span>
+              <span>{uiText("آپلود از دستگاه", uiLang)}</span>
             </button>
           </div>
 
@@ -607,8 +617,8 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 {videoMessages.length === 0 ? (
                   <div className="text-center py-8 text-slate-400 space-y-2">
                     <Film className="w-10 h-10 mx-auto text-slate-600 stroke-[1.5]" />
-                    <p className="text-sm">هنوز ویدیویی در این چت ارسال نشده است.</p>
-                    <p className="text-xs text-slate-500">می‌توانید از تب «لینک مستقیم» یا «آپلود» یک ویدیو اضافه کنید.</p>
+                    <p className="text-sm">{uiText("هنوز ویدیویی در این چت ارسال نشده است.", uiLang)}</p>
+                    <p className="text-xs text-slate-500">{uiText("می‌توانید از تب «لینک مستقیم» یا «آپلود» یک ویدیو اضافه کنید.", uiLang)}</p>
                   </div>
                 ) : (
                   <div className="space-y-2.5">
@@ -629,8 +639,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                             </div>
                             <div className="min-w-0 flex-1">
                               <div className="text-sm font-semibold text-white truncate">{title}</div>
-                              <div className="text-xs text-slate-400">
-                                ارسال شده توسط: {msg.sender_username || 'User'}
+                              <div className="text-xs text-slate-400">{uiText("ارسال شده توسط:", uiLang)}{msg.sender_username || 'User'}
                               </div>
                             </div>
                           </div>
@@ -640,7 +649,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                             className="px-3.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold shadow-sm transition flex items-center gap-1.5 cursor-pointer shrink-0 disabled:opacity-50"
                           >
                             <Play className="w-3.5 h-3.5 fill-white" />
-                            <span>شروع پارتی</span>
+                            <span>{uiText("شروع پارتی", uiLang)}</span>
                           </button>
                         </div>
                       );
@@ -654,22 +663,22 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
             {launchTab === 'url' && (
               <div className="space-y-4">
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-300">آدرس اینترنتی ویدیو یا لینک استریم</label>
+                  <label className="text-xs font-medium text-slate-300">{uiText("آدرس اینترنتی ویدیو یا لینک استریم", uiLang)}</label>
                   <input
                     type="url"
-                    placeholder="https://example.com/video.mp4 یا /s/sh_..."
+                    placeholder={uiText("https://example.com/video.mp4 یا /s/sh_...", uiLang)}
                     value={customUrl}
                     onChange={(e) => setCustomUrl(e.target.value)}
                     className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
                   />
-                  <p className="text-[11px] text-slate-400">پشتیبانی از لینک‌های مستقیم MP4، WebM، و لینک‌های ساخته شده سنورا (/s/...).</p>
+                  <p className="text-[11px] text-slate-400">{uiText("پشتیبانی از لینک‌های مستقیم MP4، WebM، و لینک‌های ساخته شده SENORA (/s/...).", uiLang)}</p>
                 </div>
 
                 <div className="space-y-1.5">
-                  <label className="text-xs font-medium text-slate-300">عنوان ویدیو (اختیاری)</label>
+                  <label className="text-xs font-medium text-slate-300">{uiText("عنوان ویدیو (اختیاری)", uiLang)}</label>
                   <input
                     type="text"
-                    placeholder="نام ویدیو برای نمایش به اعضا..."
+                    placeholder={uiText("نام ویدیو برای نمایش به اعضا...", uiLang)}
                     value={customTitle}
                     onChange={(e) => setCustomTitle(e.target.value)}
                     className="w-full px-3.5 py-2.5 bg-slate-800 border border-slate-700 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
@@ -682,7 +691,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                   className="w-full py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-sm font-semibold shadow-lg shadow-indigo-600/30 transition flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
                 >
                   <Sparkles className="w-4 h-4" />
-                  <span>{isStarting ? 'در حال ایجاد اتاق...' : 'شروع سینما پارتی'}</span>
+                  <span>{isStarting ? uiText("در حال ایجاد اتاق...", uiLang) : uiText("شروع سینما پارتی", uiLang)}</span>
                 </button>
               </div>
             )}
@@ -723,8 +732,8 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                     <Upload className="w-6 h-6" />
                   </div>
                   <div>
-                    <div className="text-sm font-semibold text-white">انتخاب فایل ویدیو از سیستم</div>
-                    <div className="text-xs text-slate-400 mt-1">فرمت‌های MP4، WebM، MKV، MOV پشتیبانی می‌شوند</div>
+                    <div className="text-sm font-semibold text-white">{uiText("انتخاب فایل ویدیو از سیستم", uiLang)}</div>
+                    <div className="text-xs text-slate-400 mt-1">{uiText("فرمت‌های MP4، WebM، MKV، MOV پشتیبانی می‌شوند", uiLang)}</div>
                   </div>
                 </div>
               </div>
@@ -813,21 +822,21 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                   }
                 }}
                 className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title={isMuted ? 'صدادار' : 'بی‌صدا'}
+                title={isMuted ? uiText("صدادار", uiLang) : uiText("بی‌صدا", uiLang)}
               >
                 {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5" />}
               </button>
               <button
                 onClick={() => setIsMinimized(false)}
                 className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title="بزرگنمایی به تئاتر"
+                title={uiText("بزرگنمایی به تئاتر", uiLang)}
               >
                 <Maximize2 className="w-3.5 h-3.5" />
               </button>
               <button
                 onClick={onClose}
                 className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title="بستن"
+                title={uiText("بستن", uiLang)}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -846,13 +855,10 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                     {session.media_title}
                   </h2>
                   <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-1 shrink-0">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                    زنده (Watch Party)
-                  </span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />{uiText("زنده (Watch Party)", uiLang)}</span>
                 </div>
-                <p className="text-xs text-slate-400 truncate">
-                  میزبان: <span className="text-indigo-400 font-medium">{session.leader_name}</span>
-                  {isLeader && <span className="mr-1 text-emerald-400 font-semibold">(شما)</span>}
+                <p className="text-xs text-slate-400 truncate">{uiText("میزبان:", uiLang)}<span className="text-indigo-400 font-medium">{session.leader_name}</span>
+                  {isLeader && <span className="mr-1 text-emerald-400 font-semibold">{uiText("(شما)", uiLang)}</span>}
                 </p>
               </div>
             </div>
@@ -862,17 +868,17 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               <button
                 onClick={handleSendInviteToChat}
                 className="px-2.5 py-1.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer"
-                title="ارسال پیام دعوت در این چت برای ورود اعضا"
+                title={uiText("ارسال پیام دعوت در این چت برای ورود اعضا", uiLang)}
               >
                 {inviteSent ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Share2 className="w-3.5 h-3.5" />}
-                <span className="hidden sm:inline">{inviteSent ? 'ارسال شد!' : 'دعوت به پارتی'}</span>
+                <span className="hidden sm:inline">{inviteSent ? uiText("ارسال شد!", uiLang) : uiText("دعوت به پارتی", uiLang)}</span>
               </button>
 
               {/* Copy Shareable Link */}
               <button
                 onClick={handleCopyLink}
                 className="p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title="کپی لینک استریم"
+                title={uiText("کپی لینک استریم", uiLang)}
               >
                 {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
               </button>
@@ -882,7 +888,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <button
                   onClick={togglePiP}
                   className="p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                  title="تصویر در تصویر سیستم"
+                  title={uiText("تصویر در تصویر سیستم", uiLang)}
                 >
                   <Tv className="w-4 h-4" />
                 </button>
@@ -893,7 +899,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <button
                   onClick={() => setIsMinimized(true)}
                   className="p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                  title="کوچک کردن به حالت شناور"
+                  title={uiText("کوچک کردن به حالت شناور", uiLang)}
                 >
                   <Minimize2 className="w-4 h-4" />
                 </button>
@@ -903,7 +909,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               <button
                 onClick={toggleFullscreen}
                 className="p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title={isFullscreen ? 'خروج از تمام‌صفحه' : 'تمام‌صفحه (F)'}
+                title={isFullscreen ? uiText("خروج از تمام‌صفحه", uiLang) : uiText("تمام‌صفحه (F)", uiLang)}
               >
                 <Maximize2 className="w-4 h-4" />
               </button>
@@ -912,7 +918,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               <button
                 onClick={onClose}
                 className="p-2 rounded-xl hover:bg-slate-800 text-slate-300 hover:text-white transition cursor-pointer"
-                title="بستن"
+                title={uiText("بستن", uiLang)}
               >
                 <X className="w-5 h-5" />
               </button>
@@ -929,19 +935,21 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               : 'relative flex-1 bg-black flex items-center justify-center overflow-hidden min-h-[340px]'
           }
         >
-          <video
+          <StreamingVideo
             ref={videoRef}
             src={playbackSource}
             crossOrigin="anonymous"
             className="w-full h-full object-contain cursor-pointer"
             playsInline
+            preload="metadata"
             onClick={togglePlay}
             onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
             onLoadedMetadata={() => videoRef.current && setDuration(videoRef.current.duration)}
+            onDurationChange={() => videoRef.current && setDuration(videoRef.current.duration)}
             onPlay={() => setIsPlaying(true)}
             onPause={() => setIsPlaying(false)}
             onError={() => {
-              setPlaybackError('خطا در پخش منبع ویدیو. لطفاً مطمئن شوید فایل یا آدرس در دسترس است.');
+              setPlaybackError(mediaPlaybackError(videoRef.current?.error, uiLang));
             }}
           />
 
@@ -985,9 +993,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                   }
                 }}
                 className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold cursor-pointer shadow-md"
-              >
-                تلاش مجدد
-              </button>
+              >{uiText("تلاش مجدد", uiLang)}</button>
             </div>
           )}
         </div>
@@ -1000,15 +1006,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
               <span className="text-[10px] text-slate-400 font-mono shrink-0">
                 {formatTime(currentTime)}
               </span>
-              <input
-                type="range"
-                min={0}
-                max={duration || 100}
-                step={0.1}
-                value={currentTime}
-                onChange={(e) => handleSeek(Number(e.target.value))}
-                className="flex-1 h-1 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
+              <VideoTimeline videoRef={videoRef} currentTime={currentTime} onSeek={handleSeek} />
               <span className="text-[10px] text-slate-400 font-mono shrink-0">
                 {formatTime(duration)}
               </span>
@@ -1037,19 +1035,11 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
           <div className="p-4 bg-slate-950/90 border-t border-slate-800 space-y-3 z-20">
             {/* Timeline Scrubber */}
             <div className="flex items-center gap-3">
-              <span className="text-xs text-slate-400 font-mono w-10 text-right">
+              <span className="text-xs text-slate-400 font-mono min-w-[4rem] text-right">
                 {formatTime(currentTime)}
               </span>
-              <input
-                type="range"
-                min={0}
-                max={duration || 100}
-                step={0.1}
-                value={currentTime}
-                onChange={(e) => handleSeek(Number(e.target.value))}
-                className="flex-1 h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-              />
-              <span className="text-xs text-slate-400 font-mono w-10">
+              <VideoTimeline videoRef={videoRef} currentTime={currentTime} onSeek={handleSeek} />
+              <span className="text-xs text-slate-400 font-mono min-w-[4rem]">
                 {formatTime(duration)}
               </span>
             </div>
@@ -1067,7 +1057,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <button
                   onClick={() => handleSeek(currentTime - 10)}
                   className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
-                  title="۱۰ ثانیه به عقب"
+                  title={uiText("۱۰ ثانیه به عقب", uiLang)}
                 >
                   <RotateCcw className="w-4 h-4" />
                 </button>
@@ -1075,7 +1065,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <button
                   onClick={() => handleSeek(currentTime + 10)}
                   className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
-                  title="۱۰ ثانیه به جلو"
+                  title={uiText("۱۰ ثانیه به جلو", uiLang)}
                 >
                   <FastForward className="w-4 h-4" />
                 </button>
@@ -1129,7 +1119,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
 
               {/* Live Floating Reactions Bar */}
               <div className="flex items-center gap-1.5 p-1 bg-slate-900/90 rounded-xl border border-slate-800">
-                <span className="text-[11px] text-slate-400 px-2 font-medium">واکنش:</span>
+                <span className="text-[11px] text-slate-400 px-2 font-medium">{uiText("واکنش:", uiLang)}</span>
                 {['❤️', '🔥', '😂', '👏', '🎉', '😱'].map((emoji) => (
                   <button
                     key={emoji}
@@ -1146,7 +1136,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                 <button
                   onClick={toggleFullscreen}
                   className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition cursor-pointer"
-                  title={isFullscreen ? 'خروج از تمام‌صفحه' : 'تمام‌صفحه (F)'}
+                  title={isFullscreen ? uiText("خروج از تمام‌صفحه", uiLang) : uiText("تمام‌صفحه (F)", uiLang)}
                 >
                   <Maximize2 className="w-4 h-4" />
                 </button>
@@ -1155,9 +1145,7 @@ export const WatchPartyModal: React.FC<WatchPartyModalProps> = ({
                   <button
                     onClick={endParty}
                     className="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 text-xs font-semibold border border-rose-500/30 transition cursor-pointer"
-                  >
-                    پایان پارتی
-                  </button>
+                  >{uiText("پایان پارتی", uiLang)}</button>
                 )}
               </div>
             </div>

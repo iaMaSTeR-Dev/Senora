@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { X, Send, Image, Film, FileText, Music } from 'lucide-react';
 import { Language } from '../../app/i18n';
@@ -29,6 +30,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
   sending,
   lang = 'en',
 }) => {
+  const uiLang = useUILanguage(lang);
   const [fileList, setFileList] = useState<File[]>(() => {
     if (initialFiles && initialFiles.length > 0) return initialFiles;
     if (initialFile) return [initialFile];
@@ -113,14 +115,14 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
             )}
             <span className="text-sm font-semibold text-white">
               {fileList.length > 1
-                ? (lang === 'fa' ? `ارسال ${fileList.length} فایل` : `Send ${fileList.length} Files`)
+                ? (lang === "fa" ? `ارسال ${fileList.length} فایل` : `Send ${fileList.length} Files`)
                 : isVid
-                ? (lang === 'fa' ? 'ارسال ویدیو' : 'Send Video')
+                ? (lang === "fa" ? 'ارسال ویدیو' : 'Send Video')
                 : isImg
-                ? (lang === 'fa' ? 'ارسال تصویر' : 'Send Photo')
+                ? (lang === "fa" ? 'ارسال تصویر' : 'Send Photo')
                 : isAud
-                ? (lang === 'fa' ? 'ارسال فایل صوتی' : 'Send Audio')
-                : (lang === 'fa' ? 'ارسال فایل' : 'Send File')}
+                ? (lang === "fa" ? 'ارسال فایل صوتی' : 'Send Audio')
+                : (lang === "fa" ? 'ارسال فایل' : 'Send File')}
             </span>
             <span className="text-xs text-[#7f91a4]">({formatSize(activeFile.size)})</span>
           </div>
@@ -144,7 +146,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
           ) : isImg && previewUrls[selectedIndex] ? (
             <img
               src={previewUrls[selectedIndex]}
-              alt="Preview"
+              alt={uiText("Preview", uiLang)}
               className="max-h-full max-w-full rounded-2xl object-contain shadow-lg"
             />
           ) : (
@@ -167,7 +169,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
           )}
         </div>
 
-        {/* Multiple Files Thumbnail Strip with Removal (Issue 12 & 13) */}
+        {/* Multiple Files Thumbnail Strip */}
         {fileList.length > 1 && (
           <div className="px-4 py-2 bg-[#17212b] border-t border-[#242f3d] flex items-center gap-2 overflow-x-auto">
             {fileList.map((f, idx) => (
@@ -182,7 +184,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                   f.type.startsWith('video/') ? (
                     <video src={previewUrls[idx]} className="w-full h-full object-cover" />
                   ) : (
-                    <img src={previewUrls[idx]} alt="thumb" className="w-full h-full object-cover" />
+                    <img src={previewUrls[idx]} alt={uiText("thumb", uiLang)} className="w-full h-full object-cover" />
                   )
                 ) : (
                   <div className="w-full h-full bg-[#242f3d] flex items-center justify-center text-[#24A1DE]">
@@ -197,7 +199,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                       removeFile(idx);
                     }}
                     className="absolute top-0.5 right-0.5 p-0.5 rounded-full bg-black/70 hover:bg-red-600 text-white transition"
-                    title="Remove"
+                    title={uiText("Remove", uiLang)}
                   >
                     <X size={10} />
                   </button>
@@ -212,7 +214,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
           <div className="px-5 py-2.5 bg-[#17212b] border-t border-[#242f3d] flex flex-col gap-1.5">
             <div className="flex justify-between items-center text-[11px] font-mono text-white">
               <span className="text-[#24A1DE] font-semibold">
-                {lang === 'fa' ? 'در حال بارگذاری و رمزنگاری...' : 'Uploading & Encrypting...'}
+                {lang === "fa" ? 'در حال بارگذاری و رمزنگاری...' : 'Uploading & Encrypting...'}
               </span>
               <span>{Math.min(100, Math.max(0, Math.round(uploadProgress)))}%</span>
             </div>
@@ -230,7 +232,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
           <div className="flex items-center gap-2">
             <input
               type="text"
-              placeholder={lang === 'fa' ? 'افزودن کپشن / توضیح...' : 'Add a caption...'}
+              placeholder={lang === "fa" ? 'افزودن کپشن / توضیح...' : 'Add a caption...'}
               value={caption}
               onChange={(e) => setCaption(e.target.value)}
               onKeyDown={(e) => {
@@ -244,7 +246,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
               <button
                 type="button"
                 onClick={() => setIsViewOnce(!isViewOnce)}
-                title={lang === 'fa' ? (isViewOnce ? 'مشاهده یک‌باره فعال است (خودکار پاک می‌شود)' : 'فعال‌سازی مشاهده یک‌باره (View Once)') : (isViewOnce ? 'View once active (Burns after viewing)' : 'Enable View Once')}
+                title={lang === "fa" ? (isViewOnce ? 'مشاهده یک‌باره فعال است (خودکار پاک می‌شود)' : 'فعال‌سازی مشاهده یک‌باره (View Once)') : (isViewOnce ? 'View once active (Burns after viewing)' : 'Enable View Once')}
                 className={`relative flex items-center justify-center w-9 h-9 rounded-full font-bold text-xs transition-all cursor-pointer flex-shrink-0 ${
                   isViewOnce
                     ? 'bg-gradient-to-tr from-amber-500 to-rose-500 text-white shadow-lg shadow-rose-500/30 scale-105 border border-amber-300'
@@ -263,7 +265,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
             <div>
               {isViewOnce && (
                 <span className="text-[11px] text-amber-400 flex items-center gap-1 font-medium">
-                  🔥 {lang === 'fa' ? 'عکس/ویدیو یک‌باره: پس از باز شدن می‌سوزد' : 'View once: self-destructs after opening'}
+                  🔥 {lang === "fa" ? 'عکس/ویدیو یک‌باره: پس از باز شدن می‌سوزد' : 'View once: self-destructs after opening'}
                 </span>
               )}
             </div>
@@ -274,7 +276,7 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                 disabled={sending}
                 className="px-4 py-2 text-xs font-semibold text-[#7f91a4] hover:text-white hover:bg-[#242f3d] rounded-xl transition cursor-pointer"
               >
-                {lang === 'fa' ? 'انصراف' : 'Cancel'}
+                {lang === "fa" ? uiText("انصراف", uiLang) : uiText("Cancel", uiLang)}
               </button>
               <button
                 type="button"
@@ -283,14 +285,14 @@ export const MediaPreviewModal: React.FC<MediaPreviewModalProps> = ({
                 className="flex items-center space-x-2 px-5 py-2.5 bg-[#24A1DE] hover:bg-[#208fc4] disabled:opacity-50 text-white text-xs font-bold rounded-xl shadow-lg shadow-[#24A1DE]/25 transition-transform active:scale-95 cursor-pointer"
               >
                 {sending ? (
-                  <span>{lang === 'fa' ? 'در حال ارسال...' : 'Sending...'}</span>
+                  <span>{lang === "fa" ? uiText("در حال ارسال...", uiLang) : uiText("Sending...", uiLang)}</span>
                 ) : (
                   <>
                     <Send size={14} />
                     <span>
-                      {lang === 'fa'
-                        ? (fileList.length > 1 ? `ارسال ${fileList.length} فایل` : 'ارسال')
-                        : (fileList.length > 1 ? `Send (${fileList.length})` : 'Send')}
+                      {lang === "fa"
+                        ? (fileList.length > 1 ? `ارسال ${fileList.length} فایل` : uiText("ارسال", uiLang))
+                        : (fileList.length > 1 ? `Send (${fileList.length})` : uiText("Send", uiLang))}
                     </span>
                   </>
                 )}

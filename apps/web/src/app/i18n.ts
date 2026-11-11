@@ -2,7 +2,7 @@ export type Language = 'en' | 'fa';
 
 export const translations = {
   en: {
-    app_title: 'Senora',
+    app_title: 'SENORA',
     subtitle: 'Secure Self-Hosted Messaging',
 
     search_placeholder: 'Search contacts & messages...',
@@ -36,7 +36,7 @@ export const translations = {
     today: 'Today',
     select_chat: 'Select a chat to start messaging',
     users_found: 'Search Results',
-    // Telegram-class navigation & features
+    // Navigation & features
     all_chats: 'All',
     direct: 'Direct',
     groups: 'Groups',
@@ -72,7 +72,7 @@ export const translations = {
     cancel: 'Cancel',
     channel_desc: 'Broadcast messages to unlimited subscribers',
     group_desc: 'Up to 500 members with multi-device encryption',
-    // Comprehensive Settings Center
+    // Settings Center
     settings_search: 'Search settings...',
     settings_account: 'Account',
     settings_devices_media: 'Devices & Media',
@@ -125,7 +125,7 @@ export const translations = {
     slow_mode_off: 'Off',
     slow_mode_wait: 'Slow mode is active. Wait:',
     self_destruct: 'Account Self-Destruct',
-    self_destruct_desc: 'Automatically delete your account and all data if inactive for:',
+    self_destruct_desc: 'After inactivity, deactivate and anonymize your account and remove device access. Copies of delivered messages remain for other participants:',
     one_month: '1 month',
     three_months: '3 months',
     six_months: '6 months',
@@ -155,7 +155,7 @@ export const translations = {
     leader: 'Leader',
   },
   fa: {
-    app_title: 'سنورا',
+    app_title: 'SENORA',
     subtitle: 'پیام‌رسان امن و مستقل خودمیزبان',
 
     search_placeholder: 'جستجوی مخاطبین و پیام‌ها...',
@@ -189,7 +189,7 @@ export const translations = {
     today: 'امروز',
     select_chat: 'یک گفتگو را برای ارسال پیام انتخاب کنید',
     users_found: 'نتایج جستجو',
-    // Telegram-class navigation & features
+    // Navigation & features
     all_chats: 'همه',
     direct: 'خصوصی',
     groups: 'گروه‌ها',
@@ -225,7 +225,7 @@ export const translations = {
     cancel: 'انصراف',
     channel_desc: 'ارسال اطلاعیه و پیام برای اعضا',
     group_desc: 'گروه گفتگو با رمزنگاری چنددستگاهی',
-    // Comprehensive Settings Center
+    // Settings Center
     settings_search: 'جستجوی تنظیمات...',
     settings_account: 'حساب کاربری',
     settings_devices_media: 'دستگاه‌ها و رسانه',
@@ -278,7 +278,7 @@ export const translations = {
     slow_mode_off: 'خاموش',
     slow_mode_wait: 'حالت آهسته فعال است. لطفاً صبر کنید:',
     self_destruct: 'حذف خودکار حساب در صورت عدم فعالیت',
-    self_destruct_desc: 'در صورتی که در این مدت حداقل یک بار آنلاین نشوید، حساب کاربری و تمام داده‌های شما به طور کامل پاک می‌شوند:',
+    self_destruct_desc: 'پس از این مدت بی‌فعالیتی، حساب غیرفعال و ناشناس و دسترسی دستگاه‌ها حذف می‌شود؛ نسخهٔ پیام‌های تحویل‌شده نزد دیگر اعضا باقی می‌ماند:',
     one_month: '۱ ماه',
     three_months: '۳ ماه',
     six_months: '۶ ماه',

@@ -1,4 +1,4 @@
-// Client-Side Cryptographic Engine for Senora E2EE
+// Client-Side Cryptographic Engine for SENORA E2EE
 // Uses Web Crypto API (SubtleCrypto) with NIST P-256 (ECDH) & AES-256-GCM
 
 export interface ClientKeyPair {
@@ -50,7 +50,9 @@ async function openKeyDatabase(): Promise<IDBDatabase | null> {
           db.createObjectStore(STORE_NAME, { keyPath: 'id' });
         }
       };
-      request.onsuccess = () => resolve(request.result);
+      request.onsuccess = () => {
+        resolve(request.result);
+      };
       request.onerror = () => resolve(null);
     } catch {
       resolve(null);
@@ -58,7 +60,7 @@ async function openKeyDatabase(): Promise<IDBDatabase | null> {
   });
 }
 
-async function loadPersistedKeyPair(userId?: string, deviceId?: string): Promise<ClientKeyPair | null> {
+async function loadPersistedKeyPair(userId?: string, deviceId?: string, expectedLegacyPublicKey?: string): Promise<ClientKeyPair | null> {
   const db = await openKeyDatabase();
   if (!db) return null;
   const keyId = (userId && deviceId) ? `${userId}:${deviceId}` : (userId ? `user:${userId}` : KEY_NAME);
@@ -78,7 +80,7 @@ async function loadPersistedKeyPair(userId?: string, deviceId?: string): Promise
           // Fallback to legacy un-scoped key name if user-scoped key not yet stored
           const legacyReq = store.get(KEY_NAME);
           legacyReq.onsuccess = () => {
-            if (legacyReq.result && legacyReq.result.publicKey && legacyReq.result.privateKey && legacyReq.result.publicKeyBase64) {
+            if (expectedLegacyPublicKey && legacyReq.result?.publicKeyBase64 === expectedLegacyPublicKey && legacyReq.result.publicKey && legacyReq.result.privateKey) {
               resolve({
                 publicKey: legacyReq.result.publicKey,
                 privateKey: legacyReq.result.privateKey,
@@ -115,16 +117,6 @@ async function savePersistedKeyPair(keyPair: ClientKeyPair, userId?: string, dev
         publicKeyBase64: keyPair.publicKeyBase64,
         createdAt: Date.now(),
       });
-      // Also maintain legacy KEY_NAME for backward compatibility
-      if (keyId !== KEY_NAME) {
-        store.put({
-          id: KEY_NAME,
-          publicKey: keyPair.publicKey,
-          privateKey: keyPair.privateKey,
-          publicKeyBase64: keyPair.publicKeyBase64,
-          createdAt: Date.now(),
-        });
-      }
       tx.oncomplete = () => resolve();
       tx.onerror = () => resolve();
     } catch {
@@ -154,24 +146,31 @@ export function buildCanonicalAAD(conversationId: string, version: number = 1): 
 
 export class ClientCryptoEngine {
   private keyPair: ClientKeyPair | null = null;
+  private scopedKeys = new Map<string, ClientKeyPair>();
   private sharedKeysCache = new Map<string, CryptoKey>();
 
   // Reset in-memory cache (useful for testing)
   resetCache(): void {
     this.keyPair = null;
+    this.scopedKeys.clear();
     this.sharedKeysCache.clear();
   }
 
   // Generate or retrieve current device identity key pair (with user/device-scoped IndexedDB persistence)
-  async getOrCreateDeviceKeyPair(userId?: string, deviceId?: string): Promise<ClientKeyPair> {
-    if (this.keyPair) {
+  async getOrCreateDeviceKeyPair(userId?: string, deviceId?: string, expectedLegacyPublicKey?: string): Promise<ClientKeyPair> {
+    const scope = `${userId || ""}:${deviceId || ""}`;
+    if (userId && this.scopedKeys.has(scope)) { this.keyPair = this.scopedKeys.get(scope)!; return this.keyPair; }
+    if (!userId && this.keyPair) {
       return this.keyPair;
     }
 
     // Attempt retrieval from IndexedDB
-    const persisted = await loadPersistedKeyPair(userId, deviceId);
+    const persisted = await loadPersistedKeyPair(userId, deviceId, expectedLegacyPublicKey);
     if (persisted) {
+      if (expectedLegacyPublicKey && persisted.publicKeyBase64 !== expectedLegacyPublicKey) throw new Error('DEVICE_KEY_MISMATCH: Restore the correct device key backup.');
       this.keyPair = persisted;
+      this.scopedKeys.set(scope, persisted);
+      await savePersistedKeyPair(persisted, userId, deviceId);
       return this.keyPair;
     }
 
@@ -196,6 +195,7 @@ export class ClientCryptoEngine {
     };
 
     // Save to IndexedDB asynchronously
+    this.scopedKeys.set(scope, this.keyPair);
     await savePersistedKeyPair(this.keyPair, userId, deviceId);
 
     return this.keyPair;
@@ -315,15 +315,15 @@ export class ClientCryptoEngine {
     }
 
     if (typeof associatedData === 'string') {
-      // 1. Try canonical domain-separated AAD first (modern protocol)
+      // 1. Try canonical domain-separated AAD first
       try {
         return await decryptWithAAD(buildCanonicalAAD(associatedData) as unknown as BufferSource);
       } catch (err1) {
-        // 2. Fall back to raw string AAD for early phase messages
+        // 2. Fall back to raw string AAD for older messages
         try {
           return await decryptWithAAD(new TextEncoder().encode(associatedData));
         } catch (err2) {
-          // 3. Fall back to unauthenticated associated data for legacy pre-AAD stored messages
+          // 3. Fall back to unauthenticated associated data for pre-AAD stored messages
           try {
             return await decryptWithAAD(undefined);
           } catch {

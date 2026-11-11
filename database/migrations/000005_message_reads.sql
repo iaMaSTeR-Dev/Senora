@@ -1,4 +1,4 @@
--- Senora Phase 17 Message Reads & Reliable Receipts Migration (PostgreSQL & SQLite)
+-- SENORA Message Reads & Receipts Migration (PostgreSQL & SQLite)
 
 CREATE TABLE IF NOT EXISTS message_reads (
     message_id VARCHAR(64) NOT NULL REFERENCES messages(id) ON DELETE CASCADE,

@@ -86,6 +86,7 @@ func (s *SessionService) ValidateSession(ctx context.Context, token string) (*mo
 		return nil, nil, err
 	}
 
+	_ = s.store.UpdateUserLastSeen(ctx, user.ID)
 	return session, user, nil
 }
 

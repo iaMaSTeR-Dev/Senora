@@ -1,9 +1,6 @@
-# COMPREHENSIVE THREAT MODEL — SENORA
+# THREAT MODEL — SENORA
 
-**Status**: ACTIVE  
-**Last Updated**: 2026-10-11  
-**Target Architecture**: Senora Monolith, Web Crypto E2EE Client, SQLite / PostgreSQL 16  
-**Audience**: Security Auditors, Cryptographers, and Core Engineering  
+Target Architecture: SENORA Monolith, Web Crypto E2EE Client, SQLite / PostgreSQL 16
 
 ---
 
@@ -92,7 +89,7 @@
 * **Mitigation**: Backend `IsMember` checks enforced on every database query. Foreign conversation access returns HTTP 403 Forbidden.
 
 ### T-5: Cross-Site WebSocket Hijacker (CSWSH)
-* **Capabilities**: Attacker lures an authenticated user to visit `https://evil-site.com`, which attempts to establish a WebSocket connection to the user's Senora instance.
+* **Capabilities**: Attacker lures an authenticated user to visit `https://evil-site.com`, which attempts to establish a WebSocket connection to the user's SENORA instance.
 * **Mitigation**: Strict RFC 3986 URL origin validation in `upgrader.CheckOrigin`. Exact hostname matching blocks untrusted external domains and prefix bypasses (e.g. `localhost.attacker.com`).
 
 ### T-6: Denial of Service / Resource Exhaustion Attacker
@@ -104,7 +101,7 @@
 ## 4. Specific Attack Surface Analysis
 
 ### 4.1 Browser Sandbox & Client-Side Risks
-* **Cross-Site Scripting (XSS)**: If an attacker achieves arbitrary JavaScript execution in the Senora browser origin, non-extractable `CryptoKey` objects cannot be read directly via `exportKey()`, but the malicious script could still invoke `subtle.decrypt()` or read plaintexts in React component memory.
+* **Cross-Site Scripting (XSS)**: If an attacker achieves arbitrary JavaScript execution in the SENORA browser origin, non-extractable `CryptoKey` objects cannot be read directly via `exportKey()`, but the malicious script could still invoke `subtle.decrypt()` or read plaintexts in React component memory.
   - *Defense*: Strict Content Security Policy (`CSP`), zero `dangerouslySetInnerHTML`, sanitized inputs, and no third-party CDN scripts.
 * **Device Loss / Physical Theft**: If an adversary acquires an unlocked device, they can read local IndexedDB records.
   - *Defense*: Users can remotely revoke sessions from another device; full-disk encryption recommended on user endpoints.
@@ -119,7 +116,7 @@ The following metadata is unavoidably visible to the server operator:
 
 ### 4.3 Forward Secrecy & Post-Compromise Security
 - **Current Live Web Crypto Baseline**: Static-static ECDH P-256 + AES-256-GCM. Does NOT provide per-message forward secrecy. Device private key compromise compromises past traffic.
-- **Verified Protocol Ratchet Engine**: `@privacyresearch/libsignal-protocol-typescript` integration suite (`apps/web/src/crypto/signalProtocol.test.ts`) verifies X3DH authenticated session setup, per-message KDF ratchets (FS), per-reply DH ratchets (PCS), and out-of-order replay rejection across 7 automated test vectors.
+- **Signal Protocol Ratchet Engine**: `@privacyresearch/libsignal-protocol-typescript` integration provides X3DH authenticated session setup, per-message KDF ratchets (FS), per-reply DH ratchets (PCS), and out-of-order replay rejection.
 
 ### 4.4 Multi-Device Trust Model & Device-List Consistency
 - **Pairwise Fan-Out**: Senders encrypt individually for each authorized device of all participants plus the sender's own companion devices.
@@ -128,7 +125,7 @@ The following metadata is unavoidably visible to the server operator:
 - **Device Revocation**: When a device session is logged out or revoked, the server removes its device record from the active key bundle. Subsequent fan-out messages stop encrypting for that device ID.
 
 ### 4.5 Taxonomy of Replay & Deduplication Defenses
-Senora strictly distinguishes between five distinct layers of replay defense:
+SENORA strictly distinguishes between five distinct layers of replay defense:
 1. **HTTP Request Idempotency**: Client-supplied `idempotency_key` ensures retried network requests return the originally created message object without duplicate database inserts.
 2. **Database Duplicate Prevention**: Scoped composite unique index `UNIQUE(conversation_id, sender_id, idempotency_key)` prevents one user from discovering or collision-hijacking another user's idempotency key.
 3. **Transport Delivery Ordering**: The transactional outbox assigns monotonic integer sequence IDs (`outbox.id`), ensuring clients receive real-time and backfilled messages strictly in monotonic causal order.

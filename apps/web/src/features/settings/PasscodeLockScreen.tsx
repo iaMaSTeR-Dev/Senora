@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { Lock, Delete, LogOut, ShieldAlert } from 'lucide-react';
 import { verifyPasscode } from './settingsModel';
@@ -16,6 +17,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
   onLogout,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const t = translations[lang];
   const [pin, setPin] = useState('');
 
@@ -114,7 +116,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
             } catch {}
           }
           setCooldownSeconds(30);
-          setError('Too many failed attempts. Locked for 30 seconds.');
+          setError(uiText("Too many failed attempts. Locked for 30 seconds.", uiLang));
         } else {
           setError(`Incorrect passcode. (${5 - nextAttempts} attempts left)`);
         }
@@ -152,7 +154,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
         <h2 className="text-base font-bold text-white mb-1">{t.passcode_lock}</h2>
         <p className="text-xs text-[#7f91a4] mb-6 text-center">
           {cooldownSeconds > 0
-            ? `Please wait ${cooldownSeconds}s before retrying`
+            ? (lang === 'fa' ? `????? ${cooldownSeconds} ????? ??? ????` : `Please wait ${cooldownSeconds}s before retrying`)
             : t.passcode_prompt}
         </p>
 
@@ -177,7 +179,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
         {error && (
           <div className="mb-4 text-center px-3 py-1.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-[11px] font-medium flex items-center gap-1.5 animate-shake">
             <ShieldAlert className="h-3.5 w-3.5 flex-shrink-0" />
-            <span>{error}</span>
+            <span>{uiText(error, uiLang)}</span>
           </div>
         )}
 
@@ -208,7 +210,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
             disabled={cooldownSeconds > 0 || pin.length === 0}
             onClick={handleBackspace}
             className="h-14 rounded-full bg-transparent hover:bg-[#242f3d]/40 active:scale-95 text-[#7f91a4] hover:text-white transition flex items-center justify-center disabled:opacity-20 cursor-pointer"
-            title="Delete"
+            title={uiText("Delete", uiLang)}
           >
             <Delete className="h-5 w-5" />
           </button>
@@ -229,7 +231,7 @@ export const PasscodeLockScreen: React.FC<PasscodeLockScreenProps> = ({
           className="text-[11px] text-[#7f91a4] hover:text-red-400 flex items-center gap-1.5 transition cursor-pointer"
         >
           <LogOut className="h-3.5 w-3.5" />
-          <span>Forgot passcode? Log Out</span>
+          <span>{uiText("Forgot passcode? Log Out", uiLang)}</span>
         </button>
       </div>
     </div>

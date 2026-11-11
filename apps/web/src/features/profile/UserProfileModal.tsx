@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect } from 'react';
 import { User } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -45,6 +46,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   onUpdateCurrentUser,
   lang,
 }) => {
+  const uiLang = useUILanguage(lang);
   const isOwnProfile = currentUser.id === user.id;
   const [profileUser, setProfileUser] = useState<User>(user);
   const [loadingProfile, setLoadingProfile] = useState(false);
@@ -175,21 +177,21 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
         <div className="flex items-center justify-between px-5 py-3 border-b border-[#242f3d] bg-[#1f2b38]/70">
           <div className="flex items-center gap-2">
             <span className="text-sm font-bold text-white">
-              {isOwnProfile ? (lang === 'fa' ? 'پروفایل شما' : 'Your Profile') : (lang === 'fa' ? 'اطلاعات کاربر' : 'User Info')}
+              {isOwnProfile ? (lang === "fa" ? 'پروفایل شما' : 'Your Profile') : (lang === "fa" ? 'اطلاعات کاربر' : 'User Info')}
             </span>
             {loadingProfile && (
               <div className="h-3 w-3 border-2 border-[#24A1DE] border-t-transparent rounded-full animate-spin" />
             )}
             {isOwnProfile && (
               <span className="px-2 py-0.5 rounded-full bg-[#24A1DE]/20 text-[#24A1DE] text-[10px] font-bold">
-                {lang === 'fa' ? 'شما' : 'You'}
+                {lang === "fa" ? 'شما' : 'You'}
               </span>
             )}
           </div>
           <button
             onClick={onClose}
             className="p-1.5 text-[#7f91a4] hover:text-white rounded-xl hover:bg-[#242f3d] transition-colors cursor-pointer"
-            title="Close"
+            title={uiText("Close", uiLang)}
           >
             <X size={18} />
           </button>
@@ -210,11 +212,11 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                 className={`w-28 h-28 rounded-full overflow-hidden shadow-2xl border-4 border-[#17212b] bg-gradient-to-tr from-[#24A1DE] to-[#60a5fa] flex items-center justify-center font-bold text-4xl text-white ${
                   profileUser.avatar_url ? 'cursor-pointer hover:opacity-95 transition' : ''
                 }`}
-                title={profileUser.avatar_url ? 'Click to view photo' : undefined}
+                title={profileUser.avatar_url ? uiText("Click to view photo", uiLang) : undefined}
               >
                 {profileUser.avatar_url ? (
                   <img
-                    src={profileUser.avatar_url}
+                    src={api.avatarURL(profileUser.avatar_url)}
                     alt={profileUser.display_name}
                     className="w-full h-full object-cover"
                     onError={(e) => {
@@ -231,7 +233,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   type="button"
                   onClick={() => setShowAvatarUploadModal(true)}
                   className="absolute bottom-0 right-0 p-2.5 rounded-full bg-[#24A1DE] hover:bg-[#208fc4] text-white shadow-lg border-2 border-[#17212b] transition-transform hover:scale-110 active:scale-95 cursor-pointer"
-                  title="Change avatar photo"
+                  title={uiText("Change avatar photo", uiLang)}
                 >
                   <Camera size={16} />
                 </button>
@@ -271,7 +273,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     <MessageSquare size={18} />
                   </div>
                   <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white">
-                    {lang === 'fa' ? 'پیام' : 'Message'}
+                    {lang === "fa" ? uiText("پیام", uiLang) : 'Message'}
                   </span>
                 </button>
 
@@ -289,7 +291,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     <Phone size={18} />
                   </div>
                   <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white">
-                    {lang === 'fa' ? 'تماس صوتی' : 'Voice Call'}
+                    {lang === "fa" ? uiText("تماس صوتی", uiLang) : uiText("Voice Call", uiLang)}
                   </span>
                 </button>
 
@@ -307,7 +309,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     <Video size={18} />
                   </div>
                   <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white">
-                    {lang === 'fa' ? 'تماس تصویری' : 'Video Call'}
+                    {lang === "fa" ? uiText("تماس تصویری", uiLang) : uiText("Video Call", uiLang)}
                   </span>
                 </button>
               </>
@@ -326,7 +328,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   <Folder size={18} />
                 </div>
                 <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white">
-                  {lang === 'fa' ? 'رسانه‌ها' : 'Media'}
+                  {lang === "fa" ? 'رسانه‌ها' : uiText("Media", uiLang)}
                 </span>
               </button>
             )}
@@ -343,7 +345,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   <Edit3 size={18} />
                 </div>
                 <span className="text-[11px] font-semibold text-slate-300 group-hover:text-white">
-                  {isEditing ? (lang === 'fa' ? 'لغو ویرایش' : 'Cancel') : (lang === 'fa' ? 'ویرایش پروفایل' : 'Edit Profile')}
+                  {isEditing ? (lang === "fa" ? 'لغو ویرایش' : uiText("Cancel", uiLang)) : (lang === "fa" ? 'ویرایش پروفایل' : 'Edit Profile')}
                 </span>
               </button>
             )}
@@ -362,7 +364,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     type="text"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="Your display name"
+                    placeholder={uiText("Your display name", uiLang)}
                     className="w-full px-3.5 py-2 rounded-xl bg-[#242f3d] border border-[#324252] text-xs text-white focus:outline-none focus:border-[#24A1DE]"
                   />
                 </div>
@@ -375,7 +377,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     value={bio}
                     onChange={(e) => setBio(e.target.value)}
                     rows={3}
-                    placeholder="A few words about you..."
+                    placeholder={uiText("A few words about you...", uiLang)}
                     className="w-full px-3.5 py-2 rounded-xl bg-[#242f3d] border border-[#324252] text-xs text-white focus:outline-none focus:border-[#24A1DE] resize-none"
                   />
                 </div>
@@ -383,7 +385,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                 {editSuccess && (
                   <div className="p-2.5 rounded-xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-400 flex items-center gap-2">
                     <CheckCircle size={15} />
-                    <span>Profile saved successfully!</span>
+                    <span>{uiText("Profile saved successfully!", uiLang)}</span>
                   </div>
                 )}
 
@@ -392,16 +394,14 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     type="button"
                     onClick={() => setIsEditing(false)}
                     className="flex-1 py-2.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-xs text-slate-300 font-semibold transition cursor-pointer"
-                  >
-                    Cancel
-                  </button>
+                  >{uiText("Cancel", uiLang)}</button>
                   <button
                     type="submit"
                     disabled={saving}
                     className="flex-1 py-2.5 rounded-xl bg-[#24A1DE] hover:bg-[#208fc4] text-xs text-white font-bold transition flex items-center justify-center gap-1.5 shadow-md shadow-[#24A1DE]/25 disabled:opacity-50 cursor-pointer"
                   >
                     <Save size={14} />
-                    <span>{saving ? 'Saving...' : t.save}</span>
+                    <span>{saving ? uiText("Saving...", uiLang) : t.save}</span>
                   </button>
                 </div>
               </form>
@@ -412,7 +412,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                 <div className="flex items-center justify-between p-3 rounded-2xl bg-[#242f3d]/60 border border-[#242f3d]">
                   <div className="min-w-0">
                     <span className="text-[10px] text-[#7f91a4] uppercase font-bold tracking-wider block">
-                      {lang === 'fa' ? 'نام کاربری' : 'Username'}
+                      {lang === "fa" ? uiText("نام کاربری", uiLang) : uiText("Username", uiLang)}
                     </span>
                     <span className="text-sm font-semibold text-white font-mono truncate block mt-0.5">
                       @{profileUser.username}
@@ -422,7 +422,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     type="button"
                     onClick={handleCopyUsername}
                     className="p-2 rounded-xl bg-[#17212b] hover:bg-[#121921] text-[#7f91a4] hover:text-[#24A1DE] transition cursor-pointer"
-                    title="Copy username"
+                    title={uiText("Copy username", uiLang)}
                   >
                     {copiedUsername ? <Check size={16} className="text-emerald-400" /> : <Copy size={16} />}
                   </button>
@@ -439,9 +439,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <div className="p-3 rounded-2xl bg-[#242f3d]/30 border border-[#242f3d]/50 text-slate-400 italic text-[11px]">
-                    No bio written yet.
-                  </div>
+                  <div className="p-3 rounded-2xl bg-[#242f3d]/30 border border-[#242f3d]/50 text-slate-400 italic text-[11px]">{uiText("No bio written yet.", uiLang)}</div>
                 )}
 
                 {/* Account Details & Security */}
@@ -449,19 +447,19 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   <div className="flex items-center justify-between text-xs">
                     <span className="text-[#7f91a4] flex items-center gap-1.5">
                       <ShieldCheck size={14} className="text-emerald-400" />
-                      <span>Security</span>
+                      <span>{uiText("Security", uiLang)}</span>
                     </span>
-                    <span className="text-emerald-400 font-semibold">Signal Protocol E2EE</span>
+                    <span className="text-emerald-400 font-semibold">{uiText("Signal Protocol E2EE", uiLang)}</span>
                   </div>
 
                   {profileUser.created_at && (
                     <div className="flex items-center justify-between text-xs pt-1.5 border-t border-[#17212b]/50">
                       <span className="text-[#7f91a4] flex items-center gap-1.5">
                         <Calendar size={14} className="text-[#24A1DE]" />
-                        <span>Registered</span>
+                        <span>{uiText("Registered", uiLang)}</span>
                       </span>
                       <span className="text-slate-300 font-medium">
-                        {new Date(profileUser.created_at).toLocaleDateString()}
+                        {new Date(profileUser.created_at).toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US')}
                       </span>
                     </div>
                   )}
@@ -469,13 +467,13 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   <div className="flex items-center justify-between text-xs pt-1.5 border-t border-[#17212b]/50">
                     <span className="text-[#7f91a4] flex items-center gap-1.5">
                       <Clock size={14} className="text-amber-400" />
-                      <span>Public ID</span>
+                      <span>{uiText("Public ID", uiLang)}</span>
                     </span>
                     <button
                       type="button"
                       onClick={handleCopyId}
                       className="inline-flex items-center gap-1 text-[11px] font-mono text-[#24A1DE] hover:underline cursor-pointer"
-                      title="Click to copy public ID"
+                      title={uiText("Click to copy public ID", uiLang)}
                     >
                       <span>{profileUser.id.substring(0, 12)}...</span>
                       {copiedId ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
@@ -483,7 +481,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                   </div>
                 </div>
 
-                {/* Block / Unblock User Action (Requirement 2.4) */}
+                {/* Block / Unblock User Action */}
                 {!isOwnProfile && (
                   <button
                     type="button"
@@ -498,12 +496,12 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
                     <UserX size={15} />
                     <span>
                       {blockingLoading
-                        ? 'Updating...'
+                        ? uiText("Updating...", uiLang)
                         : isBlocked
-                        ? lang === 'fa'
+                        ? lang === "fa"
                           ? 'رفع مسدودیت کاربر'
                           : 'Unblock User'
-                        : lang === 'fa'
+                        : lang === "fa"
                         ? 'مسدود کردن کاربر'
                         : 'Block User'}
                     </span>
@@ -521,7 +519,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
             onClick={onClose}
             className="w-full py-2.5 rounded-xl bg-[#242f3d] hover:bg-[#202b36] text-xs font-semibold text-white transition cursor-pointer"
           >
-            {lang === 'fa' ? 'بستن' : 'Close'}
+            {lang === "fa" ? uiText("بستن", uiLang) : uiText("Close", uiLang)}
           </button>
         </div>
       </div>
@@ -535,7 +533,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
             type: 'photo',
             filename: `${profileUser.username}_avatar.png`,
             senderName: profileUser.display_name || profileUser.username,
-            date: profileUser.created_at ? new Date(profileUser.created_at).toLocaleDateString() : undefined,
+            date: profileUser.created_at ? new Date(profileUser.created_at).toLocaleDateString(uiLang === 'fa' ? 'fa-IR' : 'en-US') : undefined,
           }}
           onClose={() => setShowAvatarLightbox(false)}
         />

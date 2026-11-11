@@ -1,5 +1,4 @@
-// Typed Settings Model & Persistence Engine for Senora
-// Inspired by Telegram Desktop & Web Settings Architecture
+// Typed Settings Model & Persistence Engine for SENORA
 
 export type ThemeOption = 'dark' | 'light' | 'system';
 export type FontSizeOption = 'small' | 'medium' | 'large';
@@ -92,7 +91,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
 const SETTINGS_STORAGE_KEY = 'senora_app_settings';
 
 export const ACCENT_COLORS = [
-  { name: 'Telegram Blue', hex: '#24A1DE' },
+  { name: 'SENORA Blue', hex: '#24A1DE' },
   { name: 'Emerald', hex: '#10b981' },
   { name: 'Violet', hex: '#8b5cf6' },
   { name: 'Amber', hex: '#f59e0b' },
@@ -220,13 +219,14 @@ export async function verifyPasscode(enteredPin: string, storedHash: string): Pr
     const computed = await hashPasscode(enteredPin, saltHex);
     return computed === expectedHash;
   }
-  // Legacy fallback for pre-existing static salt hashes
+  // Static-salt fallback
   const legacyHash = await hashPasscode(enteredPin, 'senora_pbkdf2_pin_salt');
   return legacyHash === storedHash;
 }
 
 // Apply settings directly to HTML document elements
 export function applySettingsToDOM(settings: AppSettings): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === 'function') window.dispatchEvent(new Event("senora:settings-changed"));
   if (typeof document === 'undefined') return;
 
   const root = document.documentElement;

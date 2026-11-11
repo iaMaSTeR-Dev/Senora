@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef } from 'react';
 import { X, Send, Square, RefreshCw } from 'lucide-react';
 import { mediaDeviceManager } from '../calls/mediaDeviceManager';
@@ -13,6 +14,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
   onCancel,
   sending,
 }) => {
+  const uiLang = useUILanguage();
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
@@ -38,7 +40,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
         }
       })
       .catch((e) => {
-        alert('Could not access camera/microphone: ' + e.message);
+        alert(uiText("Could not access camera/microphone: ", uiLang) + e.message);
         onCancel();
       });
 
@@ -129,7 +131,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
       <div className="relative w-full max-w-sm bg-slate-900 border border-slate-700/80 rounded-3xl p-4 sm:p-6 flex flex-col items-center space-y-4 sm:space-y-6 shadow-2xl">
         {/* Top Header */}
         <div className="w-full flex items-center justify-between">
-          <span className="text-sm font-bold text-white tracking-wide">Video Note</span>
+          <span className="text-sm font-bold text-white tracking-wide">{uiText("Video Note", uiLang)}</span>
           <button
             onClick={onCancel}
             disabled={sending}
@@ -178,7 +180,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
               <button
                 onClick={startRecording}
                 className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white shadow-xl shadow-red-600/40 transition-transform hover:scale-105 active:scale-95"
-                title="Start Recording"
+                title={uiText("Start Recording", uiLang)}
               >
                 <div className="w-6 h-6 rounded-full bg-white" />
               </button>
@@ -186,7 +188,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
               <button
                 onClick={stopRecording}
                 className="w-16 h-16 rounded-full bg-red-600 hover:bg-red-700 flex items-center justify-center text-white shadow-xl shadow-red-600/40 transition-transform hover:scale-105 active:scale-95"
-                title="Stop Recording"
+                title={uiText("Stop Recording", uiLang)}
               >
                 <Square size={24} className="fill-white" />
               </button>
@@ -198,7 +200,7 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
                 onClick={handleRetake}
                 disabled={sending}
                 className="p-3.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 shadow-md transition-colors"
-                title="Retake"
+                title={uiText("Retake", uiLang)}
               >
                 <RefreshCw size={20} />
               </button>
@@ -209,11 +211,11 @@ export const RoundVideoRecorderModal: React.FC<RoundVideoRecorderModalProps> = (
                 className="flex items-center space-x-2 px-6 py-3.5 bg-primary-600 hover:bg-primary-700 disabled:opacity-50 text-white text-xs font-bold rounded-2xl shadow-xl shadow-primary-600/30 transition-transform hover:scale-105 active:scale-95"
               >
                 {sending ? (
-                  <span>Encrypting...</span>
+                  <span>{uiText("Encrypting...", uiLang)}</span>
                 ) : (
                   <>
                     <Send size={16} />
-                    <span>Send Video Note</span>
+                    <span>{uiText("Send Video Note", uiLang)}</span>
                   </>
                 )}
               </button>

@@ -1,4 +1,4 @@
--- Senora Core Relational Schema v1 (PostgreSQL)
+-- SENORA Core Relational Schema v1 (PostgreSQL)
 
 CREATE TABLE IF NOT EXISTS users (
     id VARCHAR(64) PRIMARY KEY,

@@ -235,6 +235,17 @@ func (s *Service) AddMember(ctx context.Context, convID, requesterID, newUserID,
 	if err := s.ValidateMembership(ctx, convID, requesterID); err != nil {
 		return err
 	}
+	conv, err := s.store.GetConversationByID(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if conv.Type == "direct" {
+		return ErrForbidden
+	}
+	if conv.SecurityMode != "normal" && (newUserID == models.BotFatherID || strings.HasPrefix(newUserID, "bot_")) {
+		return ErrForbidden
+	}
+
 	if role == "" {
 		role = "member"
 	}
@@ -289,6 +300,17 @@ func (s *Service) SetSecurityMode(ctx context.Context, convID, requesterID, mode
 	}
 	if !validModes[mode] {
 		return errors.New("invalid security mode")
+	}
+	if mode != "normal" {
+		members, err := s.store.GetConversationMembers(ctx, convID)
+		if err != nil {
+			return err
+		}
+		for _, id := range members {
+			if id == models.BotFatherID || id == "usr_senoramasterbot" || strings.HasPrefix(id, "bot_") {
+				return errors.New("server bots cannot participate in end-to-end encrypted conversations")
+			}
+		}
 	}
 	return s.store.SetConversationSecurityMode(ctx, convID, mode)
 }

@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef } from 'react';
 import { Conversation, User, VoiceChatParticipant, VoiceChatRoom } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -26,6 +27,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
   onClose,
   onRoomEnded,
 }) => {
+  const uiLang = useUILanguage();
   const [room, setRoom] = useState<VoiceChatRoom | null>(null);
   const [participants, setParticipants] = useState<VoiceChatParticipant[]>([]);
   const [isJoined, setIsJoined] = useState(false);
@@ -179,7 +181,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
         signal_type: 'peer_joined',
       });
     } catch (err: any) {
-      setError(err.message || 'Microphone access denied or error joining voice chat');
+      setError(err.message || uiText("Microphone access denied or error joining voice chat", uiLang));
     } finally {
       setLoading(false);
     }
@@ -227,7 +229,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
 
   // 5. End Voice Chat (Host / Admin)
   const handleEndVoiceChat = async () => {
-    if (!confirm('Are you sure you want to end this voice chat for all participants?')) return;
+    if (!confirm(uiText("Are you sure you want to end this voice chat for all participants?", uiLang))) return;
     leaveLocalMedia();
     setIsJoined(false);
     try {
@@ -285,14 +287,12 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h3 className="text-sm font-bold text-white truncate max-w-[220px]">
-                  {room?.title || conversation.title || 'Group Voice Chat'}
+                  {room?.title || conversation.title || uiText("Group Voice Chat", uiLang)}
                 </h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
-                  LIVE
-                </span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">{uiText("LIVE", uiLang)}</span>
               </div>
               <p className="text-[11px] text-[#7f91a4]">
-                {participants.length} participant{participants.length !== 1 ? 's' : ''} • {formatDuration(durationSeconds)}
+                {participants.length}{uiText(" participant", uiLang)}{participants.length !== 1 ? 's' : ''} • {formatDuration(durationSeconds)}
               </p>
             </div>
           </div>
@@ -308,22 +308,22 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
         {error && (
           <div className="m-4 p-3 rounded-2xl bg-red-950/80 border border-red-800 text-red-300 text-xs flex items-center gap-2">
             <AlertCircle className="h-4 w-4 flex-shrink-0" />
-            <span>{error}</span>
+            <span>{uiText(error, uiLang)}</span>
           </div>
         )}
 
         {/* Participants Grid / List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2.5">
           <div className="flex items-center justify-between text-xs text-[#7f91a4] font-medium px-1 mb-1">
-            <span>Participants in Room ({participants.length})</span>
-            <span>Microphone</span>
+            <span>{uiText("Participants in Room (", uiLang)}{participants.length})</span>
+            <span>{uiText("Microphone", uiLang)}</span>
           </div>
 
           {participants.length === 0 ? (
             <div className="py-12 text-center text-[#7f91a4]">
               <Users className="h-10 w-10 mx-auto mb-2 opacity-40" />
-              <p className="text-xs">No one is currently speaking in this room.</p>
-              <p className="text-[11px] text-[#7f91a4]/70 mt-1">Be the first to join and start speaking!</p>
+              <p className="text-xs">{uiText("No one is currently speaking in this room.", uiLang)}</p>
+              <p className="text-[11px] text-[#7f91a4]/70 mt-1">{uiText("Be the first to join and start speaking!", uiLang)}</p>
             </div>
           ) : (
             participants.map((p) => {
@@ -344,7 +344,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                     <div className="relative">
                       {p.avatar_url ? (
                         <img
-                          src={p.avatar_url}
+                          src={api.avatarURL(p.avatar_url)}
                           alt={p.display_name}
                           className="h-10 w-10 rounded-full object-cover border border-[#242f3d]"
                         />
@@ -363,7 +363,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                           {p.display_name || p.username}
                         </span>
                         {isMe && (
-                          <span className="text-[10px] text-[#24A1DE] font-semibold">(You)</span>
+                          <span className="text-[10px] text-[#24A1DE] font-semibold">{uiText("(You)", uiLang)}</span>
                         )}
                       </div>
                       <span className="text-[10px] text-[#7f91a4] block">
@@ -423,7 +423,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                 }`}
               >
                 {isMuted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-                <span>{isMuted ? 'Unmute Microphone' : 'Mute Microphone'}</span>
+                <span>{isMuted ? uiText("Unmute Microphone", uiLang) : uiText("Mute Microphone", uiLang)}</span>
               </button>
 
               <button
@@ -432,7 +432,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                 className="py-3 px-4 rounded-2xl bg-[#242f3d] hover:bg-[#202b36] text-white font-bold text-xs flex items-center gap-2 transition cursor-pointer"
               >
                 <PhoneOff className="h-4 w-4 text-red-400" />
-                <span>Leave</span>
+                <span>{uiText("Leave", uiLang)}</span>
               </button>
             </div>
           ) : (
@@ -443,7 +443,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
               className="w-full py-3.5 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs flex items-center justify-center gap-2 transition cursor-pointer shadow-lg shadow-emerald-950/40"
             >
               <Mic className="h-4 w-4" />
-              <span>Join Voice Chat</span>
+              <span>{uiText("Join Voice Chat", uiLang)}</span>
             </button>
           )}
 
@@ -452,9 +452,7 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
               type="button"
               onClick={handleEndVoiceChat}
               className="text-[11px] text-red-400 hover:text-red-300 transition py-1 text-center"
-            >
-              End Voice Chat for Everyone
-            </button>
+            >{uiText("End Voice Chat for Everyone", uiLang)}</button>
           )}
         </div>
       </div>

@@ -1,9 +1,9 @@
-version: '3.8'
-
 services:
   caddy:
     image: caddy:2.8-alpine
     container_name: senora-caddy
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
     restart: unless-stopped
     ports:
       - "80:80"
@@ -24,12 +24,18 @@ services:
     restart: unless-stopped
     environment:
       - PORT=8080
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - UPLOAD_DIR=/var/lib/senora/uploads
+      - SENORA_BACKUP_DIR=/var/lib/senora/backups
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       - SESSION_SECRET=${SESSION_SECRET}
       - ENVIRONMENT=production
       - TRUST_PROXY=true
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8}
       - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-0}
+    volumes:
+      - server_uploads:/var/lib/senora/uploads
+      - server_backups:/var/lib/senora/backups
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,6 +64,8 @@ services:
       retries: 5
 
 volumes:
+  server_uploads:
+  server_backups:
   postgres_data:
   caddy_data:
   caddy_config:

@@ -6,6 +6,7 @@ import {
 } from '@privacyresearch/libsignal-protocol-typescript';
 
 export class SignalIndexedDBStore implements StorageType {
+	private metadata = new Map<string, unknown>();
   private dbName: string;
   private db: IDBDatabase | null = null;
   private isReadyPromise: Promise<void>;
@@ -28,7 +29,7 @@ export class SignalIndexedDBStore implements StorageType {
       return;
     }
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       try {
         const req = indexedDB.open(this.dbName, 1);
         req.onupgradeneeded = () => {
@@ -52,8 +53,14 @@ export class SignalIndexedDBStore implements StorageType {
 
         req.onsuccess = async () => {
           this.db = req.result;
-          await this.loadAllFromDB();
-          resolve();
+          try {
+            await this.loadAllFromDB();
+            resolve();
+          } catch (error) {
+            this.db.close();
+            this.db = null;
+            reject(error);
+          }
         };
 
         req.onerror = () => {
@@ -75,13 +82,14 @@ export class SignalIndexedDBStore implements StorageType {
       const idKeyReq = metaStore.get('identityKeyPair');
       const regIdReq = metaStore.get('registrationId');
 
-      await new Promise<void>((res) => {
+      await new Promise<void>((res, reject) => {
         metaTx.oncomplete = () => {
           if (idKeyReq.result) this.identityKeyPair = idKeyReq.result;
           if (regIdReq.result) this.registrationId = regIdReq.result;
           res();
         };
-        metaTx.onerror = () => res();
+        metaTx.onerror = () => reject(metaTx.error);
+        metaTx.onabort = () => reject(metaTx.error);
       });
 
       // 2. Load preKeys
@@ -131,13 +139,43 @@ export class SignalIndexedDBStore implements StorageType {
           cursor.continue();
         }
       };
-    } catch {
-      // Ignore load errors, use memory
+      await Promise.all([pkTx, spkTx, sessTx, idTx].map(tx => new Promise<void>((resolve, reject) => {
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      })));
+    } catch (error) {
+      // Never generate replacement identities/sessions merely because persisted state could not be read.
+      throw error;
     }
   }
 
   public async ready(): Promise<void> {
     await this.isReadyPromise;
+  }
+
+  async getMetadata<T>(name: string): Promise<T | undefined> {
+    await this.ready();
+    if (!this.db) return this.metadata.get(name) as T | undefined;
+    return new Promise((resolve, reject) => {
+      const tx = this.db!.transaction('meta', 'readonly');
+      const request = tx.objectStore('meta').get(name);
+      tx.oncomplete = () => resolve(request.result as T | undefined);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  }
+
+  async setMetadata(name: string, value: unknown): Promise<void> {
+    await this.ready();
+    if (!this.db) { this.metadata.set(name, value); return; }
+    await new Promise<void>((resolve, reject) => {
+      const tx = this.db!.transaction('meta', 'readwrite');
+      tx.objectStore('meta').put(value, name);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
   }
 
   // --- Identity Key Pair ---

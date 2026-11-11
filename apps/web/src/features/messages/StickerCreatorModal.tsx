@@ -1,3 +1,4 @@
+import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Sticker, StickerPack } from '../../app/types';
 import { api } from '../../protocol/api';
@@ -56,6 +57,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
   onStickerSaved,
   isRtl,
 }) => {
+  const uiLang = useUILanguage();
   // Batch state
   const [batchItems, setBatchItems] = useState<BatchStickerItem[]>([]);
   const [activeItemIndex, setActiveItemIndex] = useState<number>(0);
@@ -616,7 +618,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
       onSendSticker(virtualPack, virtualSticker);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to send sticker');
+      setError(err.message || uiText("Failed to send sticker", uiLang));
     } finally {
       setSaving(false);
     }
@@ -651,7 +653,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
       }
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to send stickers');
+      setError(err.message || uiText("Failed to send stickers", uiLang));
     } finally {
       setSaving(false);
     }
@@ -675,22 +677,19 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
             </div>
             <div>
               <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <span>Sticker & GIF Studio</span>
+                <span>{uiText("Sticker & GIF Studio", uiLang)}</span>
                 {batchItems.length > 1 && (
                   <span className="px-2 py-0.5 rounded-full bg-[#24A1DE]/20 text-[#24A1DE] text-[11px] font-mono">
-                    {batchItems.length} items
-                  </span>
+                    {batchItems.length}{uiText("items", uiLang)}</span>
                 )}
               </h2>
-              <p className="text-xs text-[#7f91a4]">
-                Batch multi-photo, WebM video sticker, and WebP support with HD quality
-              </p>
+              <p className="text-xs text-[#7f91a4]">{uiText("Batch multi-photo, WebM video sticker, and WebP support with HD quality", uiLang)}</p>
             </div>
           </div>
           <button
             onClick={onClose}
             className="p-2 text-[#7f91a4] hover:text-white rounded-xl hover:bg-[#242f3d] transition cursor-pointer"
-            title="Close"
+            title={uiText("Close", uiLang)}
           >
             <X size={18} />
           </button>
@@ -701,7 +700,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
           {error && (
             <div className="flex items-center gap-2 p-3 bg-red-500/15 border border-red-500/30 rounded-xl text-red-400 text-xs">
               <AlertCircle size={16} className="flex-shrink-0" />
-              <span>{error}</span>
+              <span>{uiText(error, uiLang)}</span>
             </div>
           )}
 
@@ -728,17 +727,13 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
               <div className="h-16 w-16 rounded-3xl bg-[#24A1DE]/15 text-[#24A1DE] flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                 <Upload size={28} />
               </div>
-              <h3 className="text-sm font-semibold text-white mb-1">
-                Choose multiple photos, WebM, or WebP files
-              </h3>
-              <p className="text-xs text-[#7f91a4] max-w-sm mb-4">
-                Supports batch selection of WebM (animated/video sticker), WebP, PNG, JPG, and GIF without quality loss
-              </p>
+              <h3 className="text-sm font-semibold text-white mb-1">{uiText("Choose multiple photos, WebM, or WebP files", uiLang)}</h3>
+              <p className="text-xs text-[#7f91a4] max-w-sm mb-4">{uiText("Supports batch selection of WebM (animated/video sticker), WebP, PNG, JPG, and GIF without quality loss", uiLang)}</p>
               <button
                 type="button"
                 className="px-4 py-2 bg-[#24A1DE] hover:bg-[#208fc4] text-white text-xs font-semibold rounded-xl shadow-lg shadow-[#24A1DE]/20 transition"
               >
-                {loading ? 'Processing files...' : 'Select Photos / Videos'}
+                {loading ? uiText("Processing files...", uiLang) : uiText("Select Photos / Videos", uiLang)}
               </button>
             </div>
           ) : (
@@ -749,7 +744,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                 <div className="flex items-center justify-between text-xs px-1">
                   <span className="font-semibold text-white flex items-center gap-1.5">
                     <Layers size={13} className="text-[#24A1DE]" />
-                    <span>Batch Queue ({batchItems.length} stickers)</span>
+                    <span>{uiText("Batch Queue (", uiLang)}{batchItems.length}{uiText(" stickers)", uiLang)}</span>
                   </span>
                   <button
                     type="button"
@@ -757,7 +752,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                     className="flex items-center gap-1 text-[11px] font-semibold text-[#24A1DE] hover:underline cursor-pointer"
                   >
                     <Plus size={12} />
-                    <span>Add More Photos</span>
+                    <span>{uiText("Add More Photos", uiLang)}</span>
                   </button>
                   <input
                     ref={fileInputRef}
@@ -819,7 +814,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                           handleRemoveBatchItem(idx);
                         }}
                         className="absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-red-500 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow"
-                        title="Remove"
+                        title={uiText("Remove", uiLang)}
                       >
                         <X size={10} />
                       </button>
@@ -864,13 +859,11 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                       )}
 
                       <div className="absolute top-2 left-2 px-2 py-0.5 rounded-md bg-black/60 backdrop-blur-sm text-[10px] text-white/80">
-                        {activeItem.isVideo ? 'WebM Video Sticker (Looping)' : 'Drag to reposition'}
+                        {activeItem.isVideo ? uiText("WebM Video Sticker (Looping)", uiLang) : uiText("Drag to reposition", uiLang)}
                       </div>
 
                       {activeItem.isVideo && (
-                        <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-[#24A1DE] text-[10px] text-white font-bold shadow">
-                          HD Video
-                        </div>
+                        <div className="absolute top-2 right-2 px-2 py-0.5 rounded-md bg-[#24A1DE] text-[10px] text-white font-bold shadow">{uiText("HD Video", uiLang)}</div>
                       )}
                     </div>
 
@@ -883,14 +876,14 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                         className="flex items-center gap-1 text-[11px] text-[#24A1DE] hover:underline cursor-pointer"
                       >
                         <RefreshCw size={12} />
-                        <span>Replace</span>
+                        <span>{uiText("Replace", uiLang)}</span>
                       </button>
                     </div>
 
                     {/* Tag Emoji selector */}
                     <div className="w-full bg-[#101921] p-2.5 rounded-2xl border border-[#242f3d] space-y-1.5">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="text-[#7f91a4] font-medium">Sticker Emoji Tag:</span>
+                        <span className="text-[#7f91a4] font-medium">{uiText("Sticker Emoji Tag:", uiLang)}</span>
                         <span className="text-base">{activeItem.emoji}</span>
                       </div>
                       <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-1">
@@ -915,9 +908,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                   <div className="space-y-4">
                     {/* Crop / Shape Mode */}
                     <div className="space-y-1.5">
-                      <label className="text-xs font-semibold text-[#7f91a4] block">
-                        Sticker Shape & Fit
-                      </label>
+                      <label className="text-xs font-semibold text-[#7f91a4] block">{uiText("Sticker Shape & Fit", uiLang)}</label>
                       <div className="grid grid-cols-3 gap-2">
                         <button
                           type="button"
@@ -929,7 +920,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                           }`}
                         >
                           <Maximize2 size={13} />
-                          <span>Fit Aspect</span>
+                          <span>{uiText("Fit Aspect", uiLang)}</span>
                         </button>
                         <button
                           type="button"
@@ -941,7 +932,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                           }`}
                         >
                           <Square size={13} />
-                          <span>Square</span>
+                          <span>{uiText("Square", uiLang)}</span>
                         </button>
                         <button
                           type="button"
@@ -953,7 +944,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                           }`}
                         >
                           <Circle size={13} />
-                          <span>Round</span>
+                          <span>{uiText("Round", uiLang)}</span>
                         </button>
                       </div>
                     </div>
@@ -964,7 +955,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                         <div className="flex items-center justify-between text-xs">
                           <span className="text-[#7f91a4] font-medium flex items-center gap-1">
                             <ZoomIn size={13} />
-                            <span>Zoom / Scale</span>
+                            <span>{uiText("Zoom / Scale", uiLang)}</span>
                           </span>
                           <span className="text-white font-mono">{Math.round(activeItem.zoom * 100)}%</span>
                         </div>
@@ -986,7 +977,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-semibold text-white flex items-center gap-1.5">
                             <Eraser size={14} className="text-[#24A1DE]" />
-                            <span>Remove Background</span>
+                            <span>{uiText("Remove Background", uiLang)}</span>
                           </span>
                           <label className="relative inline-flex items-center cursor-pointer">
                             <input
@@ -1001,7 +992,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                         {activeItem.removeBackground && (
                           <div className="space-y-1 pt-1 animate-in fade-in duration-150">
                             <div className="flex items-center justify-between text-[11px] text-[#7f91a4]">
-                              <span>Tolerance</span>
+                              <span>{uiText("Tolerance", uiLang)}</span>
                               <span className="font-mono">{activeItem.bgTolerance}</span>
                             </div>
                             <input
@@ -1022,12 +1013,12 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                     <div className="space-y-2">
                       <label className="text-xs font-semibold text-[#7f91a4] flex items-center gap-1">
                         <Type size={13} />
-                        <span>Decorations & Text</span>
+                        <span>{uiText("Decorations & Text", uiLang)}</span>
                       </label>
                       <div className="grid grid-cols-2 gap-2">
                         <input
                           type="text"
-                          placeholder="Add caption (e.g. LOL)..."
+                          placeholder={uiText("Add caption (e.g. LOL)...", uiLang)}
                           value={activeItem.overlayText}
                           onChange={(e) => updateActiveItem({ overlayText: e.target.value })}
                           maxLength={18}
@@ -1035,7 +1026,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                         />
                         <input
                           type="text"
-                          placeholder="Emoji stamp (e.g. 🔥)..."
+                          placeholder={uiText("Emoji stamp (e.g. 🔥)...", uiLang)}
                           value={activeItem.overlayEmoji}
                           onChange={(e) => updateActiveItem({ overlayEmoji: e.target.value })}
                           maxLength={4}
@@ -1047,14 +1038,14 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                     {/* Target Pack Title */}
                     <div className="space-y-1">
                       <label className="text-xs font-semibold text-[#7f91a4] block">
-                        {isRtl ? 'نام پک استیکر (عنوان ذخیره‌سازی):' : 'Save to Sticker Pack:'}
+                        {isRtl ? uiText("نام پک استیکر (عنوان ذخیره‌سازی):", uiLang) : uiText("Save to Sticker Pack:", uiLang)}
                       </label>
                       <input
                         type="text"
                         value={packTitle}
                         onChange={(e) => setPackTitle(e.target.value)}
                         maxLength={32}
-                        placeholder={isRtl ? 'نام دلخواه پک (مثلاً: استیکرهای خنده‌دار)' : 'Pack title (e.g. My Stickers)'}
+                        placeholder={isRtl ? uiText("نام دلخواه پک (مثلاً: استیکرهای خنده‌دار)", uiLang) : uiText("Pack title (e.g. My Stickers)", uiLang)}
                         className="w-full px-3 py-1.5 text-xs bg-[#101921] border border-[#242f3d] rounded-xl text-white placeholder-[#7f91a4] focus:outline-none focus:border-[#24A1DE]"
                       />
                     </div>
@@ -1071,9 +1062,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
             type="button"
             onClick={onClose}
             className="px-4 py-2 text-xs font-semibold text-[#7f91a4] hover:text-white rounded-xl hover:bg-[#242f3d] transition cursor-pointer"
-          >
-            Cancel
-          </button>
+          >{uiText("Cancel", uiLang)}</button>
 
           {batchItems.length > 0 && (
             <div className="flex items-center gap-2">
@@ -1087,8 +1076,8 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                 <Bookmark size={13} />
                 <span>
                   {batchItems.length > 1
-                    ? `Save All (${batchItems.length}) to Pack`
-                    : 'Save to Collection'}
+                    ? (uiLang === 'fa' ? `ذخیرهٔ همه (${batchItems.length}) در پک` : `Save All (${batchItems.length}) to Pack`)
+                    : uiText("Save to Collection", uiLang)}
                 </span>
               </button>
 
@@ -1101,7 +1090,7 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                     className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold bg-[#24A1DE]/25 hover:bg-[#24A1DE]/35 text-[#24A1DE] border border-[#24A1DE]/40 rounded-xl transition cursor-pointer disabled:opacity-50"
                   >
                     <Send size={13} />
-                    <span>Send Current</span>
+                    <span>{uiText("Send Current", uiLang)}</span>
                   </button>
 
                   <button
@@ -1113,10 +1102,10 @@ export const StickerCreatorModal: React.FC<StickerCreatorModalProps> = ({
                     <Check size={14} />
                     <span>
                       {saving
-                        ? savingStatus || 'Processing...'
+                        ? savingStatus || uiText("Processing...", uiLang)
                         : batchItems.length > 1
-                        ? `Send All (${batchItems.length}) Stickers`
-                        : 'Send Now'}
+                        ? (uiLang === 'fa' ? `ارسال همهٔ استیکرها (${batchItems.length})` : `Send All (${batchItems.length}) Stickers`)
+                        : uiText("Send Now", uiLang)}
                     </span>
                   </button>
                 </>
