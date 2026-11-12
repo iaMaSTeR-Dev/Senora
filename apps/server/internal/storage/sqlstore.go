@@ -2969,14 +2969,37 @@ func (s *SQLStore) CreateCallLog(ctx context.Context, call *models.CallLog) erro
 	if call.CreatedAt.IsZero() {
 		call.CreatedAt = time.Now().UTC()
 	}
-	query := `INSERT INTO call_logs (id, conversation_id, caller_id, receiver_id, call_type, status, duration_seconds, created_at)
-	          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT INTO call_logs (id, conversation_id, caller_id, receiver_id, call_type, status, duration_seconds, created_at, ended_at)
+	          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	          ON CONFLICT(id) DO UPDATE SET
+	              status = CASE WHEN call_logs.status = 'completed' THEN call_logs.status ELSE excluded.status END,
+	              duration_seconds = CASE WHEN excluded.duration_seconds > call_logs.duration_seconds THEN excluded.duration_seconds ELSE call_logs.duration_seconds END,
+	              ended_at = COALESCE(excluded.ended_at, call_logs.ended_at)`
 	if s.driverName == "postgres" {
-		query = `INSERT INTO call_logs (id, conversation_id, caller_id, receiver_id, call_type, status, duration_seconds, created_at)
-		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
+		query = `INSERT INTO call_logs (id, conversation_id, caller_id, receiver_id, call_type, status, duration_seconds, created_at, ended_at)
+		          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		          ON CONFLICT(id) DO UPDATE SET
+		              status = CASE WHEN call_logs.status = 'completed' THEN call_logs.status ELSE EXCLUDED.status END,
+		              duration_seconds = CASE WHEN EXCLUDED.duration_seconds > call_logs.duration_seconds THEN EXCLUDED.duration_seconds ELSE call_logs.duration_seconds END,
+		              ended_at = COALESCE(EXCLUDED.ended_at, call_logs.ended_at)`
 	}
-	_, err := s.db.ExecContext(ctx, query, call.ID, call.ConversationID, call.CallerID, call.ReceiverID, call.CallType, call.Status, call.DurationSeconds, call.CreatedAt)
+	_, err := s.db.ExecContext(ctx, query, call.ID, call.ConversationID, call.CallerID, call.ReceiverID, call.CallType, call.Status, call.DurationSeconds, call.CreatedAt, call.EndedAt)
 	return err
+}
+
+func (s *SQLStore) HasConversationMessageWithIdempotencyKey(ctx context.Context, conversationID, idempotencyKey string) (bool, error) {
+	if conversationID == "" || idempotencyKey == "" {
+		return false, nil
+	}
+	query := `SELECT COUNT(*) FROM messages WHERE conversation_id = ? AND idempotency_key = ?`
+	if s.driverName == "postgres" {
+		query = `SELECT COUNT(*) FROM messages WHERE conversation_id = $1 AND idempotency_key = $2`
+	}
+	var count int
+	if err := s.db.QueryRowContext(ctx, query, conversationID, idempotencyKey).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func (s *SQLStore) UpdateCallLog(ctx context.Context, callID, status string, duration int) error {

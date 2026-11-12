@@ -119,6 +119,7 @@ type Store interface {
 	CreateCallLog(ctx context.Context, call *models.CallLog) error
 	UpdateCallLog(ctx context.Context, callID, status string, duration int) error
 	GetCallLogs(ctx context.Context, userID string) ([]*models.CallLog, error)
+	HasConversationMessageWithIdempotencyKey(ctx context.Context, conversationID, idempotencyKey string) (bool, error)
 
 	// Voice Chat Rooms
 	CreateVoiceChatRoom(ctx context.Context, room *models.VoiceChatRoom) error

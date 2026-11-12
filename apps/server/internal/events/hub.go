@@ -19,6 +19,46 @@ import (
 	"senora/server/internal/storage"
 )
 
+func isTrustedProxyRequest(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	rawRemote := strings.TrimSpace(r.RemoteAddr)
+	if host, _, err := net.SplitHostPort(rawRemote); err == nil {
+		rawRemote = host
+	}
+	rawRemote = strings.TrimPrefix(strings.TrimSuffix(rawRemote, "]"), "[")
+	parsed := net.ParseIP(rawRemote)
+	if parsed == nil {
+		return false
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		parsed = v4
+	}
+
+	if trusted := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); trusted != "" {
+		for _, tp := range strings.Split(trusted, ",") {
+			tp = strings.TrimSpace(tp)
+			if tp == "" {
+				continue
+			}
+			if _, cidr, err := net.ParseCIDR(tp); err == nil {
+				if cidr.Contains(parsed) {
+					return true
+				}
+			} else if cand := net.ParseIP(tp); cand != nil && cand.Equal(parsed) {
+				return true
+			}
+		}
+		return false
+	}
+
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true") {
+		return parsed.IsLoopback()
+	}
+	return false
+}
+
 var upgrader = websocket.Upgrader{
 	ReadBufferSize:  64 * 1024,
 	WriteBufferSize: 64 * 1024,
@@ -52,14 +92,21 @@ var upgrader = websocket.Upgrader{
 			}
 		}
 
-		// Extract request host and port without trusting spoofable forwarding headers
+		effectiveHTTPS := r.TLS != nil
+		if !effectiveHTTPS && isTrustedProxyRequest(r) {
+			if strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https") {
+				effectiveHTTPS = true
+			}
+		}
+
+		// Extract request host and port; use X-Forwarded-Proto only from trusted proxies
 		reqHost := r.Host
 		reqPort := ""
 		if h, p, err := net.SplitHostPort(r.Host); err == nil {
 			reqHost = h
 			reqPort = p
 		} else {
-			if r.TLS != nil {
+			if effectiveHTTPS {
 				reqPort = "443"
 			} else {
 				reqPort = "80"
@@ -86,7 +133,7 @@ var upgrader = websocket.Upgrader{
 
 		// Same-origin matching: scheme, host, and port must match
 		if strings.EqualFold(originHost, reqHost) && originPort == reqPort {
-			if r.TLS != nil && u.Scheme != "https" {
+			if effectiveHTTPS && u.Scheme != "https" {
 				return false
 			}
 			return true
@@ -357,13 +404,73 @@ type TypingBroadcastPayload struct {
 	IsTyping       bool   `json:"is_typing"`
 }
 
+type CallSignalStatusPayload struct {
+	CallID         string `json:"call_id"`
+	ConversationID string `json:"conversation_id"`
+	TargetUserID   string `json:"target_user_id"`
+	Status         string `json:"status"`
+}
+
+type VoiceChatSignalPayload struct {
+	RoomID         string      `json:"room_id"`
+	ConversationID string      `json:"conversation_id"`
+	SenderUserID   string      `json:"sender_user_id"`
+	TargetUserID   string      `json:"target_user_id,omitempty"`
+	SignalType     string      `json:"signal_type"`
+	Data           interface{} `json:"data,omitempty"`
+}
+
+var allowedCallSignalTypes = map[string]bool{
+	"invite":                 true,
+	"ringing":                true,
+	"accept":                 true,
+	"reject":                 true,
+	"hangup":                 true,
+	"cancel":                 true,
+	"sdp_offer":              true,
+	"sdp_answer":             true,
+	"ice_candidate":          true,
+	"screen_share_start":     true,
+	"screen_share_stop":      true,
+	"screen_quality_change":  true,
+	"screen_quality_request": true,
+	"video_state":            true,
+	"ice_restart":            true,
+}
+
+var allowedVoiceChatSignalTypes = map[string]bool{
+	"peer_joined":   true,
+	"peer_left":     true,
+	"sdp_offer":     true,
+	"sdp_answer":    true,
+	"ice_candidate": true,
+}
+
+func (h *Hub) sendCallSignalStatus(userID, callID, conversationID, targetUserID, status string) {
+	payloadBytes, err := json.Marshal(CallSignalStatusPayload{
+		CallID:         callID,
+		ConversationID: conversationID,
+		TargetUserID:   targetUserID,
+		Status:         status,
+	})
+	if err != nil {
+		return
+	}
+	h.SendToUser(userID, ClientEnvelope{
+		V:       1,
+		Type:    "call.signal_status",
+		ID:      uuid.New().String(),
+		Payload: payloadBytes,
+	})
+}
+
 func (c *ClientConnection) readPump() {
 	defer func() {
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
 
-	c.conn.SetReadLimit(64 * 1024)
+	c.conn.SetReadLimit(256 * 1024)
 	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -439,7 +546,11 @@ func (c *ClientConnection) readPump() {
 		case "call.signal":
 			var signalReq models.CallSignalPayload
 			if err := json.Unmarshal(env.Payload, &signalReq); err == nil {
-				if signalReq.ConversationID == "" {
+				if signalReq.ConversationID == "" || signalReq.CallID == "" {
+					continue
+				}
+				if !allowedCallSignalTypes[signalReq.SignalType] {
+					log.Printf("Security: rejected disallowed call signal type %q from user %s", signalReq.SignalType, c.userID)
 					continue
 				}
 
@@ -477,7 +588,7 @@ func (c *ClientConnection) readPump() {
 						signalReq.Data = dataMap
 					}
 				} else {
-					// For subsequent signals (ringing, accept, reject, hangup, cancel, sdp_offer, sdp_answer, ice_candidate)
+					// For subsequent signals (ringing, accept, reject, hangup, cancel, sdp_offer, sdp_answer, ice_candidate, etc.)
 					if signalReq.ReceiverID == "" && signalReq.CallerID != "" {
 						signalReq.ReceiverID = c.userID
 						targetUserID = signalReq.CallerID
@@ -510,9 +621,23 @@ func (c *ClientConnection) readPump() {
 					continue
 				}
 
+				// Bidirectional block enforcement
+				blockedAB, _ := c.hub.store.IsUserBlocked(context.Background(), c.userID, targetUserID)
+				blockedBA, _ := c.hub.store.IsUserBlocked(context.Background(), targetUserID, c.userID)
+				if blockedAB || blockedBA {
+					if signalReq.SignalType == "invite" {
+						c.hub.sendCallSignalStatus(c.userID, signalReq.CallID, signalReq.ConversationID, targetUserID, "blocked")
+					}
+					continue
+				}
+
 				sanitizedPayload, err := json.Marshal(signalReq)
 				if err != nil {
 					continue
+				}
+
+				if signalReq.SignalType == "invite" && !c.hub.IsUserOnline(targetUserID) {
+					c.hub.sendCallSignalStatus(c.userID, signalReq.CallID, signalReq.ConversationID, targetUserID, "target_offline")
 				}
 
 				c.hub.SendToUser(targetUserID, ClientEnvelope{
@@ -524,34 +649,72 @@ func (c *ClientConnection) readPump() {
 			}
 
 		case "voice_chat.signal":
-			var vcSignal struct {
-				RoomID         string      `json:"room_id"`
-				ConversationID string      `json:"conversation_id"`
-				TargetUserID   string      `json:"target_user_id,omitempty"`
-				SignalType     string      `json:"signal_type"`
-				Data           interface{} `json:"data,omitempty"`
-			}
+			var vcSignal VoiceChatSignalPayload
 			if err := json.Unmarshal(env.Payload, &vcSignal); err == nil {
+				if vcSignal.ConversationID == "" || vcSignal.RoomID == "" {
+					continue
+				}
+				if !allowedVoiceChatSignalTypes[vcSignal.SignalType] {
+					log.Printf("Security: rejected disallowed voice_chat signal type %q from user %s", vcSignal.SignalType, c.userID)
+					continue
+				}
+
 				isMember, err := c.hub.store.IsMember(context.Background(), vcSignal.ConversationID, c.userID)
-				if err == nil && isMember {
-					if vcSignal.TargetUserID != "" {
-						c.hub.SendToUser(vcSignal.TargetUserID, ClientEnvelope{
-							V:       1,
-							Type:    "voice_chat.signal",
-							ID:      uuid.New().String(),
-							Payload: env.Payload,
-						})
-					} else {
-						parts, _ := c.hub.store.GetVoiceChatParticipants(context.Background(), vcSignal.RoomID)
-						for _, p := range parts {
-							if p.UserID != c.userID {
-								c.hub.SendToUser(p.UserID, ClientEnvelope{
-									V:       1,
-									Type:    "voice_chat.signal",
-									ID:      uuid.New().String(),
-									Payload: env.Payload,
-								})
-							}
+				if err != nil || !isMember {
+					continue
+				}
+
+				room, err := c.hub.store.GetActiveVoiceChatRoom(context.Background(), vcSignal.ConversationID)
+				if err != nil || room == nil || !room.IsActive || room.ID != vcSignal.RoomID {
+					continue
+				}
+
+				parts, err := c.hub.store.GetVoiceChatParticipants(context.Background(), vcSignal.RoomID)
+				if err != nil {
+					continue
+				}
+				senderInRoom := false
+				for _, p := range parts {
+					if p.UserID == c.userID {
+						senderInRoom = true
+						break
+					}
+				}
+				if !senderInRoom && vcSignal.SignalType != "peer_left" {
+					log.Printf("Security: user %s sent voice_chat.signal without being an active participant in room %s", c.userID, vcSignal.RoomID)
+					continue
+				}
+
+				// Stamp server-authenticated sender identity to prevent spoofing
+				vcSignal.SenderUserID = c.userID
+				sanitizedPayload, err := json.Marshal(vcSignal)
+				if err != nil {
+					continue
+				}
+
+				if vcSignal.TargetUserID != "" {
+					if vcSignal.TargetUserID == c.userID {
+						continue
+					}
+					targetIsMember, err := c.hub.store.IsMember(context.Background(), vcSignal.ConversationID, vcSignal.TargetUserID)
+					if err != nil || !targetIsMember {
+						continue
+					}
+					c.hub.SendToUser(vcSignal.TargetUserID, ClientEnvelope{
+						V:       1,
+						Type:    "voice_chat.signal",
+						ID:      uuid.New().String(),
+						Payload: sanitizedPayload,
+					})
+				} else {
+					for _, p := range parts {
+						if p.UserID != c.userID {
+							c.hub.SendToUser(p.UserID, ClientEnvelope{
+								V:       1,
+								Type:    "voice_chat.signal",
+								ID:      uuid.New().String(),
+								Payload: sanitizedPayload,
+							})
 						}
 					}
 				}

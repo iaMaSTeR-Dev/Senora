@@ -24,7 +24,7 @@ services:
     restart: unless-stopped
     environment:
       - PORT=8080
-      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - UPLOAD_DIR=/var/lib/senora/uploads
       - SENORA_BACKUP_DIR=/var/lib/senora/backups
       - DATABASE_URL=postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
@@ -33,6 +33,14 @@ services:
       - TRUST_PROXY=true
       - TRUSTED_PROXIES=${TRUSTED_PROXIES:-127.0.0.1,::1,172.16.0.0/12,10.0.0.0/8}
       - MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES:-0}
+      - STUN_SERVERS=${STUN_SERVERS:-stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun.cloudflare.com:3478}
+      - ICE_SERVERS=${ICE_SERVERS:-}
+      - TURN_URL=${TURN_URL:-}
+      - TURN_SERVER_URL=${TURN_SERVER_URL:-}
+      - TURN_USERNAME=${TURN_USERNAME:-}
+      - TURN_CREDENTIAL=${TURN_CREDENTIAL:-}
+      - TURN_AUTH_SECRET=${TURN_AUTH_SECRET:-}
+      - TURN_AUTH_TTL_SECONDS=${TURN_AUTH_TTL_SECONDS:-86400}
     volumes:
       - server_uploads:/var/lib/senora/uploads
       - server_backups:/var/lib/senora/backups

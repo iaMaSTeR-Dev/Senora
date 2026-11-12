@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha1"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -2006,6 +2008,7 @@ func (r *Router) handleGetCallLogs(w http.ResponseWriter, req *http.Request) {
 type createCallLogReq struct {
 	ID              string `json:"id"`
 	ConversationID  string `json:"conversation_id"`
+	CallerID        string `json:"caller_id"`
 	ReceiverID      string `json:"receiver_id"`
 	CallType        string `json:"call_type"`
 	Status          string `json:"status"`
@@ -2021,33 +2024,76 @@ func (r *Router) handleCreateCallLog(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	callID := body.ID
+	callID := strings.TrimSpace(body.ID)
 	if callID == "" {
 		callID = "call_" + uuid.New().String()
 	}
 
+	callerID := strings.TrimSpace(body.CallerID)
+	receiverID := strings.TrimSpace(body.ReceiverID)
+	if callerID == "" {
+		callerID = user.ID
+	} else if user.ID != callerID && user.ID != receiverID {
+		r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a participant of this call")
+		return
+	}
+	if callerID == "" || receiverID == "" || callerID == receiverID {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Valid caller and receiver IDs are required")
+		return
+	}
+
+	callType := strings.ToLower(strings.TrimSpace(body.CallType))
+	if callType != "audio" && callType != "video" {
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid call_type: expected audio or video")
+		return
+	}
+
+	status := strings.ToLower(strings.TrimSpace(body.Status))
+	if status == "declined" {
+		status = "rejected"
+	}
+	switch status {
+	case "completed", "missed", "rejected", "cancelled", "failed":
+	default:
+		r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Invalid call status")
+		return
+	}
+
+	durationSeconds := body.DurationSeconds
+	if durationSeconds < 0 {
+		durationSeconds = 0
+	}
+
 	// Validate conversation membership if conversation ID is provided
+	var conv *models.Conversation
 	if body.ConversationID != "" {
 		if err := r.convs.ValidateMembership(req.Context(), body.ConversationID, user.ID); err != nil {
 			r.writeError(w, http.StatusForbidden, "FORBIDDEN", "Not a member of this conversation")
 			return
 		}
+		peerID := receiverID
+		if user.ID == receiverID {
+			peerID = callerID
+		}
+		if err := r.convs.ValidateMembership(req.Context(), body.ConversationID, peerID); err != nil {
+			r.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "Peer is not a member of this conversation")
+			return
+		}
+		conv, _ = r.store.GetConversationByID(req.Context(), body.ConversationID)
 	}
 
 	now := time.Now().UTC()
+	ended := now
 	call := &models.CallLog{
 		ID:              callID,
 		ConversationID:  body.ConversationID,
-		CallerID:        user.ID,
-		ReceiverID:      body.ReceiverID,
-		CallType:        body.CallType,
-		Status:          body.Status,
-		DurationSeconds: body.DurationSeconds,
+		CallerID:        callerID,
+		ReceiverID:      receiverID,
+		CallType:        callType,
+		Status:          status,
+		DurationSeconds: durationSeconds,
 		CreatedAt:       now,
-	}
-	if body.DurationSeconds > 0 {
-		ended := now.Add(time.Duration(body.DurationSeconds) * time.Second)
-		call.EndedAt = &ended
+		EndedAt:         &ended,
 	}
 
 	if err := r.store.CreateCallLog(req.Context(), call); err != nil {
@@ -2055,27 +2101,45 @@ func (r *Router) handleCreateCallLog(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Record call outcome as an in-chat system message
-	if body.ConversationID != "" {
-		callEventPayload := map[string]interface{}{
-			"type":             "call_event",
-			"call_id":          callID,
-			"call_type":        body.CallType,
-			"outcome":          body.Status,
-			"duration_seconds": body.DurationSeconds,
-			"caller_id":        user.ID,
-			"caller_name":      user.DisplayName,
-			"receiver_id":      body.ReceiverID,
-		}
-		payloadJSON, _ := json.Marshal(callEventPayload)
+	// Record call outcome as an in-chat system message in standard chats.
+	// Skip plaintext server system messages in e2ee_active chats, and deduplicate
+	// per conversation + idempotency key so caller & callee never create duplicate bubbles.
+	if body.ConversationID != "" && (conv == nil || conv.SecurityMode != "e2ee_active") {
 		idempotencyKey := "call_event_" + callID
-		_, _ = r.msgs.SubmitMessage(req.Context(), messages.SubmitMessageParams{
-			ConversationID: body.ConversationID,
-			SenderID:       user.ID,
-			Ciphertext:     string(payloadJSON),
-			Nonce:          "system",
-			IdempotencyKey: idempotencyKey,
-		})
+		exists, _ := r.store.HasConversationMessageWithIdempotencyKey(req.Context(), body.ConversationID, idempotencyKey)
+		if !exists {
+			callerName := user.DisplayName
+			if callerID != user.ID {
+				if cu, err := r.store.GetUserByID(req.Context(), callerID); err == nil && cu != nil {
+					if cu.DisplayName != "" {
+						callerName = cu.DisplayName
+					} else {
+						callerName = cu.Username
+					}
+				}
+			} else if callerName == "" {
+				callerName = user.Username
+			}
+
+			callEventPayload := map[string]interface{}{
+				"type":             "call_event",
+				"call_id":          callID,
+				"call_type":        callType,
+				"outcome":          status,
+				"duration_seconds": durationSeconds,
+				"caller_id":        callerID,
+				"caller_name":      callerName,
+				"receiver_id":      receiverID,
+			}
+			payloadJSON, _ := json.Marshal(callEventPayload)
+			_, _ = r.msgs.SubmitMessage(req.Context(), messages.SubmitMessageParams{
+				ConversationID: body.ConversationID,
+				SenderID:       callerID,
+				Ciphertext:     string(payloadJSON),
+				Nonce:          "system",
+				IdempotencyKey: idempotencyKey,
+			})
+		}
 	}
 
 	r.writeJSON(w, http.StatusCreated, call)
@@ -4201,33 +4265,83 @@ func (r *Router) handleGetBatchPresence(w http.ResponseWriter, req *http.Request
 }
 
 func (r *Router) handleGetIceServers(w http.ResponseWriter, req *http.Request) {
-	stunServers := os.Getenv("STUN_SERVERS")
+	iceServers := make([]map[string]interface{}, 0, 4)
+
+	stunServers := strings.TrimSpace(os.Getenv("STUN_SERVERS"))
 	if stunServers == "" {
 		stunServers = "stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302,stun:stun.cloudflare.com:3478,stun:stun.services.mozilla.com:3478,stun:stun.nextcloud.com:443"
 	}
-	stunList := strings.Split(stunServers, ",")
-	var cleanStuns []string
-	for _, s := range stunList {
-		if s = strings.TrimSpace(s); s != "" {
-			cleanStuns = append(cleanStuns, s)
+	if !strings.EqualFold(stunServers, "none") {
+		stunList := strings.Split(stunServers, ",")
+		var cleanStuns []string
+		for _, s := range stunList {
+			if s = strings.TrimSpace(s); s != "" {
+				cleanStuns = append(cleanStuns, s)
+			}
+		}
+		if len(cleanStuns) > 0 {
+			iceServers = append(iceServers, map[string]interface{}{
+				"urls": cleanStuns,
+			})
 		}
 	}
 
-	iceServers := []map[string]interface{}{
-		{
-			"urls": cleanStuns,
-		},
+	if rawCustom := strings.TrimSpace(os.Getenv("ICE_SERVERS")); rawCustom != "" {
+		var customServers []map[string]interface{}
+		if err := json.Unmarshal([]byte(rawCustom), &customServers); err == nil {
+			for _, entry := range customServers {
+				if entry != nil && entry["urls"] != nil {
+					iceServers = append(iceServers, entry)
+				}
+			}
+		}
 	}
 
-	turnURL := os.Getenv("TURN_SERVER_URL")
-	turnUser := os.Getenv("TURN_USERNAME")
-	turnPass := os.Getenv("TURN_CREDENTIAL")
-	if turnURL != "" {
-		iceServers = append(iceServers, map[string]interface{}{
-			"urls":       turnURL,
-			"username":   turnUser,
-			"credential": turnPass,
-		})
+	// Support both documented TURN_URL and TURN_SERVER_URL (comma-separated URLs supported)
+	rawTurn := strings.TrimSpace(os.Getenv("TURN_URL"))
+	if rawTurn == "" {
+		rawTurn = strings.TrimSpace(os.Getenv("TURN_SERVER_URL"))
+	}
+	if rawTurn != "" {
+		var cleanTurnURLs []string
+		for _, u := range strings.Split(rawTurn, ",") {
+			if u = strings.TrimSpace(u); u != "" {
+				cleanTurnURLs = append(cleanTurnURLs, u)
+			}
+		}
+		if len(cleanTurnURLs) > 0 {
+			turnEntry := map[string]interface{}{}
+			if len(cleanTurnURLs) == 1 {
+				turnEntry["urls"] = cleanTurnURLs[0]
+			} else {
+				turnEntry["urls"] = cleanTurnURLs
+			}
+
+			turnSecret := strings.TrimSpace(os.Getenv("TURN_AUTH_SECRET"))
+			if turnSecret != "" {
+				ttlSeconds := int64(86400)
+				if rawTTL := strings.TrimSpace(os.Getenv("TURN_AUTH_TTL_SECONDS")); rawTTL != "" {
+					if parsedTTL, err := strconv.ParseInt(rawTTL, 10, 64); err == nil && parsedTTL > 0 {
+						ttlSeconds = parsedTTL
+					}
+				}
+				uid := "anon"
+				if user := getUserFromContext(req.Context()); user != nil && user.ID != "" {
+					uid = user.ID
+				}
+				expiry := time.Now().UTC().Unix() + ttlSeconds
+				ephemeralUser := fmt.Sprintf("%d:%s", expiry, uid)
+				mac := hmac.New(sha1.New, []byte(turnSecret))
+				mac.Write([]byte(ephemeralUser))
+				turnEntry["username"] = ephemeralUser
+				turnEntry["credential"] = base64.StdEncoding.EncodeToString(mac.Sum(nil))
+			} else {
+				turnEntry["username"] = os.Getenv("TURN_USERNAME")
+				turnEntry["credential"] = os.Getenv("TURN_CREDENTIAL")
+			}
+
+			iceServers = append(iceServers, turnEntry)
+		}
 	}
 
 	r.writeJSON(w, http.StatusOK, iceServers)

@@ -1,22 +1,32 @@
-import { CallSignal } from '../../app/types';
+import { CallSignal, CallSignalStatus } from '../../app/types';
 import { wsManager } from '../../protocol/ws';
 import { api } from '../../protocol/api';
 import { soundManager } from './soundManager';
-import { STUDIO_AUDIO_CONSTRAINTS } from './mediaDeviceManager';
+import { mediaDeviceManager } from './mediaDeviceManager';
 
 export type ScreenQualityPreset = 'auto' | '1080p' | '720p' | '480p';
 
-export type CallState = 
-  | 'idle' 
-  | 'outgoing_calling' 
+export type CallState =
+  | 'idle'
+  | 'outgoing_calling'
   | 'outgoing_ringing'
-  | 'incoming_ringing' 
-  | 'connecting' 
-  | 'connected' 
-  | 'ended' 
+  | 'incoming_ringing'
+  | 'connecting'
+  | 'connected'
+  | 'ended'
   | 'rejected'
   | 'timeout'
-  | 'cancelled';
+  | 'cancelled'
+  | 'failed';
+
+export type CallFailureStage =
+  | 'permissions'
+  | 'signaling'
+  | 'sdp'
+  | 'ice'
+  | 'turn_or_nat'
+  | 'playback'
+  | 'blocked';
 
 export interface CallSession {
   callId: string;
@@ -38,19 +48,45 @@ export interface CallSession {
   peerScreenSharing?: boolean;
   hasRemoteVideo?: boolean;
   autoplayBlocked?: boolean;
+  mediaPlaybackBlocked?: boolean;
   screenQuality?: ScreenQualityPreset;
+  iceState?: RTCIceConnectionState;
+  connectionState?: RTCPeerConnectionState;
+  iceCandidateType?: string;
+  targetOffline?: boolean;
+  isReconnectingIce?: boolean;
+  failureReason?: string;
+  failureStage?: CallFailureStage;
+  localStreamRevision?: number;
+  remoteStreamRevision?: number;
 }
 
 export type CallEventListener = (session: CallSession | null) => void;
 
+export interface RenegotiationResult {
+  ok: boolean;
+  status: 'sent' | 'busy' | 'inactive' | 'failed';
+  error?: unknown;
+}
+
+const DEFAULT_STUN_URLS = [
+  'stun:stun.l.google.com:19302',
+  'stun:stun1.l.google.com:19302',
+  'stun:stun.cloudflare.com:3478',
+  'stun:stun.services.mozilla.com:3478',
+  'stun:stun.nextcloud.com:443',
+];
+
+const TERMINAL_STATES = new Set<CallState>(['ended', 'rejected', 'timeout', 'cancelled', 'failed']);
+
 // Professional Opus SDP Optimizer: enriches Opus with stereo, 128/256kbps HD audio, inband FEC, disables DTX clipping
+// Follows RFC 4566 m-section line order: m= -> i= -> c= -> b= -> a=
 export function optimizeOpusSdp(sdp: string, isScreenShare: boolean = false): string {
   if (!sdp) return sdp;
   try {
     const lines = sdp.split(/\r\n|\n/);
     let opusPt: string | null = null;
 
-    // 1. Locate Opus payload type
     for (const line of lines) {
       const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i);
       if (match) {
@@ -95,24 +131,42 @@ export function optimizeOpusSdp(sdp: string, isScreenShare: boolean = false): st
       }
     }
 
-    // 2. Set bandwidth on audio media section (b=AS:128 or b=AS:256)
-    let inAudio = false;
+    // Insert b=AS:<kbps> in the audio media section cleanly AFTER c= (or m=audio if c= is absent)
+    const bandwidthLine = `b=AS:${isScreenShare ? 256 : 128}`;
     const finalLines: string[] = [];
+    let inAudio = false;
+    let bandwidthInserted = false;
+
     for (let i = 0; i < modifiedLines.length; i++) {
       const line = modifiedLines[i];
       if (line.startsWith('m=audio')) {
         inAudio = true;
+        bandwidthInserted = false;
         finalLines.push(line);
-        finalLines.push(`b=AS:${isScreenShare ? 256 : 128}`);
         continue;
       }
-      if (line.startsWith('m=video') || line.startsWith('m=application')) {
+      if (line.startsWith('m=')) {
+        if (inAudio && !bandwidthInserted) {
+          finalLines.push(bandwidthLine);
+          bandwidthInserted = true;
+        }
         inAudio = false;
       }
       if (inAudio && line.startsWith('b=AS:')) {
         continue;
       }
+      if (inAudio && !bandwidthInserted && (line.startsWith('a=') || line.startsWith('k='))) {
+        finalLines.push(bandwidthLine);
+        bandwidthInserted = true;
+      }
       finalLines.push(line);
+      if (inAudio && !bandwidthInserted && line.startsWith('c=')) {
+        finalLines.push(bandwidthLine);
+        bandwidthInserted = true;
+      }
+    }
+    if (inAudio && !bandwidthInserted) {
+      finalLines.push(bandwidthLine);
     }
 
     return finalLines.join('\r\n');
@@ -168,7 +222,6 @@ export class RingtonePlayer {
     if (!this.audioCtx || this.audioCtx.state !== 'running' || !this.isRinging) return;
 
     try {
-      // Standard North American/European dual tone: 440 Hz + 480 Hz
       const osc1 = this.audioCtx.createOscillator();
       const osc2 = this.audioCtx.createOscillator();
       const gain = this.audioCtx.createGain();
@@ -240,35 +293,155 @@ class WebRTCManager {
   private listeners: Set<CallEventListener> = new Set();
   private durationTimer: any = null;
   private ringingTimeoutTimer: any = null;
+  private connectingTimeoutTimer: any = null;
+  private iceDisconnectGraceTimer: any = null;
   private cleanupTimer: any = null;
   private unsubscribeWs: (() => void) | null = null;
+  private unsubscribeWsConn: (() => void) | null = null;
+  private pageHideAttached = false;
   private loggedCallIds = new Set<string>();
   private currentUserId: string = '';
   private iceCandidateQueue: RTCIceCandidateInit[] = [];
   private screenAudioContext: AudioContext | null = null;
+  private screenMixedStream: MediaStream | null = null;
   private originalMicTrack: MediaStreamTrack | null = null;
+  private iceServersPromise: Promise<void> | null = null;
+
+  // Concurrency & Perfect Negotiation state
+  private attemptSeq = 0;
+  private isStarting = false;
+  private isAnswering = false;
+  private isTogglingScreenShare = false;
+  private isTogglingVideo = false;
+  private makingOffer = false;
+  private ignoreOffer = false;
+  private isSettingRemoteAnswerPending = false;
+  private hasCompletedInitialNegotiation = false;
+  private suppressNegotiationNeeded = false;
+  private inFlightNegotiation: Promise<RenegotiationResult> | null = null;
+  private inFlightNegotiationToken: object | null = null;
+  private pendingRenegotiationOptions: RTCOfferOptions | null = null;
+  private pendingRemoteOffers: Array<{ callId: string; sdp: RTCSessionDescriptionInit }> = [];
+  private iceRestartAttempts = 0;
+  private readonly maxIceRestartAttempts = 2;
+
+  private rtcConfig: RTCConfiguration = {
+    iceServers: [{ urls: DEFAULT_STUN_URLS }],
+    iceCandidatePoolSize: 2,
+  };
+
+  private isTerminalState(state?: CallState): boolean {
+    return !state || TERMINAL_STATES.has(state) || state === 'idle';
+  }
+
+  private isPolitePeer(): boolean {
+    if (!this.currentSession) return true;
+    if (this.currentUserId && this.currentSession.peerId && this.currentUserId !== this.currentSession.peerId) {
+      return this.currentUserId < this.currentSession.peerId;
+    }
+    return this.currentSession.isIncoming;
+  }
+
+  private clearAllCallTimers() {
+    this.clearRingingTimeout();
+    if (this.connectingTimeoutTimer) {
+      clearTimeout(this.connectingTimeoutTimer);
+      this.connectingTimeoutTimer = null;
+    }
+    if (this.iceDisconnectGraceTimer) {
+      clearTimeout(this.iceDisconnectGraceTimer);
+      this.iceDisconnectGraceTimer = null;
+    }
+    if (this.durationTimer) {
+      clearInterval(this.durationTimer);
+      this.durationTimer = null;
+    }
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+  }
+
+  private stopMediaStream(stream?: MediaStream | null) {
+    if (!stream) return;
+    stream.getTracks().forEach((track) => {
+      try {
+        track.onended = null;
+        track.stop();
+      } catch {}
+    });
+  }
 
   resetSession(): void {
-    this.clearRingingTimeout();
+    this.attemptSeq++;
+    this.isStarting = false;
+    this.isAnswering = false;
+    this.isTogglingScreenShare = false;
+    this.isTogglingVideo = false;
+    this.makingOffer = false;
+    this.ignoreOffer = false;
+    this.isSettingRemoteAnswerPending = false;
+    this.hasCompletedInitialNegotiation = false;
+    this.suppressNegotiationNeeded = false;
+    this.inFlightNegotiation = null;
+    this.inFlightNegotiationToken = null;
+    this.pendingRenegotiationOptions = null;
+    this.pendingRemoteOffers = [];
+    this.iceRestartAttempts = 0;
+
+    this.clearAllCallTimers();
     this.stopRingingEffects();
     this.iceCandidateQueue = [];
+
     if (this.screenAudioContext) {
       try {
         this.screenAudioContext.close();
       } catch {}
       this.screenAudioContext = null;
     }
+    this.stopMediaStream(this.screenMixedStream);
+    this.screenMixedStream = null;
     this.originalMicTrack = null;
-    if (this.cleanupTimer) {
-      clearTimeout(this.cleanupTimer);
-      this.cleanupTimer = null;
-    }
+
+    this.stopMediaStream(this.screenStream);
+    this.screenStream = null;
+    this.stopMediaStream(this.currentSession?.localStream);
+
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.onicecandidate = null;
+        this.peerConnection.ontrack = null;
+        this.peerConnection.onconnectionstatechange = null;
+        this.peerConnection.oniceconnectionstatechange = null;
+        this.peerConnection.onnegotiationneeded = null;
+        this.peerConnection.close();
+      } catch {}
       this.peerConnection = null;
     }
     this.currentSession = null;
     this.notify();
+  }
+
+  dispose(): void {
+    this.resetSession();
+    this.loggedCallIds.clear();
+    this.iceServersPromise = null;
+    this.rtcConfig = {
+      iceServers: [{ urls: DEFAULT_STUN_URLS }],
+      iceCandidatePoolSize: 2,
+    };
+    if (this.unsubscribeWs) {
+      try {
+        this.unsubscribeWs();
+      } catch {}
+      this.unsubscribeWs = null;
+    }
+    if (this.unsubscribeWsConn) {
+      try {
+        this.unsubscribeWsConn();
+      } catch {}
+      this.unsubscribeWsConn = null;
+    }
   }
 
   setUserId(id: string) {
@@ -280,6 +453,34 @@ class WebRTCManager {
       clearTimeout(this.ringingTimeoutTimer);
       this.ringingTimeoutTimer = null;
     }
+  }
+
+  private startConnectingTimeout() {
+    if (this.connectingTimeoutTimer) {
+      clearTimeout(this.connectingTimeoutTimer);
+    }
+    const callIdAtStart = this.currentSession?.callId;
+    this.connectingTimeoutTimer = setTimeout(() => {
+      this.connectingTimeoutTimer = null;
+      if (
+        !this.currentSession ||
+        this.currentSession.callId !== callIdAtStart ||
+        this.currentSession.state !== 'connecting'
+      ) {
+        return;
+      }
+      const hasTurn = (this.rtcConfig.iceServers || []).some((srv) => {
+        const urls = Array.isArray(srv.urls) ? srv.urls.join(',') : String(srv.urls || '');
+        return urls.includes('turn:') || urls.includes('turns:');
+      });
+      const stage: CallFailureStage = hasTurn ? 'ice' : 'turn_or_nat';
+      const reason = hasTurn
+        ? 'Media connection timed out (ICE failed)'
+        : 'Media connection timed out (no TURN relay configured for symmetric NAT)';
+      this.recordCallOutcome('failed', 0);
+      this.sendSignal('hangup');
+      this.cleanupCall('failed', stage, reason);
+    }, 25000);
   }
 
   private startRingingEffects(isIncoming: boolean) {
@@ -314,52 +515,31 @@ class WebRTCManager {
     }
   }
 
-  private async persistCallEvent(outcome: 'completed' | 'missed' | 'declined' | 'cancelled', duration: number = 0) {
+  private recordCallOutcome(
+    status: 'completed' | 'missed' | 'rejected' | 'declined' | 'cancelled' | 'failed',
+    durationSeconds: number = 0
+  ) {
     if (!this.currentSession) return;
-    const { conversationId, callId, callType } = this.currentSession;
+    const { callId, conversationId, peerId, callType, isIncoming } = this.currentSession;
     if (!callId || this.loggedCallIds.has(callId)) return;
     this.loggedCallIds.add(callId);
 
-    const isVideo = callType === 'video';
-    const text = isVideo
-      ? (outcome === 'completed' ? `Video Call (${duration}s)` : outcome === 'missed' ? 'Missed Video Call' : outcome === 'declined' ? 'Declined Video Call' : 'Cancelled Video Call')
-      : (outcome === 'completed' ? `Voice Call (${duration}s)` : outcome === 'missed' ? 'Missed Voice Call' : outcome === 'declined' ? 'Declined Voice Call' : 'Cancelled Voice Call');
+    const callerId = isIncoming ? peerId : this.currentUserId || '';
+    const receiverId = isIncoming ? this.currentUserId || '' : peerId;
+    const normalizedStatus = status === 'declined' ? 'rejected' : status;
 
-    const payload = {
-      type: 'call_event',
-      call_id: callId,
-      call_type: isVideo ? 'video' : 'audio',
-      outcome,
-      duration_seconds: duration,
-      text,
-    };
-
-    try {
-      await api.submitMessage(conversationId, {
-        ciphertext: JSON.stringify(payload),
-        nonce: 'system',
-        idempotency_key: `call_event_${callId}`,
-      });
-    } catch (e) {
-      console.warn('Failed to persist call event:', e);
-    }
+    api
+      .createCallLog({
+        id: callId,
+        conversation_id: conversationId,
+        caller_id: callerId || undefined,
+        receiver_id: receiverId,
+        call_type: callType,
+        status: normalizedStatus,
+        duration_seconds: Math.max(0, durationSeconds),
+      })
+      .catch((e) => console.warn('[WebRTC] Failed to record call log:', e));
   }
-
-  private rtcConfig: RTCConfiguration = {
-    iceServers: [
-      {
-        urls: [
-          'stun:stun.l.google.com:19302',
-          'stun:stun1.l.google.com:19302',
-          'stun:stun2.l.google.com:19302',
-          'stun:stun.cloudflare.com:3478',
-          'stun:stun.services.mozilla.com:3478',
-          'stun:stun.nextcloud.com:443',
-        ],
-      },
-    ],
-    iceCandidatePoolSize: 2,
-  };
 
   setIceServers(servers: RTCIceServer[]) {
     this.rtcConfig.iceServers = servers;
@@ -369,45 +549,79 @@ class WebRTCManager {
     return this.rtcConfig.iceServers || [];
   }
 
+  async refreshIceServers(): Promise<void> {
+    if (typeof api.getIceServers !== 'function') return;
+    const reqPromise = api
+      .getIceServers()
+      .then((servers) => {
+        if (this.iceServersPromise === reqPromise && Array.isArray(servers)) {
+          // Honor server policy verbatim: STUN_SERVERS=none yields [] or TURN-only without injecting default STUN
+          this.setIceServers(servers as RTCIceServer[]);
+        }
+      })
+      .catch((e) => {
+        console.warn('[WebRTC] Falling back to default ICE servers:', e);
+      });
+    this.iceServersPromise = reqPromise;
+    await reqPromise;
+  }
+
   init() {
-    if (this.unsubscribeWs) return;
+    if (!this.unsubscribeWs) {
+      this.unsubscribeWs = wsManager.subscribe((event) => {
+        if (event.type === 'call.signal') {
+          void this.handleIncomingSignal(event.payload as CallSignal);
+        } else if (event.type === 'call.signal_status') {
+          this.handleSignalStatus(event.payload as CallSignalStatus);
+        }
+      });
+    }
 
-    this.unsubscribeWs = wsManager.subscribe((event) => {
-      if (event.type === 'call.signal') {
-        this.handleIncomingSignal(event.payload as CallSignal);
-      }
-    });
+    if (!this.unsubscribeWsConn && typeof (wsManager as any).onConnectionChange === 'function') {
+      this.unsubscribeWsConn = (wsManager as any).onConnectionChange((connected: boolean) => {
+        if (connected && this.currentSession && !this.isTerminalState(this.currentSession.state)) {
+          if (
+            this.peerConnection &&
+            (this.peerConnection.iceConnectionState === 'disconnected' ||
+              this.peerConnection.iceConnectionState === 'failed')
+          ) {
+            void this.attemptIceRestart('ws_reconnected');
+          }
+        }
+      });
+    }
 
-    api.getIceServers().then((servers) => {
-      if (servers && Array.isArray(servers) && servers.length > 0) {
-        const fallbackUrls = [
-          'stun:stun.l.google.com:19302',
-          'stun:stun1.l.google.com:19302',
-          'stun:stun.cloudflare.com:3478',
-          'stun:stun.services.mozilla.com:3478',
-          'stun:stun.nextcloud.com:443',
-        ];
-        this.setIceServers([
-          ...servers as RTCIceServer[],
-          { urls: fallbackUrls },
-        ]);
-      }
-    }).catch((e) => {
-      console.warn('[WebRTC] Falling back to default ICE servers:', e);
-    });
+    if (!this.pageHideAttached && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.pageHideAttached = true;
+      window.addEventListener('pagehide', () => {
+        if (this.currentSession && !this.isTerminalState(this.currentSession.state)) {
+          const signalType =
+            this.currentSession.state === 'outgoing_calling' || this.currentSession.state === 'outgoing_ringing'
+              ? 'cancel'
+              : 'hangup';
+          this.sendSignal(signalType);
+          this.resetSession();
+        }
+      });
+    }
+
+    if (!this.iceServersPromise) {
+      void this.refreshIceServers();
+    }
   }
 
   subscribe(listener: CallEventListener): () => void {
     this.listeners.add(listener);
-    listener(this.currentSession);
+    listener(this.currentSession ? { ...this.currentSession } : null);
     return () => {
       this.listeners.delete(listener);
     };
   }
 
   private notify() {
+    const snapshot = this.currentSession ? { ...this.currentSession } : null;
     for (const listener of this.listeners) {
-      listener(this.currentSession ? { ...this.currentSession } : null);
+      listener(snapshot);
     }
   }
 
@@ -415,54 +629,111 @@ class WebRTCManager {
     return this.currentSession;
   }
 
+  private handleSignalStatus(status: CallSignalStatus) {
+    if (!this.currentSession || !status || status.call_id !== this.currentSession.callId) return;
+    if (status.status === 'target_offline') {
+      this.currentSession.targetOffline = true;
+      this.notify();
+    } else if (status.status === 'blocked') {
+      this.recordCallOutcome('rejected', 0);
+      this.cleanupCall('rejected', 'blocked', 'Call could not be delivered (user blocked)');
+    }
+  }
+
+  private async acquireInitialMedia(callType: 'audio' | 'video'): Promise<{
+    stream: MediaStream;
+    hasVideo: boolean;
+  }> {
+    const audioStream = await mediaDeviceManager.getAudioStream();
+    const combined = new MediaStream(audioStream.getAudioTracks());
+
+    if (callType === 'video') {
+      try {
+        const videoStream = await mediaDeviceManager.getVideoStream();
+        videoStream.getVideoTracks().forEach((t) => combined.addTrack(t));
+        return { stream: combined, hasVideo: combined.getVideoTracks().length > 0 };
+      } catch (videoErr: any) {
+        if (videoErr?.name === 'NotAllowedError' || videoErr?.name === 'PermissionDeniedError') {
+          this.stopMediaStream(combined);
+          throw videoErr;
+        }
+        console.warn('[WebRTC] Camera unavailable for video call, continuing with audio only:', videoErr);
+        return { stream: combined, hasVideo: false };
+      }
+    }
+
+    return { stream: combined, hasVideo: false };
+  }
+
   // Start outgoing call
   async startCall(
-    conversationId: string, 
-    peerId: string, 
-    peerName: string, 
+    conversationId: string,
+    peerId: string,
+    peerName: string,
     callType: 'audio' | 'video',
     peerAvatarUrl?: string,
     callerAvatarUrl?: string,
     callerName?: string
   ): Promise<void> {
     this.init();
-    if (this.currentSession) {
+    if (this.isStarting || (this.currentSession && !this.isTerminalState(this.currentSession.state))) {
       console.warn('Call already in progress');
       return;
     }
 
+    this.isStarting = true;
+    const seq = ++this.attemptSeq;
     const callId = 'call_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
 
-    let localStream: MediaStream | undefined;
-    try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: STUDIO_AUDIO_CONSTRAINTS,
-        video: callType === 'video' ? {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        } : false,
-      });
-    } catch (e: any) {
-      console.warn('Initial HD media constraints failed, falling back to standard audio:', e);
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: callType === 'video',
-        });
-      } catch (fallbackErr: any) {
-        try {
-          localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: callType === 'video',
-          });
-        } catch (finalErr: any) {
-          console.error('Failed to get media devices:', finalErr);
-          alert('Could not access microphone/camera: ' + (finalErr.message || 'Permission denied'));
-          return;
-        }
-      }
+    if (this.cleanupTimer) {
+      clearTimeout(this.cleanupTimer);
+      this.cleanupTimer = null;
     }
+
+    let acquired: { stream: MediaStream; hasVideo: boolean };
+    try {
+      acquired = await this.acquireInitialMedia(callType);
+    } catch (finalErr: any) {
+      this.isStarting = false;
+      console.error('Failed to get media devices:', finalErr);
+      const errMsg = finalErr?.message || 'Microphone/camera permission denied';
+      this.currentSession = {
+        callId,
+        conversationId,
+        peerId,
+        peerName,
+        peerAvatarUrl,
+        callType,
+        isIncoming: false,
+        state: 'failed',
+        durationSeconds: 0,
+        isMuted: false,
+        isVideoOff: true,
+        failureStage: 'permissions',
+        failureReason: errMsg,
+      };
+      this.notify();
+      this.cleanupTimer = setTimeout(() => {
+        if (this.currentSession?.callId === callId && this.currentSession.state === 'failed') {
+          this.currentSession = null;
+          this.cleanupTimer = null;
+          this.notify();
+        }
+      }, 3000);
+      return;
+    }
+
+    if (seq !== this.attemptSeq || (this.currentSession && !this.isTerminalState(this.currentSession.state))) {
+      this.stopMediaStream(acquired.stream);
+      this.isStarting = false;
+      return;
+    }
+
+    this.isStarting = false;
+    this.iceRestartAttempts = 0;
+    this.hasCompletedInitialNegotiation = false;
+    this.pendingRemoteOffers = [];
+    this.iceCandidateQueue = [];
 
     this.currentSession = {
       callId,
@@ -474,14 +745,15 @@ class WebRTCManager {
       isIncoming: false,
       state: 'outgoing_calling',
       durationSeconds: 0,
-      localStream,
+      localStream: acquired.stream,
       isMuted: false,
-      isVideoOff: false,
+      isVideoOff: !acquired.hasVideo,
       screenQuality: 'auto',
+      localStreamRevision: 1,
+      remoteStreamRevision: 0,
     };
     this.notify();
 
-    // Send invite signal via WebSocket
     wsManager.sendCallSignal({
       call_id: callId,
       conversation_id: conversationId,
@@ -496,92 +768,98 @@ class WebRTCManager {
       },
     });
 
-    // Start outgoing ringback tone for caller
     this.startRingingEffects(false);
 
-    // Ringing timeout for caller (35s)
     this.clearRingingTimeout();
     this.ringingTimeoutTimer = setTimeout(() => {
-      if (this.currentSession && (this.currentSession.state === 'outgoing_calling' || this.currentSession.state === 'outgoing_ringing')) {
+      if (
+        this.currentSession &&
+        this.currentSession.callId === callId &&
+        (this.currentSession.state === 'outgoing_calling' || this.currentSession.state === 'outgoing_ringing')
+      ) {
         this.hangupCall(true);
       }
     }, 35000);
   }
 
-  // Method to unmute ringtone if blocked by autoplay policy
+  // Method to unmute ringtone or blocked media playback via user gesture
   async unlockAudio(): Promise<void> {
     await soundManager.resumeContext();
     if (this.currentSession) {
       this.currentSession.autoplayBlocked = false;
+      this.currentSession.mediaPlaybackBlocked = false;
+      this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
+      this.notify();
+    }
+  }
+
+  setPlaybackBlocked(blocked: boolean): void {
+    if (!this.currentSession) return;
+    if (this.currentSession.mediaPlaybackBlocked !== blocked) {
+      this.currentSession.mediaPlaybackBlocked = blocked;
       this.notify();
     }
   }
 
   // Answer incoming call
   async answerCall(): Promise<void> {
+    if (this.isAnswering) return;
+    if (!this.currentSession || !this.currentSession.isIncoming || this.currentSession.state !== 'incoming_ringing') {
+      return;
+    }
+
+    this.isAnswering = true;
     this.clearRingingTimeout();
     this.stopRingingEffects();
-    if (!this.currentSession || !this.currentSession.isIncoming) return;
 
+    const seq = this.attemptSeq;
     const { callType, callId, conversationId, peerId } = this.currentSession;
 
-    let localStream: MediaStream | undefined;
+    let acquired: { stream: MediaStream; hasVideo: boolean };
     try {
-      localStream = await navigator.mediaDevices.getUserMedia({
-        audio: STUDIO_AUDIO_CONSTRAINTS,
-        video: callType === 'video' ? {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          frameRate: { ideal: 30 },
-        } : false,
-      });
-    } catch (e: any) {
-      console.warn('Initial HD media constraints failed for answer, falling back to standard audio:', e);
-      try {
-        localStream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-          video: callType === 'video',
-        });
-      } catch (fallbackErr: any) {
-        try {
-          localStream = await navigator.mediaDevices.getUserMedia({
-            audio: true,
-            video: callType === 'video',
-          });
-        } catch (finalErr: any) {
-          console.error('Failed to acquire media devices for answer:', finalErr);
-          this.rejectCall();
-          alert('Could not access microphone/camera: ' + (finalErr.message || 'Permission denied'));
-          return;
-        }
+      acquired = await this.acquireInitialMedia(callType);
+    } catch (finalErr: any) {
+      this.isAnswering = false;
+      console.error('Failed to acquire media devices for answer:', finalErr);
+      if (this.currentSession && this.currentSession.callId === callId) {
+        this.sendSignal('reject', { reason: 'media_permission_denied' });
+        this.recordCallOutcome('failed', 0);
+        this.cleanupCall('failed', 'permissions', finalErr?.message || 'Microphone/camera permission denied');
       }
+      return;
     }
 
-    this.currentSession.localStream = localStream;
+    if (
+      seq !== this.attemptSeq ||
+      !this.currentSession ||
+      this.currentSession.callId !== callId ||
+      this.isTerminalState(this.currentSession.state)
+    ) {
+      this.stopMediaStream(acquired.stream);
+      this.isAnswering = false;
+      return;
+    }
+
+    this.hasCompletedInitialNegotiation = false;
+    this.iceRestartAttempts = 0;
+    this.currentSession.localStream = acquired.stream;
+    this.currentSession.isVideoOff = !acquired.hasVideo;
     this.currentSession.screenQuality = 'auto';
     this.currentSession.state = 'connecting';
+    this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
     this.notify();
+    this.startConnectingTimeout();
 
-    // Create RTCPeerConnection
     await this.setupPeerConnection();
 
-    // Add local tracks
-    if (localStream && this.peerConnection) {
-      localStream.getTracks().forEach((track) => {
-        this.peerConnection?.addTrack(track, localStream!);
-      });
+    if (!this.currentSession || this.currentSession.callId !== callId || !this.peerConnection) {
+      this.isAnswering = false;
+      return;
     }
 
-    // Ensure video transceiver exists so video/screen-share m-line is negotiated
-    if (this.peerConnection && !this.peerConnection.getTransceivers().some((t) => t.receiver.track?.kind === 'video' || t.sender.track?.kind === 'video')) {
-      try {
-        this.peerConnection.addTransceiver('video', { direction: 'sendrecv' });
-      } catch (e) {
-        console.warn('[WebRTC] addTransceiver video error:', e);
-      }
-    }
+    this.isAnswering = false;
 
-    // Send accept signal
+    // Notify caller we accepted — caller initiates initial sdp_offer
     wsManager.sendCallSignal({
       call_id: callId,
       conversation_id: conversationId,
@@ -590,14 +868,22 @@ class WebRTCManager {
       call_type: callType,
       signal_type: 'accept',
     });
+
+    // If caller's sdp_offer arrived while we were acquiring media or waiting for ICE servers, apply it now
+    const bufferedOffer = this.pendingRemoteOffers.find((o) => o.callId === callId);
+    this.pendingRemoteOffers = [];
+    if (bufferedOffer) {
+      await this.processRemoteOffer(bufferedOffer.sdp);
+    }
   }
 
-  // Reject / Decline incoming call
   declineCall(): void {
     this.rejectCall();
   }
 
   rejectCall(): void {
+    this.attemptSeq++;
+    this.isAnswering = false;
     this.clearRingingTimeout();
     this.stopRingingEffects();
     if (!this.currentSession) return;
@@ -613,90 +899,325 @@ class WebRTCManager {
       signal_type: 'reject',
     });
 
-    // Record rejected call log and conversation message
-    this.persistCallEvent('declined', 0);
-    api.createCallLog({
-      id: callId,
-      conversation_id: conversationId,
-      receiver_id: peerId,
-      call_type: callType,
-      status: 'rejected',
-      duration_seconds: 0,
-    }).catch(console.warn);
-
+    this.recordCallOutcome('rejected', 0);
     this.cleanupCall('rejected');
   }
 
-  // Hangup / End call
   endCall(): void {
     this.hangupCall();
   }
 
   hangupCall(isTimeout: boolean = false): void {
+    this.attemptSeq++;
+    this.isStarting = false;
+    this.isAnswering = false;
     this.clearRingingTimeout();
     this.stopRingingEffects();
     if (!this.currentSession) return;
 
-    const { callId, conversationId, peerId, callType, durationSeconds, state } = this.currentSession;
+    const { callId, conversationId, peerId, callType, durationSeconds, state, isIncoming } = this.currentSession;
+    const isPreAnswer = state === 'outgoing_calling' || state === 'outgoing_ringing' || state === 'incoming_ringing';
+    const signalType = !isIncoming && (state === 'outgoing_calling' || state === 'outgoing_ringing') ? 'cancel' : 'hangup';
 
-    const signalType = state === 'outgoing_calling' || state === 'outgoing_ringing' ? 'cancel' : 'hangup';
     wsManager.sendCallSignal({
       call_id: callId,
       conversation_id: conversationId,
-      caller_id: this.currentUserId || '',
-      receiver_id: peerId,
+      caller_id: isIncoming ? peerId : this.currentUserId || '',
+      receiver_id: isIncoming ? this.currentUserId || '' : peerId,
       call_type: callType,
       signal_type: signalType,
     });
 
-    const finalState = isTimeout ? 'timeout' : (signalType === 'cancel' ? 'cancelled' : 'ended');
-    const status = state === 'connected' ? 'completed' : (state === 'outgoing_calling' || state === 'outgoing_ringing' ? 'cancelled' : 'missed');
-    this.persistCallEvent(status as any, durationSeconds);
-    api.createCallLog({
-      id: callId,
-      conversation_id: conversationId,
-      receiver_id: peerId,
-      call_type: callType,
-      status: state === 'connected' ? 'completed' : 'missed',
-      duration_seconds: durationSeconds,
-    }).catch(console.warn);
+    const finalState: CallState = isTimeout ? 'timeout' : signalType === 'cancel' ? 'cancelled' : 'ended';
+    const status =
+      state === 'connected'
+        ? 'completed'
+        : signalType === 'cancel'
+        ? isTimeout
+          ? 'missed'
+          : 'cancelled'
+        : isPreAnswer
+        ? 'missed'
+        : 'completed';
 
+    this.recordCallOutcome(status, durationSeconds);
     this.cleanupCall(finalState);
   }
 
-  // Mute toggle
   toggleMute(): void {
     if (!this.currentSession?.localStream) return;
-    const audioTrack = this.currentSession.localStream.getAudioTracks()[0];
-    if (audioTrack) {
-      audioTrack.enabled = !audioTrack.enabled;
-      this.currentSession.isMuted = !audioTrack.enabled;
-      this.notify();
+    const audioTracks = this.currentSession.localStream.getAudioTracks();
+    if (audioTracks.length === 0) return;
+    const nextMuted = !this.currentSession.isMuted;
+    audioTracks.forEach((t) => {
+      t.enabled = !nextMuted;
+    });
+    this.currentSession.isMuted = nextMuted;
+    this.notify();
+  }
+
+  async switchAudioInput(deviceId: string): Promise<void> {
+    mediaDeviceManager.setSelectedAudioInputId(deviceId);
+    if (!this.currentSession || this.isTerminalState(this.currentSession.state)) return;
+
+    const callId = this.currentSession.callId;
+    const seq = this.attemptSeq;
+    const newStream = await mediaDeviceManager.getAudioStream(undefined, deviceId);
+    const newTrack = newStream.getAudioTracks()[0];
+    if (!newTrack) {
+      this.stopMediaStream(newStream);
+      return;
+    }
+
+    if (seq !== this.attemptSeq || !this.currentSession || this.currentSession.callId !== callId) {
+      this.stopMediaStream(newStream);
+      return;
+    }
+
+    newTrack.enabled = !this.currentSession.isMuted;
+
+    if (!this.currentSession.localStream) {
+      this.currentSession.localStream = new MediaStream();
+    }
+    this.currentSession.localStream.getAudioTracks().forEach((old) => {
+      old.stop();
+      this.currentSession!.localStream!.removeTrack(old);
+    });
+    this.currentSession.localStream.addTrack(newTrack);
+    this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
+
+    if (this.currentSession.isScreenSharing && this.originalMicTrack) {
+      this.originalMicTrack = newTrack;
+    } else if (this.peerConnection) {
+      const audioSender = this.findSenderByKind('audio');
+      if (audioSender) {
+        await audioSender.replaceTrack(newTrack).catch((e) => console.warn('[WebRTC] switchAudio replaceTrack:', e));
+      }
+    }
+
+    this.notify();
+  }
+
+  async switchVideoInput(deviceId: string): Promise<void> {
+    mediaDeviceManager.setSelectedVideoInputId(deviceId);
+    if (!this.currentSession || this.isTerminalState(this.currentSession.state) || this.currentSession.isVideoOff) {
+      return;
+    }
+
+    const callId = this.currentSession.callId;
+    const seq = this.attemptSeq;
+    const newStream = await mediaDeviceManager.getVideoStream(undefined, deviceId);
+    const newTrack = newStream.getVideoTracks()[0];
+    if (!newTrack) {
+      this.stopMediaStream(newStream);
+      return;
+    }
+
+    if (seq !== this.attemptSeq || !this.currentSession || this.currentSession.callId !== callId) {
+      this.stopMediaStream(newStream);
+      return;
+    }
+
+    if (!this.currentSession.localStream) {
+      this.currentSession.localStream = new MediaStream();
+    }
+    this.currentSession.localStream.getVideoTracks().forEach((old) => {
+      old.stop();
+      this.currentSession!.localStream!.removeTrack(old);
+    });
+    this.currentSession.localStream.addTrack(newTrack);
+    this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
+
+    if (!this.currentSession.isScreenSharing && this.peerConnection) {
+      const videoSender = this.findSenderByKind('video');
+      if (videoSender) {
+        await videoSender.replaceTrack(newTrack).catch((e) => console.warn('[WebRTC] switchVideo replaceTrack:', e));
+      }
+    }
+
+    this.notify();
+  }
+
+  // Toggle camera cleanly: stops hardware capture when disabling, acquires camera & upgrades audio->video call when enabling
+  async toggleVideo(): Promise<void> {
+    if (!this.currentSession || this.isTogglingVideo || this.isTerminalState(this.currentSession.state)) return;
+
+    this.isTogglingVideo = true;
+    const callId = this.currentSession.callId;
+    const seq = this.attemptSeq;
+
+    try {
+      const existingTracks = this.currentSession.localStream?.getVideoTracks() || [];
+      const currentlyHasLiveVideo = !this.currentSession.isVideoOff && existingTracks.some((t) => t.readyState === 'live');
+
+      if (currentlyHasLiveVideo) {
+        this.currentSession.isVideoOff = true;
+        existingTracks.forEach((t) => {
+          try {
+            t.stop();
+          } catch {}
+          this.currentSession?.localStream?.removeTrack(t);
+        });
+        this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
+
+        if (!this.currentSession.isScreenSharing && this.peerConnection) {
+          const videoSender = this.findSenderByKind('video');
+          if (videoSender) {
+            await videoSender.replaceTrack(null).catch(() => {});
+          }
+        }
+        this.sendSignal('video_state', { enabled: false });
+        this.notify();
+      } else {
+        const videoStream = await mediaDeviceManager.getVideoStream();
+        const newTrack = videoStream.getVideoTracks()[0];
+        if (!newTrack) {
+          this.stopMediaStream(videoStream);
+          return;
+        }
+
+        if (
+          seq !== this.attemptSeq ||
+          !this.currentSession ||
+          this.currentSession.callId !== callId ||
+          this.isTerminalState(this.currentSession.state)
+        ) {
+          this.stopMediaStream(videoStream);
+          return;
+        }
+
+        if (!this.currentSession.localStream) {
+          this.currentSession.localStream = new MediaStream();
+        }
+        this.currentSession.localStream.getVideoTracks().forEach((old) => {
+          try {
+            old.stop();
+          } catch {}
+          this.currentSession!.localStream!.removeTrack(old);
+        });
+        this.currentSession.localStream.addTrack(newTrack);
+        this.currentSession.isVideoOff = false;
+        this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
+
+        if (!this.currentSession.isScreenSharing && this.peerConnection) {
+          const videoTransceiver = this.findTransceiverByKind('video');
+          const previousDirection = videoTransceiver?.direction;
+          let addedVideoSender: RTCRtpSender | null = null;
+          let needsRenegotiation = false;
+
+          this.suppressNegotiationNeeded = true;
+          try {
+            if (videoTransceiver) {
+              if (videoTransceiver.direction === 'recvonly' || videoTransceiver.direction === 'inactive') {
+                videoTransceiver.direction = 'sendrecv';
+                needsRenegotiation = true;
+              }
+              await videoTransceiver.sender.replaceTrack(newTrack);
+            } else {
+              addedVideoSender = this.peerConnection.addTrack(newTrack, this.currentSession.localStream);
+              needsRenegotiation = true;
+            }
+            if (needsRenegotiation && this.hasCompletedInitialNegotiation) {
+              const negResult = await this.renegotiate();
+              if (!negResult.ok) {
+                throw negResult.error instanceof Error
+                  ? negResult.error
+                  : new Error(`Video toggle renegotiation failed (${negResult.status})`);
+              }
+            }
+          } catch (toggleErr) {
+            try {
+              newTrack.stop();
+            } catch {}
+            this.currentSession.localStream?.removeTrack(newTrack);
+            this.currentSession.isVideoOff = true;
+            this.currentSession.localStreamRevision = (this.currentSession.localStreamRevision || 0) + 1;
+            if (videoTransceiver) {
+              await videoTransceiver.sender.replaceTrack(null).catch(() => {});
+              if (previousDirection) {
+                try {
+                  videoTransceiver.direction = previousDirection;
+                } catch {}
+              }
+            }
+            if (addedVideoSender && this.peerConnection) {
+              try {
+                this.peerConnection.removeTrack(addedVideoSender);
+              } catch {}
+            }
+            this.notify();
+            throw toggleErr;
+          } finally {
+            this.suppressNegotiationNeeded = false;
+          }
+        }
+
+        this.sendSignal('video_state', { enabled: true });
+        this.notify();
+      }
+    } catch (err) {
+      console.warn('[WebRTC] toggleVideo error:', err);
+    } finally {
+      this.suppressNegotiationNeeded = false;
+      this.isTogglingVideo = false;
     }
   }
 
-  // Video toggle
-  toggleVideo(): void {
-    if (!this.currentSession?.localStream) return;
-    const videoTrack = this.currentSession.localStream.getVideoTracks()[0];
-    if (videoTrack) {
-      videoTrack.enabled = !videoTrack.enabled;
-      this.currentSession.isVideoOff = !videoTrack.enabled;
-      this.notify();
+  private findTransceiverByKind(kind: 'audio' | 'video'): RTCRtpTransceiver | undefined {
+    if (!this.peerConnection) return undefined;
+    return this.peerConnection
+      .getTransceivers()
+      .find((t) => t.sender.track?.kind === kind || t.receiver.track?.kind === kind);
+  }
+
+  private findSenderByKind(kind: 'audio' | 'video'): RTCRtpSender | undefined {
+    if (!this.peerConnection) return undefined;
+    return (
+      this.findTransceiverByKind(kind)?.sender ||
+      this.peerConnection.getSenders().find((s) => s.track?.kind === kind)
+    );
+  }
+
+  private attachLocalTracksToPeerConnection(ensureVideoTransceiver: boolean): void {
+    if (!this.peerConnection || !this.currentSession) return;
+    const localStream = this.currentSession.localStream;
+
+    if (localStream) {
+      for (const track of localStream.getTracks()) {
+        if (track.kind === 'video' && this.currentSession.isVideoOff) continue;
+        const kind = track.kind as 'audio' | 'video';
+        const transceiver = this.findTransceiverByKind(kind);
+        if (transceiver) {
+          if (transceiver.direction === 'recvonly' || transceiver.direction === 'inactive') {
+            transceiver.direction = 'sendrecv';
+          }
+          transceiver.sender.replaceTrack(track).catch((e) => console.warn('[WebRTC] attach replaceTrack:', e));
+        } else {
+          this.peerConnection.addTrack(track, localStream);
+        }
+      }
+    }
+
+    if (ensureVideoTransceiver && !this.findTransceiverByKind('video')) {
+      try {
+        this.peerConnection.addTransceiver('video', { direction: 'sendrecv' });
+      } catch (e) {
+        console.warn('[WebRTC] addTransceiver video error:', e);
+      }
     }
   }
 
-  private sendSignal(signalType: string, data?: any): void {
+  private sendSignal(signalType: CallSignal['signal_type'], data?: any): void {
     if (!this.currentSession) return;
-    const callerId = this.currentSession.isIncoming ? this.currentSession.peerId : (this.currentUserId || '');
-    const receiverId = this.currentSession.isIncoming ? (this.currentUserId || '') : this.currentSession.peerId;
+    const callerId = this.currentSession.isIncoming ? this.currentSession.peerId : this.currentUserId || '';
+    const receiverId = this.currentSession.isIncoming ? this.currentUserId || '' : this.currentSession.peerId;
     wsManager.sendCallSignal({
       call_id: this.currentSession.callId,
       conversation_id: this.currentSession.conversationId,
       caller_id: callerId,
       receiver_id: receiverId,
       call_type: this.currentSession.callType,
-      signal_type: signalType as any,
+      signal_type: signalType,
       data,
     });
   }
@@ -718,17 +1239,121 @@ class WebRTCManager {
     }
   }
 
-  async renegotiate(): Promise<void> {
-    if (!this.peerConnection || !this.currentSession) return;
+  async renegotiate(options?: RTCOfferOptions): Promise<RenegotiationResult> {
+    if (!this.peerConnection || !this.currentSession || this.isTerminalState(this.currentSession.state)) {
+      return { ok: false, status: 'inactive' };
+    }
+
+    while (this.inFlightNegotiation) {
+      await this.inFlightNegotiation.catch(() => undefined);
+    }
+
+    if (!this.peerConnection || !this.currentSession || this.isTerminalState(this.currentSession.state)) {
+      return { ok: false, status: 'inactive' };
+    }
+
+    if (this.makingOffer || this.peerConnection.signalingState !== 'stable') {
+      this.pendingRenegotiationOptions = options
+        ? { ...(this.pendingRenegotiationOptions || {}), ...options }
+        : this.pendingRenegotiationOptions || {};
+      return {
+        ok: false,
+        status: 'busy',
+        error: new Error('Renegotiation deferred: offer already in progress or signaling not stable'),
+      };
+    }
+
+    const token = {};
+    this.inFlightNegotiationToken = token;
+    const negotiationPromise = this.executeRenegotiation(options, token);
+    if (this.inFlightNegotiationToken === token) {
+      this.inFlightNegotiation = negotiationPromise;
+    }
+    return negotiationPromise;
+  }
+
+  private async executeRenegotiation(
+    options: RTCOfferOptions | undefined,
+    token: object
+  ): Promise<RenegotiationResult> {
+    if (!this.peerConnection || !this.currentSession || this.isTerminalState(this.currentSession.state)) {
+      if (this.inFlightNegotiationToken === token) {
+        this.inFlightNegotiationToken = null;
+        this.inFlightNegotiation = null;
+      }
+      return { ok: false, status: 'inactive' };
+    }
+    const callId = this.currentSession.callId;
+    const seq = this.attemptSeq;
+
     try {
-      const offer = await this.peerConnection.createOffer();
+      this.makingOffer = true;
+      const offer = await this.peerConnection.createOffer(options);
+      if (
+        !this.peerConnection ||
+        !this.currentSession ||
+        this.currentSession.callId !== callId ||
+        seq !== this.attemptSeq ||
+        this.isTerminalState(this.currentSession.state)
+      ) {
+        return { ok: false, status: 'inactive' };
+      }
       const optimizedSdp = optimizeOpusSdp(offer.sdp || '', !!this.currentSession.isScreenSharing);
-      const modifiedOffer = { type: offer.type, sdp: optimizedSdp };
+      const modifiedOffer: RTCSessionDescriptionInit = { type: offer.type, sdp: optimizedSdp };
       await this.peerConnection.setLocalDescription(modifiedOffer);
+      if (
+        !this.peerConnection ||
+        !this.currentSession ||
+        this.currentSession.callId !== callId ||
+        seq !== this.attemptSeq ||
+        this.isTerminalState(this.currentSession.state)
+      ) {
+        return { ok: false, status: 'inactive' };
+      }
       this.applyAudioSenderParameters();
       this.sendSignal('sdp_offer', modifiedOffer);
+      return { ok: true, status: 'sent' };
     } catch (err) {
       console.warn('[WebRTC] Renegotiation offer failed:', err);
+      return { ok: false, status: 'failed', error: err };
+    } finally {
+      this.makingOffer = false;
+      if (this.inFlightNegotiationToken === token) {
+        this.inFlightNegotiationToken = null;
+        this.inFlightNegotiation = null;
+      }
+    }
+  }
+
+  private async attemptIceRestart(reason: string): Promise<void> {
+    if (!this.peerConnection || !this.currentSession || this.isTerminalState(this.currentSession.state)) return;
+
+    if (this.iceRestartAttempts >= this.maxIceRestartAttempts) {
+      this.recordCallOutcome('failed', this.currentSession.durationSeconds);
+      this.sendSignal('hangup');
+      this.cleanupCall('failed', 'turn_or_nat', `ICE connection failed (${reason})`);
+      return;
+    }
+
+    this.iceRestartAttempts++;
+    this.currentSession.isReconnectingIce = true;
+    this.notify();
+
+    console.warn(`[WebRTC] Attempting ICE restart #${this.iceRestartAttempts} (${reason})`);
+    try {
+      if (typeof this.peerConnection.restartIce === 'function') {
+        this.peerConnection.restartIce();
+      }
+      if (this.peerConnection.signalingState === 'stable') {
+        const res = await this.renegotiate({ iceRestart: true });
+        if (!res.ok) {
+          console.warn('[WebRTC] ICE restart renegotiation did not send offer:', res.status, res.error);
+        }
+      } else {
+        this.pendingRenegotiationOptions = { ...(this.pendingRenegotiationOptions || {}), iceRestart: true };
+      }
+    } catch (err) {
+      console.warn('[WebRTC] ICE restart error:', err);
     }
   }
 
@@ -770,7 +1395,7 @@ class WebRTCManager {
       }
 
       if (this.peerConnection) {
-        const videoSender = this.peerConnection.getSenders().find((s) => s.track?.kind === 'video');
+        const videoSender = this.findSenderByKind('video');
         if (videoSender) {
           try {
             const params = videoSender.getParameters();
@@ -784,11 +1409,11 @@ class WebRTCManager {
             } else if (preset === '720p') {
               params.encodings[0].maxBitrate = 1800000;
               params.encodings[0].maxFramerate = 30;
-              params.encodings[0].scaleResolutionDownBy = 1.5;
+              params.encodings[0].scaleResolutionDownBy = 1.0;
             } else if (preset === '480p') {
               params.encodings[0].maxBitrate = 750000;
               params.encodings[0].maxFramerate = 30;
-              params.encodings[0].scaleResolutionDownBy = 2.0;
+              params.encodings[0].scaleResolutionDownBy = 1.0;
             } else {
               delete params.encodings[0].maxBitrate;
               delete params.encodings[0].maxFramerate;
@@ -807,7 +1432,6 @@ class WebRTCManager {
     this.notify();
   }
 
-  // Viewer requests remote peer to adjust screen sharing quality
   requestRemoteScreenQuality(preset: ScreenQualityPreset): void {
     if (!this.currentSession) return;
     this.currentSession.screenQuality = preset;
@@ -815,67 +1439,56 @@ class WebRTCManager {
     this.notify();
   }
 
-  // Screen sharing toggle
+  // Screen sharing toggle (Video + System/Tab Audio mixing)
   async toggleScreenShare(): Promise<void> {
-    if (!this.currentSession || !this.peerConnection) return;
+    if (!this.currentSession || !this.peerConnection || this.isTogglingScreenShare) return;
 
-    if (this.currentSession.isScreenSharing) {
-      // 1. Stop local screen capture tracks
-      if (this.screenStream) {
-        this.screenStream.getTracks().forEach((track) => track.stop());
+    this.isTogglingScreenShare = true;
+    const callId = this.currentSession.callId;
+    const seq = this.attemptSeq;
+
+    try {
+      if (this.currentSession.isScreenSharing) {
+        this.suppressNegotiationNeeded = true;
+        this.stopMediaStream(this.screenStream);
         this.screenStream = null;
-      }
-      this.currentSession.screenStream = undefined;
-      this.currentSession.isScreenSharing = false;
+        this.currentSession.screenStream = undefined;
+        this.currentSession.isScreenSharing = false;
 
-      // 2. Close screen audio mixing and restore original microphone track
-      if (this.screenAudioContext) {
-        try {
-          this.screenAudioContext.close();
-        } catch {}
-        this.screenAudioContext = null;
-      }
-
-      const audioTransceiver = this.peerConnection.getTransceivers().find(
-        (t) => t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio'
-      );
-      const audioSender = audioTransceiver?.sender || this.peerConnection.getSenders().find((s) => s.track?.kind === 'audio');
-      const micTrack = this.originalMicTrack || this.currentSession.localStream?.getAudioTracks()[0] || null;
-
-      if (audioSender && micTrack) {
-        try {
-          await audioSender.replaceTrack(micTrack);
-        } catch (e) {
-          console.warn('[WebRTC] Failed to restore mic track on stop screen share:', e);
+        if (this.screenAudioContext) {
+          try {
+            this.screenAudioContext.close();
+          } catch {}
+          this.screenAudioContext = null;
         }
-      }
-      this.originalMicTrack = null;
+        this.stopMediaStream(this.screenMixedStream);
+        this.screenMixedStream = null;
 
-      // 3. Revert video sender back to local camera track (or null if audio call / camera off)
-      const videoTransceiver = this.peerConnection.getTransceivers().find(
-        (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
-      );
-      const videoSender = videoTransceiver?.sender || this.peerConnection.getSenders().find((s) => s.track?.kind === 'video');
-
-      const localVideoTrack = (this.currentSession.callType === 'video' && !this.currentSession.isVideoOff)
-        ? this.currentSession.localStream?.getVideoTracks()[0] || null
-        : null;
-
-      if (videoSender) {
-        try {
-          await videoSender.replaceTrack(localVideoTrack);
-        } catch (e) {
-          console.warn('[WebRTC] replaceTrack on stop failed:', e);
+        const audioSender = this.findSenderByKind('audio');
+        const micTrack = this.originalMicTrack || this.currentSession.localStream?.getAudioTracks()[0] || null;
+        if (audioSender && micTrack) {
+          await audioSender.replaceTrack(micTrack).catch((e) => console.warn('[WebRTC] Restore mic track error:', e));
         }
-      }
+        this.originalMicTrack = null;
 
-      // 4. Notify peer that screen sharing stopped and renegotiate
-      this.sendSignal('screen_share_stop');
-      await this.renegotiate();
-      this.notify();
-    } else {
-      // Start screen sharing with video and background/tab/system audio
-      try {
+        const videoSender = this.findSenderByKind('video');
+        const localVideoTrack = !this.currentSession.isVideoOff
+          ? this.currentSession.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null
+          : null;
+
+        if (videoSender) {
+          await videoSender.replaceTrack(localVideoTrack).catch((e) => console.warn('[WebRTC] replaceTrack on stop failed:', e));
+        }
+
+        this.sendSignal('screen_share_stop');
+        if (this.hasCompletedInitialNegotiation) {
+          const stopNeg = await this.renegotiate();
+          if (!stopNeg.ok) {
+            console.warn('[WebRTC] Renegotiation on screen share stop did not complete:', stopNeg.status, stopNeg.error);
+          }
+        }
+        this.notify();
+      } else {
         if (!navigator.mediaDevices?.getDisplayMedia) {
           throw new Error('Screen sharing not supported in this browser');
         }
@@ -893,15 +1506,19 @@ class WebRTCManager {
               autoGainControl: false,
             } as any,
           });
-        } catch (audioErr) {
+        } catch (err: any) {
+          if (err?.name === 'NotAllowedError' || err?.name === 'AbortError' || err?.name === 'PermissionDeniedError') {
+            return;
+          }
           try {
             stream = await navigator.mediaDevices.getDisplayMedia({
-              video: {
-                cursor: 'always',
-              } as any,
+              video: { cursor: 'always' } as any,
               audio: true,
             });
-          } catch (simpleAudioErr) {
+          } catch (err2: any) {
+            if (err2?.name === 'NotAllowedError' || err2?.name === 'AbortError' || err2?.name === 'PermissionDeniedError') {
+              return;
+            }
             stream = await navigator.mediaDevices.getDisplayMedia({
               video: true,
               audio: false,
@@ -909,90 +1526,166 @@ class WebRTCManager {
           }
         }
 
-        this.screenStream = stream;
-        this.currentSession.screenStream = stream;
-        this.currentSession.isScreenSharing = true;
+        if (
+          seq !== this.attemptSeq ||
+          !this.currentSession ||
+          this.currentSession.callId !== callId ||
+          !this.peerConnection ||
+          this.isTerminalState(this.currentSession.state)
+        ) {
+          this.stopMediaStream(stream);
+          return;
+        }
 
         const screenVideoTrack = stream.getVideoTracks()[0];
         const screenAudioTrack = stream.getAudioTracks()[0];
-        if (!screenVideoTrack) return;
+        if (!screenVideoTrack) {
+          this.stopMediaStream(stream);
+          return;
+        }
 
-        screenVideoTrack.onended = () => {
-          if (this.currentSession?.isScreenSharing) {
-            this.toggleScreenShare();
+        const videoTransceiver = this.findTransceiverByKind('video');
+        const videoSender = videoTransceiver?.sender || this.findSenderByKind('video');
+        const previousVideoDirection = videoTransceiver?.direction;
+        const previousVideoTrack = !this.currentSession.isVideoOff
+          ? this.currentSession.localStream?.getVideoTracks().find((t) => t.readyState === 'live') || null
+          : null;
+        const audioSender = this.findSenderByKind('audio');
+        const savedMicTrack = audioSender?.track || this.currentSession.localStream?.getAudioTracks()[0] || null;
+        const wasScreenSharing = !!this.currentSession.isScreenSharing;
+
+        let videoReplaced = false;
+        let addedScreenSender: RTCRtpSender | null = null;
+        let audioReplaced = false;
+        let sentStartSignal = false;
+        this.suppressNegotiationNeeded = true;
+
+        try {
+          if (videoTransceiver && videoTransceiver.direction !== 'sendrecv') {
+            videoTransceiver.direction = 'sendrecv';
           }
-        };
 
-        // 1. Video track replacement
-        const videoTransceiver = this.peerConnection.getTransceivers().find(
-          (t) => t.sender.track?.kind === 'video' || t.receiver.track?.kind === 'video'
-        );
-        let videoSender = videoTransceiver?.sender || this.peerConnection.getSenders().find((s) => s.track?.kind === 'video');
+          if (videoSender) {
+            await videoSender.replaceTrack(screenVideoTrack);
+            videoReplaced = true;
+          } else {
+            addedScreenSender = this.peerConnection.addTrack(screenVideoTrack, stream);
+          }
 
-        if (videoTransceiver && videoTransceiver.direction !== 'sendrecv') {
-          videoTransceiver.direction = 'sendrecv';
-        }
-
-        if (videoSender) {
-          await videoSender.replaceTrack(screenVideoTrack);
-        } else {
-          this.peerConnection.addTrack(screenVideoTrack, stream);
-        }
-
-        // 2. Background audio mixing: mix screen audio with mic audio
-        const audioTransceiver = this.peerConnection.getTransceivers().find(
-          (t) => t.sender.track?.kind === 'audio' || t.receiver.track?.kind === 'audio'
-        );
-        const audioSender = audioTransceiver?.sender || this.peerConnection.getSenders().find((s) => s.track?.kind === 'audio');
-        const micTrack = this.currentSession.localStream?.getAudioTracks()[0];
-
-        if (screenAudioTrack && audioSender) {
-          this.originalMicTrack = audioSender.track || micTrack || null;
-          try {
-            const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-            if (AudioCtxClass) {
-              const ctx = new AudioCtxClass();
-              this.screenAudioContext = ctx;
-              const destination = ctx.createMediaStreamDestination();
-
-              const screenSource = ctx.createMediaStreamSource(new MediaStream([screenAudioTrack]));
-              screenSource.connect(destination);
-
-              if (this.originalMicTrack && this.originalMicTrack.readyState === 'live') {
-                const micSource = ctx.createMediaStreamSource(new MediaStream([this.originalMicTrack]));
-                micSource.connect(destination);
-              }
-
-              const mixedTrack = destination.stream.getAudioTracks()[0];
-              if (mixedTrack) {
-                await audioSender.replaceTrack(mixedTrack);
-              }
-            } else {
-              await audioSender.replaceTrack(screenAudioTrack);
-            }
-          } catch (mixErr) {
-            console.warn('[WebRTC] Audio mix error, sending screen audio directly:', mixErr);
+          if (screenAudioTrack && audioSender) {
+            this.originalMicTrack = savedMicTrack;
             try {
-              await audioSender.replaceTrack(screenAudioTrack);
-            } catch {}
+              const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+              if (AudioCtxClass) {
+                const ctx = new AudioCtxClass();
+                this.screenAudioContext = ctx;
+                const destination = ctx.createMediaStreamDestination();
+                this.screenMixedStream = destination.stream;
+
+                const screenSource = ctx.createMediaStreamSource(new MediaStream([screenAudioTrack]));
+                screenSource.connect(destination);
+
+                if (this.originalMicTrack && this.originalMicTrack.readyState === 'live') {
+                  const micSource = ctx.createMediaStreamSource(new MediaStream([this.originalMicTrack]));
+                  micSource.connect(destination);
+                }
+
+                const mixedTrack = destination.stream.getAudioTracks()[0];
+                if (mixedTrack) {
+                  await audioSender.replaceTrack(mixedTrack);
+                  audioReplaced = true;
+                }
+              } else {
+                await audioSender.replaceTrack(screenAudioTrack);
+                audioReplaced = true;
+              }
+            } catch (mixErr) {
+              console.warn('[WebRTC] Audio mix error, sending screen audio directly:', mixErr);
+              await audioSender.replaceTrack(screenAudioTrack).then(() => {
+                audioReplaced = true;
+              }).catch(() => {});
+            }
           }
 
-          screenAudioTrack.onended = () => {
-            if (this.originalMicTrack && audioSender) {
-              audioSender.replaceTrack(this.originalMicTrack).catch(console.warn);
+          // Mark sharing active temporarily only for 256kbps SDP offer/bitrate tuning during renegotiation;
+          // wait until renegotiation succeeds before committing screenStream or emitting screen_share_start.
+          this.currentSession.isScreenSharing = true;
+          if (this.hasCompletedInitialNegotiation) {
+            const negResult = await this.renegotiate();
+            if (!negResult.ok) {
+              throw negResult.error instanceof Error
+                ? negResult.error
+                : new Error(`Screen share renegotiation failed (${negResult.status})`);
+            }
+          }
+
+          if (screenAudioTrack && audioSender) {
+            screenAudioTrack.onended = () => {
+              if (this.originalMicTrack && audioSender) {
+                audioSender.replaceTrack(this.originalMicTrack).catch(() => {});
+              }
+            };
+          }
+
+          screenVideoTrack.onended = () => {
+            if (this.currentSession?.isScreenSharing) {
+              void this.toggleScreenShare();
             }
           };
-        }
 
-        // 3. Notify remote peer that screen sharing started and renegotiate
-        this.sendSignal('screen_share_start');
-        await this.renegotiate();
-        this.notify();
-      } catch (err: any) {
-        if (err.name !== 'NotAllowedError') {
-          console.warn('[WebRTC] Screen share failed:', err);
+          this.screenStream = stream;
+          this.currentSession.screenStream = stream;
+          this.currentSession.isScreenSharing = true;
+
+          this.sendSignal('screen_share_start');
+          sentStartSignal = true;
+          this.notify();
+        } catch (startErr) {
+          this.stopMediaStream(stream);
+          this.stopMediaStream(this.screenMixedStream);
+          this.screenMixedStream = null;
+          if (this.screenAudioContext) {
+            try {
+              this.screenAudioContext.close();
+            } catch {}
+            this.screenAudioContext = null;
+          }
+          if (videoReplaced && videoSender) {
+            await videoSender.replaceTrack(previousVideoTrack).catch(() => {});
+          }
+          if (videoTransceiver && previousVideoDirection) {
+            try {
+              videoTransceiver.direction = previousVideoDirection;
+            } catch {}
+          }
+          if (addedScreenSender && this.peerConnection) {
+            try {
+              this.peerConnection.removeTrack(addedScreenSender);
+            } catch {}
+          }
+          if (audioReplaced && audioSender) {
+            await audioSender.replaceTrack(savedMicTrack).catch(() => {});
+          }
+          this.originalMicTrack = null;
+          this.screenStream = null;
+          if (this.currentSession && this.currentSession.callId === callId) {
+            this.currentSession.screenStream = undefined;
+            this.currentSession.isScreenSharing = wasScreenSharing;
+            if (sentStartSignal) {
+              this.sendSignal('screen_share_stop');
+            }
+            this.notify();
+          }
+          throw startErr;
         }
       }
+    } catch (err: any) {
+      if (err?.name !== 'NotAllowedError' && err?.name !== 'AbortError') {
+        console.warn('[WebRTC] Screen share failed:', err);
+      }
+    } finally {
+      this.suppressNegotiationNeeded = false;
+      this.isTogglingScreenShare = false;
     }
   }
 
@@ -1010,20 +1703,67 @@ class WebRTCManager {
     }
   }
 
+  private async inspectSelectedCandidateType(): Promise<void> {
+    if (!this.peerConnection || !this.currentSession || typeof this.peerConnection.getStats !== 'function') return;
+    try {
+      const stats = await this.peerConnection.getStats();
+      let selectedPairId = '';
+      const candidates = new Map<string, any>();
+      stats.forEach((report: any) => {
+        if (report.type === 'transport' && report.selectedCandidatePairId) {
+          selectedPairId = report.selectedCandidatePairId;
+        }
+        if (report.type === 'local-candidate') {
+          candidates.set(report.id, report);
+        }
+      });
+      stats.forEach((report: any) => {
+        if (report.type === 'candidate-pair' && (report.id === selectedPairId || (report.nominated && report.state === 'succeeded'))) {
+          const localCand = candidates.get(report.localCandidateId);
+          if (localCand?.candidateType && this.currentSession) {
+            this.currentSession.iceCandidateType = localCand.candidateType;
+            this.notify();
+          }
+        }
+      });
+    } catch {}
+  }
+
   private markCallConnected(): void {
-    if (!this.currentSession || this.currentSession.state === 'connected') return;
+    if (!this.currentSession) return;
+    if (this.connectingTimeoutTimer) {
+      clearTimeout(this.connectingTimeoutTimer);
+      this.connectingTimeoutTimer = null;
+    }
+    this.currentSession.isReconnectingIce = false;
+    this.iceRestartAttempts = 0;
+
+    if (this.currentSession.state === 'connected') {
+      this.notify();
+      return;
+    }
     this.clearRingingTimeout();
     this.stopRingingEffects();
     this.currentSession.state = 'connected';
     this.currentSession.startTime = this.currentSession.startTime || Date.now();
     this.startDurationTimer();
+    void this.inspectSelectedCandidateType();
     this.notify();
   }
 
-  // Private: Setup WebRTC connection
   private async setupPeerConnection(): Promise<void> {
+    // Wait briefly (up to 2s) if initial ICE server config fetch is still in flight so TURN credentials are included
+    if (this.iceServersPromise) {
+      await Promise.race([
+        this.iceServersPromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 2000)),
+      ]);
+    }
+
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.close();
+      } catch {}
     }
 
     this.peerConnection = new RTCPeerConnection(this.rtcConfig);
@@ -1040,6 +1780,19 @@ class WebRTCManager {
             };
         this.sendSignal('ice_candidate', candData);
       }
+    };
+
+    this.peerConnection.onnegotiationneeded = () => {
+      if (
+        !this.peerConnection ||
+        !this.currentSession ||
+        !this.hasCompletedInitialNegotiation ||
+        this.suppressNegotiationNeeded ||
+        this.isTerminalState(this.currentSession.state)
+      ) {
+        return;
+      }
+      void this.renegotiate();
     };
 
     this.peerConnection.ontrack = (event) => {
@@ -1061,20 +1814,21 @@ class WebRTCManager {
         });
       }
 
-      // If tracks are arriving and session is still connecting, immediately mark connected
-      if (this.currentSession.state === 'connecting') {
-        this.markCallConnected();
-      }
+      this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
 
       if (event.track.kind === 'video') {
-        this.currentSession.hasRemoteVideo = true;
+        // Only treat remote video as active if track is actually receiving live frames or explicitly video/screen-share
+        if (!event.track.muted && event.track.readyState === 'live') {
+          this.currentSession.hasRemoteVideo = true;
+        }
 
         event.track.onended = () => {
           if (this.currentSession) {
             const hasVideo = this.currentSession.remoteStream
               ?.getVideoTracks()
-              .some((t) => t.readyState === 'live');
-            this.currentSession.hasRemoteVideo = !!hasVideo;
+              .some((t) => t.readyState === 'live' && !t.muted);
+            this.currentSession.hasRemoteVideo = !!hasVideo || !!this.currentSession.peerScreenSharing;
+            this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
             this.notify();
           }
         };
@@ -1092,6 +1846,7 @@ class WebRTCManager {
         event.track.onunmute = () => {
           if (this.currentSession) {
             this.currentSession.hasRemoteVideo = true;
+            this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
             this.notify();
           }
         };
@@ -1103,29 +1858,114 @@ class WebRTCManager {
     this.peerConnection.onconnectionstatechange = () => {
       if (!this.peerConnection || !this.currentSession) return;
       const state = this.peerConnection.connectionState;
+      this.currentSession.connectionState = state;
       if (state === 'connected') {
         this.markCallConnected();
       } else if (state === 'failed') {
-        if (this.peerConnection.iceConnectionState === 'failed') {
-          this.cleanupCall('ended');
-        }
-      } else if (state === 'closed') {
+        void this.attemptIceRestart('connection_failed');
+      } else if (state === 'closed' && !this.isTerminalState(this.currentSession.state)) {
         this.cleanupCall('ended');
+      } else {
+        this.notify();
       }
     };
 
     this.peerConnection.oniceconnectionstatechange = () => {
       if (!this.peerConnection || !this.currentSession) return;
       const iceState = this.peerConnection.iceConnectionState;
+      this.currentSession.iceState = iceState;
+
       if (iceState === 'connected' || iceState === 'completed') {
-        this.markCallConnected();
-      } else if (iceState === 'failed') {
-        console.warn('[WebRTC] ICE failed, attempting restart...');
-        if ('restartIce' in this.peerConnection) {
-          (this.peerConnection as any).restartIce();
+        if (this.iceDisconnectGraceTimer) {
+          clearTimeout(this.iceDisconnectGraceTimer);
+          this.iceDisconnectGraceTimer = null;
         }
+        this.markCallConnected();
+      } else if (iceState === 'disconnected') {
+        this.currentSession.isReconnectingIce = true;
+        this.notify();
+        if (!this.iceDisconnectGraceTimer) {
+          this.iceDisconnectGraceTimer = setTimeout(() => {
+            this.iceDisconnectGraceTimer = null;
+            if (
+              this.peerConnection &&
+              (this.peerConnection.iceConnectionState === 'disconnected' ||
+                this.peerConnection.iceConnectionState === 'failed')
+            ) {
+              void this.attemptIceRestart('ice_disconnected_timeout');
+            }
+          }, 3500);
+        }
+      } else if (iceState === 'failed') {
+        if (this.iceDisconnectGraceTimer) {
+          clearTimeout(this.iceDisconnectGraceTimer);
+          this.iceDisconnectGraceTimer = null;
+        }
+        void this.attemptIceRestart('ice_failed');
+      } else {
+        this.notify();
       }
     };
+  }
+
+  private async processRemoteOffer(sdpInit: RTCSessionDescriptionInit): Promise<void> {
+    if (!this.peerConnection || !this.currentSession) return;
+    const pc = this.peerConnection;
+    const readyForOffer = !this.makingOffer && (pc.signalingState === 'stable' || this.isSettingRemoteAnswerPending);
+    const offerCollision = !readyForOffer;
+    const polite = this.isPolitePeer();
+
+    this.ignoreOffer = !polite && offerCollision;
+    if (this.ignoreOffer) {
+      console.warn('[WebRTC] Ignoring colliding glare offer (impolite peer)');
+      return;
+    }
+
+    try {
+      if (polite && offerCollision) {
+        await pc.setLocalDescription({ type: 'rollback' });
+      }
+      await pc.setRemoteDescription(new RTCSessionDescription(sdpInit));
+
+      // Bind local media tracks to existing transceivers before creating answer
+      this.attachLocalTracksToPeerConnection(false);
+      // If peer offered video m-line without us having a video track or screen share, mark recvonly
+      const videoTransceiver = this.findTransceiverByKind('video');
+      const hasLocalVideo =
+        (!this.currentSession.isVideoOff &&
+          !!this.currentSession.localStream?.getVideoTracks().some((t) => t.readyState === 'live')) ||
+        !!this.currentSession.isScreenSharing;
+      if (videoTransceiver && !hasLocalVideo && videoTransceiver.direction === 'sendrecv') {
+        videoTransceiver.direction = 'recvonly';
+      }
+
+      await this.drainIceCandidates();
+
+      const answer = await pc.createAnswer();
+      const optimizedSdp = optimizeOpusSdp(answer.sdp || '', !!this.currentSession.isScreenSharing);
+      const modifiedAnswer: RTCSessionDescriptionInit = { type: answer.type, sdp: optimizedSdp };
+      await pc.setLocalDescription(modifiedAnswer);
+      this.applyAudioSenderParameters();
+      this.hasCompletedInitialNegotiation = true;
+
+      this.sendSignal('sdp_answer', modifiedAnswer);
+      if (
+        this.pendingRenegotiationOptions &&
+        !this.makingOffer &&
+        !this.inFlightNegotiation &&
+        pc.signalingState === 'stable'
+      ) {
+        const pendingOpts = this.pendingRenegotiationOptions;
+        this.pendingRenegotiationOptions = null;
+        void this.renegotiate(pendingOpts);
+      }
+    } catch (err: any) {
+      console.warn('[WebRTC] Error processing sdp_offer:', err);
+      if (this.currentSession && !this.hasCompletedInitialNegotiation) {
+        this.recordCallOutcome('failed', this.currentSession.durationSeconds);
+        this.cleanupCall('failed', 'sdp', err?.message || 'SDP negotiation failed');
+      }
+    }
   }
 
   private startDurationTimer() {
@@ -1138,11 +1978,25 @@ class WebRTCManager {
     }, 1000);
   }
 
-  private cleanupCall(finalState: CallState = 'ended') {
-    this.clearRingingTimeout();
+  private cleanupCall(
+    finalState: CallState = 'ended',
+    failureStage?: CallFailureStage,
+    failureReason?: string
+  ) {
+    this.clearAllCallTimers();
     this.stopRingingEffects();
     this.iceCandidateQueue = [];
-    clearInterval(this.durationTimer);
+    this.pendingRemoteOffers = [];
+    this.isStarting = false;
+    this.isAnswering = false;
+    this.isTogglingScreenShare = false;
+    this.isTogglingVideo = false;
+    this.makingOffer = false;
+    this.hasCompletedInitialNegotiation = false;
+    this.suppressNegotiationNeeded = false;
+    this.inFlightNegotiation = null;
+    this.inFlightNegotiationToken = null;
+    this.pendingRenegotiationOptions = null;
 
     if (this.screenAudioContext) {
       try {
@@ -1150,110 +2004,147 @@ class WebRTCManager {
       } catch {}
       this.screenAudioContext = null;
     }
+    this.stopMediaStream(this.screenMixedStream);
+    this.screenMixedStream = null;
     this.originalMicTrack = null;
 
-    if (this.screenStream) {
-      this.screenStream.getTracks().forEach((track) => track.stop());
-      this.screenStream = null;
-    }
-
-    if (this.currentSession?.localStream) {
-      this.currentSession.localStream.getTracks().forEach((track) => track.stop());
-    }
+    this.stopMediaStream(this.screenStream);
+    this.screenStream = null;
+    this.stopMediaStream(this.currentSession?.localStream);
 
     if (this.peerConnection) {
-      this.peerConnection.close();
+      try {
+        this.peerConnection.onicecandidate = null;
+        this.peerConnection.ontrack = null;
+        this.peerConnection.onconnectionstatechange = null;
+        this.peerConnection.oniceconnectionstatechange = null;
+        this.peerConnection.onnegotiationneeded = null;
+        this.peerConnection.close();
+      } catch {}
       this.peerConnection = null;
     }
 
-    if (this.cleanupTimer) {
-      clearTimeout(this.cleanupTimer);
-      this.cleanupTimer = null;
-    }
-
     if (this.currentSession) {
+      const closedCallId = this.currentSession.callId;
       this.currentSession.screenStream = undefined;
       this.currentSession.isScreenSharing = false;
       this.currentSession.peerScreenSharing = false;
       this.currentSession.hasRemoteVideo = false;
+      this.currentSession.isReconnectingIce = false;
+      if (failureStage) this.currentSession.failureStage = failureStage;
+      if (failureReason) this.currentSession.failureReason = failureReason;
       this.currentSession.state = finalState;
       this.notify();
 
       this.cleanupTimer = setTimeout(() => {
-        this.currentSession = null;
-        this.cleanupTimer = null;
-        this.notify();
-      }, 1500);
+        if (this.currentSession?.callId === closedCallId) {
+          this.currentSession = null;
+          this.cleanupTimer = null;
+          this.notify();
+        }
+      }, finalState === 'failed' ? 3000 : 1500);
     }
   }
 
   // Handle incoming WebSocket call signals
   async handleIncomingSignal(signal: CallSignal) {
-    switch (signal.signal_type) {
-      case 'invite':
-        const isSessionActive = this.currentSession && !['ended', 'rejected', 'timeout', 'cancelled'].includes(this.currentSession.state);
-        if (isSessionActive) {
-          // Busy: reject
-          wsManager.sendCallSignal({
-            call_id: signal.call_id,
-            conversation_id: signal.conversation_id,
-            caller_id: signal.caller_id,
-            receiver_id: this.currentUserId || '',
-            call_type: signal.call_type,
-            signal_type: 'reject',
-            data: { reason: 'busy' },
-          });
-          return;
-        }
+    if (!signal || !signal.call_id) return;
 
-        if (this.cleanupTimer) {
-          clearTimeout(this.cleanupTimer);
-          this.cleanupTimer = null;
-        }
+    if (signal.signal_type === 'invite') {
+      // Ignore duplicate invite for the exact same active call session
+      if (
+        this.currentSession &&
+        this.currentSession.callId === signal.call_id &&
+        !this.isTerminalState(this.currentSession.state)
+      ) {
+        return;
+      }
 
-        this.currentSession = {
-          callId: signal.call_id,
-          conversationId: signal.conversation_id,
-          peerId: signal.caller_id,
-          peerName: signal.data?.caller_name || signal.data?.peer_name || 'Caller',
-          peerAvatarUrl: signal.data?.caller_avatar_url,
-          callType: signal.call_type,
-          isIncoming: true,
-          state: 'incoming_ringing',
-          durationSeconds: 0,
-          isMuted: false,
-          isVideoOff: false,
-          autoplayBlocked: false,
-          screenQuality: 'auto',
-        };
-        this.notify();
-
-        // Send ringing acknowledgement back to caller
+      const isSessionActive =
+        this.isStarting || (this.currentSession && !this.isTerminalState(this.currentSession.state));
+      if (isSessionActive) {
         wsManager.sendCallSignal({
           call_id: signal.call_id,
           conversation_id: signal.conversation_id,
           caller_id: signal.caller_id,
           receiver_id: this.currentUserId || '',
           call_type: signal.call_type,
-          signal_type: 'ringing',
+          signal_type: 'reject',
+          data: { reason: 'busy' },
         });
+        return;
+      }
 
-        // Start incoming call ringtone and optional vibration
-        this.startRingingEffects(true);
+      if (this.cleanupTimer) {
+        clearTimeout(this.cleanupTimer);
+        this.cleanupTimer = null;
+      }
 
-        // Recipient ringing timeout (35s)
-        this.clearRingingTimeout();
-        this.ringingTimeoutTimer = setTimeout(() => {
-          if (this.currentSession && this.currentSession.state === 'incoming_ringing') {
-            this.stopRingingEffects();
-            this.persistCallEvent('missed', 0);
-            this.cleanupCall('timeout');
-          }
-        }, 35000);
-        break;
+      this.attemptSeq++;
+      this.iceCandidateQueue = [];
+      this.pendingRemoteOffers = [];
+      this.iceRestartAttempts = 0;
+      this.hasCompletedInitialNegotiation = false;
 
+      this.currentSession = {
+        callId: signal.call_id,
+        conversationId: signal.conversation_id,
+        peerId: signal.caller_id,
+        peerName: signal.data?.caller_name || signal.data?.peer_name || 'Caller',
+        peerAvatarUrl: signal.data?.caller_avatar_url,
+        callType: signal.call_type,
+        isIncoming: true,
+        state: 'incoming_ringing',
+        durationSeconds: 0,
+        isMuted: false,
+        isVideoOff: signal.call_type !== 'video',
+        autoplayBlocked: false,
+        screenQuality: 'auto',
+        localStreamRevision: 0,
+        remoteStreamRevision: 0,
+      };
+      this.notify();
+
+      wsManager.sendCallSignal({
+        call_id: signal.call_id,
+        conversation_id: signal.conversation_id,
+        caller_id: signal.caller_id,
+        receiver_id: this.currentUserId || '',
+        call_type: signal.call_type,
+        signal_type: 'ringing',
+      });
+
+      this.startRingingEffects(true);
+
+      this.clearRingingTimeout();
+      const ringingCallId = signal.call_id;
+      this.ringingTimeoutTimer = setTimeout(() => {
+        if (
+          this.currentSession &&
+          this.currentSession.callId === ringingCallId &&
+          this.currentSession.state === 'incoming_ringing'
+        ) {
+          this.stopRingingEffects();
+          this.recordCallOutcome('missed', 0);
+          this.cleanupCall('timeout');
+        }
+      }, 35000);
+      return;
+    }
+
+    // Strict call_id + peer matching for every non-invite signal
+    if (!this.currentSession || this.currentSession.callId !== signal.call_id) {
+      return;
+    }
+    const senderId = this.currentSession.isIncoming ? signal.caller_id : signal.receiver_id;
+    if (senderId && this.currentSession.peerId && senderId !== this.currentSession.peerId) {
+      return;
+    }
+
+    switch (signal.signal_type) {
       case 'ringing':
-        if (this.currentSession && !this.currentSession.isIncoming && this.currentSession.state === 'outgoing_calling') {
+        if (!this.currentSession.isIncoming && this.currentSession.state === 'outgoing_calling') {
+          this.currentSession.targetOffline = false;
           this.currentSession.state = 'outgoing_ringing';
           this.notify();
         }
@@ -1262,33 +2153,28 @@ class WebRTCManager {
       case 'accept':
         this.clearRingingTimeout();
         this.stopRingingEffects();
-        if (this.currentSession && !this.currentSession.isIncoming) {
+        if (!this.currentSession.isIncoming && !this.isTerminalState(this.currentSession.state)) {
+          const acceptedCallId = this.currentSession.callId;
+          this.currentSession.targetOffline = false;
           this.currentSession.state = 'connecting';
           this.notify();
+          this.startConnectingTimeout();
 
           await this.setupPeerConnection();
-
-          // Add local tracks to peer connection
-          if (this.currentSession.localStream && this.peerConnection) {
-            this.currentSession.localStream.getTracks().forEach((track) => {
-              this.peerConnection?.addTrack(track, this.currentSession!.localStream!);
-            });
+          if (!this.currentSession || this.currentSession.callId !== acceptedCallId || !this.peerConnection) {
+            return;
           }
 
-          // Ensure video transceiver exists so video/screen-share m-line is negotiated
-          if (this.peerConnection && !this.peerConnection.getTransceivers().some((t) => t.receiver.track?.kind === 'video' || t.sender.track?.kind === 'video')) {
-            try {
-              this.peerConnection.addTransceiver('video', { direction: 'sendrecv' });
-            } catch (e) {
-              console.warn('[WebRTC] addTransceiver video error:', e);
-            }
-          }
+          this.attachLocalTracksToPeerConnection(true);
 
-          // Create SDP Offer
-          if (this.peerConnection) {
+          try {
+            this.makingOffer = true;
             const offer = await this.peerConnection.createOffer();
+            if (!this.currentSession || this.currentSession.callId !== acceptedCallId || !this.peerConnection) {
+              return;
+            }
             const optimizedSdp = optimizeOpusSdp(offer.sdp || '', !!this.currentSession.isScreenSharing);
-            const modifiedOffer = { type: offer.type, sdp: optimizedSdp };
+            const modifiedOffer: RTCSessionDescriptionInit = { type: offer.type, sdp: optimizedSdp };
             await this.peerConnection.setLocalDescription(modifiedOffer);
             this.applyAudioSenderParameters();
 
@@ -1301,48 +2187,63 @@ class WebRTCManager {
               signal_type: 'sdp_offer',
               data: modifiedOffer,
             });
+          } catch (err: any) {
+            console.warn('[WebRTC] Initial offer creation failed:', err);
+            this.recordCallOutcome('failed', 0);
+            this.cleanupCall('failed', 'sdp', err?.message || 'Failed to create SDP offer');
+          } finally {
+            this.makingOffer = false;
           }
         }
         break;
 
       case 'sdp_offer':
-        if (this.currentSession && this.peerConnection) {
-          await this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.data));
-          await this.drainIceCandidates();
-          const answer = await this.peerConnection.createAnswer();
-          const optimizedSdp = optimizeOpusSdp(answer.sdp || '', !!this.currentSession.isScreenSharing);
-          const modifiedAnswer = { type: answer.type, sdp: optimizedSdp };
-          await this.peerConnection.setLocalDescription(modifiedAnswer);
-          this.applyAudioSenderParameters();
-
-          wsManager.sendCallSignal({
-            call_id: this.currentSession.callId,
-            conversation_id: this.currentSession.conversationId,
-            caller_id: this.currentSession.peerId,
-            receiver_id: this.currentUserId || '',
-            call_type: this.currentSession.callType,
-            signal_type: 'sdp_answer',
-            data: modifiedAnswer,
-          });
+        if (!signal.data) break;
+        if (this.isAnswering || !this.peerConnection) {
+          this.pendingRemoteOffers.push({ callId: signal.call_id, sdp: signal.data });
+        } else {
+          await this.processRemoteOffer(signal.data);
         }
         break;
 
       case 'sdp_answer':
-        if (this.currentSession && this.peerConnection) {
-          await this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.data));
-          await this.drainIceCandidates();
+        if (this.peerConnection && signal.data) {
+          this.isSettingRemoteAnswerPending = true;
+          let answerApplied = false;
+          try {
+            await this.peerConnection.setRemoteDescription(new RTCSessionDescription(signal.data));
+            this.hasCompletedInitialNegotiation = true;
+            await this.drainIceCandidates();
+            answerApplied = true;
+          } catch (err: any) {
+            console.warn('[WebRTC] Error applying sdp_answer:', err);
+          } finally {
+            this.isSettingRemoteAnswerPending = false;
+          }
+          if (
+            answerApplied &&
+            this.peerConnection &&
+            this.pendingRenegotiationOptions &&
+            !this.makingOffer &&
+            !this.inFlightNegotiation &&
+            this.peerConnection.signalingState === 'stable'
+          ) {
+            const pendingOpts = this.pendingRenegotiationOptions;
+            this.pendingRenegotiationOptions = null;
+            void this.renegotiate(pendingOpts);
+          }
         }
         break;
 
       case 'ice_candidate':
-        if (this.currentSession && signal.data) {
+        if (signal.data) {
           if (!this.peerConnection || !this.peerConnection.remoteDescription || !this.peerConnection.remoteDescription.type) {
             this.iceCandidateQueue.push(signal.data);
-          } else {
-            if (signal.data.candidate) {
-              try {
-                await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.data));
-              } catch (e) {
+          } else if (signal.data.candidate) {
+            try {
+              await this.peerConnection.addIceCandidate(new RTCIceCandidate(signal.data));
+            } catch (e) {
+              if (!this.ignoreOffer) {
                 console.warn('[WebRTC] Error adding ICE candidate:', e);
               }
             }
@@ -1350,33 +2251,39 @@ class WebRTCManager {
         }
         break;
 
-      case 'screen_share_start':
-        if (this.currentSession) {
-          this.currentSession.peerScreenSharing = true;
-          this.currentSession.hasRemoteVideo = true;
+      case 'video_state':
+        if (typeof signal.data?.enabled === 'boolean') {
+          this.currentSession.hasRemoteVideo = !!signal.data.enabled || !!this.currentSession.peerScreenSharing;
+          this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
           this.notify();
         }
+        break;
+
+      case 'screen_share_start':
+        this.currentSession.peerScreenSharing = true;
+        this.currentSession.hasRemoteVideo = true;
+        this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
+        this.notify();
         break;
 
       case 'screen_share_stop':
-        if (this.currentSession) {
-          this.currentSession.peerScreenSharing = false;
-          const hasVideoTrack = this.currentSession.remoteStream?.getVideoTracks().some(
-            (t) => t.readyState === 'live' && t.enabled && !t.muted
-          );
-          this.currentSession.hasRemoteVideo = !!hasVideoTrack && this.currentSession.callType === 'video';
-          this.notify();
-        }
+        this.currentSession.peerScreenSharing = false;
+        const hasVideoTrack = this.currentSession.remoteStream
+          ?.getVideoTracks()
+          .some((t) => t.readyState === 'live' && t.enabled && !t.muted);
+        this.currentSession.hasRemoteVideo = !!hasVideoTrack;
+        this.currentSession.remoteStreamRevision = (this.currentSession.remoteStreamRevision || 0) + 1;
+        this.notify();
         break;
 
       case 'screen_quality_request':
-        if (this.currentSession && this.currentSession.isScreenSharing && signal.data?.quality) {
-          this.setScreenShareQuality(signal.data.quality);
+        if (this.currentSession.isScreenSharing && signal.data?.quality) {
+          void this.setScreenShareQuality(signal.data.quality);
         }
         break;
 
       case 'screen_quality_change':
-        if (this.currentSession && signal.data?.quality) {
+        if (signal.data?.quality) {
           this.currentSession.screenQuality = signal.data.quality;
           this.notify();
         }
@@ -1385,27 +2292,27 @@ class WebRTCManager {
       case 'cancel':
         this.clearRingingTimeout();
         this.stopRingingEffects();
-        if (this.currentSession) {
-          this.persistCallEvent('missed', 0);
-          this.cleanupCall('cancelled');
-        }
+        this.recordCallOutcome('missed', 0);
+        this.cleanupCall('cancelled');
         break;
 
       case 'reject':
         this.clearRingingTimeout();
         this.stopRingingEffects();
-        if (this.currentSession) {
-          this.persistCallEvent('declined', 0);
-          this.cleanupCall('rejected');
-        }
+        this.recordCallOutcome('rejected', 0);
+        this.cleanupCall(
+          'rejected',
+          undefined,
+          signal.data?.reason === 'busy' ? 'User is busy on another call' : undefined
+        );
         break;
 
       case 'hangup':
         this.clearRingingTimeout();
         this.stopRingingEffects();
-        if (this.currentSession) {
+        {
           const outcome = this.currentSession.state === 'connected' ? 'completed' : 'missed';
-          this.persistCallEvent(outcome, this.currentSession.durationSeconds);
+          this.recordCallOutcome(outcome, this.currentSession.durationSeconds);
           this.cleanupCall('ended');
         }
         break;

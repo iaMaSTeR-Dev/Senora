@@ -265,7 +265,7 @@ export interface CallLog {
   receiver_id: string;
   receiver_name?: string;
   call_type: 'audio' | 'video';
-  status: 'completed' | 'missed' | 'rejected' | 'failed';
+  status: 'completed' | 'missed' | 'rejected' | 'declined' | 'cancelled' | 'failed';
   duration_seconds: number;
   created_at: string;
   ended_at?: string;
@@ -277,7 +277,38 @@ export interface CallSignal {
   caller_id: string;
   receiver_id: string;
   call_type: 'audio' | 'video';
-  signal_type: 'invite' | 'ringing' | 'accept' | 'reject' | 'hangup' | 'cancel' | 'sdp_offer' | 'sdp_answer' | 'ice_candidate' | 'screen_share_start' | 'screen_share_stop' | 'screen_quality_change' | 'screen_quality_request';
+  signal_type:
+    | 'invite'
+    | 'ringing'
+    | 'accept'
+    | 'reject'
+    | 'hangup'
+    | 'cancel'
+    | 'sdp_offer'
+    | 'sdp_answer'
+    | 'ice_candidate'
+    | 'screen_share_start'
+    | 'screen_share_stop'
+    | 'screen_quality_change'
+    | 'screen_quality_request'
+    | 'video_state'
+    | 'ice_restart';
+  data?: any;
+}
+
+export interface CallSignalStatus {
+  call_id: string;
+  conversation_id: string;
+  target_user_id: string;
+  status: 'target_offline' | 'blocked';
+}
+
+export interface VoiceChatSignal {
+  room_id: string;
+  conversation_id: string;
+  sender_user_id: string;
+  target_user_id?: string;
+  signal_type: 'peer_joined' | 'peer_left' | 'sdp_offer' | 'sdp_answer' | 'ice_candidate';
   data?: any;
 }
 

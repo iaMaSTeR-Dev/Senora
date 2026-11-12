@@ -14,7 +14,11 @@ class SoundManager {
     if (!AudioCtxClass) return null;
 
     if (!this.audioCtx || this.audioCtx.state === 'closed') {
-      this.audioCtx = new AudioCtxClass();
+      try {
+        this.audioCtx = new AudioCtxClass();
+      } catch {
+        return null;
+      }
     }
     return this.audioCtx;
   }
@@ -179,7 +183,7 @@ class SoundManager {
 
     try {
       const now = ctx.currentTime;
-      // Two-tone notification chime: F5 (698Hz) -> C6 (1046Hz)
+      // Two-tone modern Telegram-style notification chime: F5 (698Hz) -> C6 (1046Hz)
       const tone1 = ctx.createOscillator();
       const tone2 = ctx.createOscillator();
       const gain = ctx.createGain();

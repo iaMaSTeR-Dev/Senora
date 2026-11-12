@@ -40,12 +40,17 @@ Suitable for multi-user organizations requiring automated failover and regular s
 | `DATABASE_URL` | Yes in production | `file:senora.db?cache=shared` in development | PostgreSQL connection URI. Production rejects SQLite and insecure default passwords. Preserve the existing database URL during an upgrade; `DB_DRIVER` and `DB_DSN` are not runtime configuration inputs. |
 | `SESSION_SECRET` | Yes in production | none | At least 32 decoded random bytes, hex or base64; preserve the current secret during an upgrade. |
 | `SENORA_BACKUP_DIR` | No | `/var/lib/senora/backups` on Linux | Private directory outside the served web root, owned by the service user with mode 0700. PostgreSQL backup requires a compatible `pg_dump` executable. |
-| `ALLOWED_ORIGINS` | Yes in production | localhost development origins | Comma-separated list of allowed origins for CORS and CSWSH WebSocket validation (e.g., `https://chat.example.com`). |
+| `ALLOWED_ORIGINS` | Yes in production | localhost development origins | Comma-separated exact origins allowed for CORS and CSWSH WebSocket `CheckOrigin` validation (e.g., `https://chat.example.com`). Recommended in production behind TLS proxies. |
+| `TRUST_PROXY` | No | `false` | Trust `X-Forwarded-For` and `X-Forwarded-Proto` from local loopback proxies (`127.0.0.1` / `::1`), enabling same-origin `wss://` checks behind Nginx/Caddy. |
+| `TRUSTED_PROXIES` | No | `""` | Comma-separated proxy IPs/CIDRs (e.g., Docker bridge `172.16.0.0/12`). When set, only matching peers are trusted for forwarded IP/proto headers. |
 | `MAX_UPLOAD_BYTES` | No | `524288000` | Upload limit (500 MiB); `0` or `unlimited` removes the request limit, but disk safeguards still apply. |
-| `STUN_SERVERS` | No | `stun:stun.l.google.com:19302` | Comma-separated STUN server URLs for WebRTC peer-to-peer media negotiation. |
-| `TURN_URL` | No | `""` | TURN server URL for symmetric NAT traversal (e.g. `turn:turn.example.com:3478`). |
-| `TURN_USERNAME` | No | `""` | Short-lived TURN authentication username. |
-| `TURN_CREDENTIAL` | No | `""` | Short-lived TURN authentication password. |
+| `STUN_SERVERS` | No | `stun:stun.l.google.com:19302,...` | Comma-separated STUN URLs returned by `GET /api/v1/webrtc/ice-servers` (defaults to 5 public STUN servers; set `none` for isolated LANs). |
+| `ICE_SERVERS` | No | `""` | Optional raw JSON array of additional `RTCIceServer` objects appended to the ICE list. |
+| `TURN_URL` / `TURN_SERVER_URL` | No | `""` | Comma-separated TURN/TURNS URLs for NAT/firewall relay (e.g., `turn:turn.example.com:3478,turns:turn.example.com:5349?transport=tcp`). |
+| `TURN_AUTH_SECRET` | No | `""` | Coturn `static-auth-secret` for generating per-user ephemeral HMAC-SHA1 TURN credentials (`use-auth-secret`). Preferred over static credentials. |
+| `TURN_AUTH_TTL_SECONDS` | No | `86400` | Lifetime in seconds of generated ephemeral TURN credentials. |
+| `TURN_USERNAME` | No | `""` | Static TURN username fallback (used only when `TURN_AUTH_SECRET` is empty). |
+| `TURN_CREDENTIAL` | No | `""` | Static TURN password fallback (used only when `TURN_AUTH_SECRET` is empty). |
 | `AVATAR_STORAGE_DIR` | No | `./uploads/avatars` | Directory path for persisting uploaded user profile avatars. Automatically created if missing. |
 | `GIF_PROVIDER_URL` | No | `""` | Optional external GIF provider endpoint (defaults to internal curated animated GIF catalog). |
 
@@ -97,7 +102,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # WebSocket Gateway with upgrade headers
+    # WebSocket Gateway with upgrade headers & forwarded proto/host for WSS Origin validation
     location /api/v1/ws {
         proxy_pass http://127.0.0.1:8080/api/v1/ws;
         proxy_http_version 1.1;
@@ -106,6 +111,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_read_timeout 3600s;
         proxy_send_timeout 3600s;
     }
@@ -123,19 +129,42 @@ server {
 
 ## 4. WebRTC Calling & Coturn Setup
 
-For reliable 1-to-1 audio and video calls across cellular networks or strict NAT/corporate firewalls, deploy a Coturn TURN server:
+Browser-to-browser WebRTC often connects directly on a local LAN or cone NAT, **but fails at ICE checking / media flow across symmetric NAT, cellular CGNAT, or strict enterprise firewalls without a reachable TURN relay**. Deploy Coturn on a host with a public IPv4 address:
 
 ```ini
 # /etc/turnserver.conf
 listening-port=3478
 tls-listening-port=5349
-realm=chat.example.com
+min-port=49152
+max-port=65535
+fingerprint
+lt-cred-mech
 use-auth-secret
 static-auth-secret=REPLACE_WITH_STRONG_RANDOM_SECRET
-cert=/etc/letsencrypt/live/chat.example.com/cert.pem
-pkey=/etc/letsencrypt/live/chat.example.com/privkey.pem
-no-tcp-relay
+realm=chat.example.com
+server-name=turn.example.com
+cert=/etc/letsencrypt/live/turn.example.com/fullchain.pem
+pkey=/etc/letsencrypt/live/turn.example.com/privkey.pem
+no-multicast-peers
+no-loopback-peers
 ```
+
+**Matching SENORA Server Environment**:
+```env
+STUN_SERVERS=stun:stun.l.google.com:19302,stun:stun.cloudflare.com:3478
+TURN_URL=turn:turn.example.com:3478,turns:turn.example.com:5349?transport=tcp
+TURN_AUTH_SECRET=REPLACE_WITH_STRONG_RANDOM_SECRET
+TURN_AUTH_TTL_SECONDS=86400
+ALLOWED_ORIGINS=https://chat.example.com
+TRUST_PROXY=true
+```
+
+**Required Firewall Ports**:
+- `3478/udp` and `3478/tcp` (STUN / TURN UDP & TCP)
+- `5349/tcp` (TURNS TLS over TCP for networks blocking UDP)
+- `49152-65535/udp` (Coturn dynamic media relay port range)
+
+Also verify TLS reverse proxies forward `Host` and `X-Forwarded-Proto` (or configure `ALLOWED_ORIGINS`) so `/api/v1/ws` `wss://` upgrades succeed without HTTP 403.
 
 ---
 
@@ -208,10 +237,10 @@ SENORA frontend strictly avoids external third-party CDN font dependencies (such
 
 ## 9. Group Voice Chat Architecture & Signaling
 
-- **Signaling Transport**: Uses SENORA's existing authenticated WebSocket gateway (`/api/v1/ws`) with `voice_chat.signal` event routing.
+- **Signaling Transport**: Uses SENORA's authenticated WebSocket gateway (`/api/v1/ws`) with server-authenticated `voice_chat.signal` event routing plus REST room lifecycle endpoints (`/api/v1/conversations/{id}/voice-chat`).
 - **Mesh vs. SFU**:
-  - Small group sessions (≤ 6 concurrent speakers) can operate over the built-in authenticated WebSocket signaling mesh.
-  - For large auditoriums or high-scale group voice sessions (> 10 participants), configure an external Selective Forwarding Unit (SFU) such as LiveKit or Janus. Token generation endpoints are designed to scope credentials to the authenticated user and conversation ID without exposing administrative secrets to browser clients.
+  - Small group sessions (up to `MAX_MESH_PEERS = 8` concurrent peers) operate over the built-in WebRTC full mesh with Perfect Negotiation and per-peer `<audio>` playback.
+  - Above 8 peers, clients display an architectural SFU notice; larger auditoriums (> 8 concurrent speakers) require integrating an external Selective Forwarding Unit (SFU) such as LiveKit or Janus (no external SFU token generator is implemented in the server today).
 
 
 ## Bot API and seekable streaming

@@ -12,6 +12,7 @@ class WebSocketManager {
   private ws: WebSocket | null = null;
   private token: string | null = null;
   private listeners: Set<WebSocketEventListener> = new Set();
+  private connectionListeners: Set<(connected: boolean) => void> = new Set();
   private lastCursor = 0;
   private cursorScope = "";
   private reconnectTimeout: any = null;
@@ -40,9 +41,17 @@ class WebSocketManager {
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
+        const wasConnected = this.isConnected;
         this.isConnected = true;
         this.connectedAt = Date.now();
         this.startHeartbeat();
+        if (!wasConnected) {
+          for (const cb of this.connectionListeners) {
+            try {
+              cb(true);
+            } catch {}
+          }
+        }
 
         // Perform cursor sync catch-up on connect
         {
@@ -146,6 +155,7 @@ class WebSocketManager {
   }
 
   private cleanup() {
+    const wasConnected = this.isConnected;
     this.isConnected = false;
     clearInterval(this.pingInterval);
     if (this.ws) {
@@ -155,6 +165,20 @@ class WebSocketManager {
       this.ws.close();
       this.ws = null;
     }
+    if (wasConnected) {
+      for (const cb of this.connectionListeners) {
+        try {
+          cb(false);
+        } catch {}
+      }
+    }
+  }
+
+  onConnectionChange(listener: (connected: boolean) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => {
+      this.connectionListeners.delete(listener);
+    };
   }
 
   private scheduleReconnect() {

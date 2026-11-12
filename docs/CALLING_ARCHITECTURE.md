@@ -1,61 +1,79 @@
-# Senora Real-Time Voice & Video Calling Architecture
+# SENORA Real-Time Voice & Video Calling Architecture
 
 ## 1. Overview & Topologies
 
-Senora implements real-time audio and video communications through WebRTC standards with authenticated signaling mediated by the Senora WebSocket gateway.
+SENORA implements real-time audio, video, screen sharing, and group voice communications using WebRTC (DTLS-SRTP) with authenticated WebSocket signaling routed through the SENORA Go hub (`apps/server/internal/events/hub.go`).
 
 ### 1.1 One-to-One Calls (Peer-to-Peer WebRTC)
-- **Topology**: Full peer-to-peer (P2P) direct media connection between caller and callee devices.
-- **Media Security**: DTLS 1.2/1.3 and SRTP (AES-128-GCM / AES-256-GCM) end-to-end between browsers. The server routes signaling only and never touches media packets.
-- **NAT Traversal**: Configured with standard public STUN servers (`stun:stun.l.google.com:19302`) and optional self-hosted TURN credentials.
+- **Topology**: Direct P2P (or TURN-relayed under symmetric NAT/firewalls) between caller and callee.
+- **Media Security**: DTLS 1.2/1.3 and SRTP end-to-end between peer browsers. The Go backend forwards signaling payloads only and never terminates or stores media streams.
+- **Dynamic ICE Provisioning (`GET /api/v1/webrtc/ice-servers`)**:
+  - `STUN_SERVERS`: Comma-separated STUN URLs (default: Google, Cloudflare, Mozilla, and Nextcloud STUN servers; set `STUN_SERVERS=none` in isolated LAN/air-gapped environments).
+  - `TURN_URL` / `TURN_SERVER_URL`: Comma-separated TURN/TURNS URLs (e.g. `turn:turn.example.com:3478,turns:turn.example.com:5349?transport=tcp`).
+  - **Ephemeral Coturn HMAC Credentials**: When `TURN_AUTH_SECRET` is configured, `handleGetIceServers` generates per-user time-limited (`<expiry>:<user_id>`) HMAC-SHA1 credentials (default TTL `TURN_AUTH_TTL_SECONDS=86400`) without exposing shared static secrets. When `TURN_AUTH_SECRET` is unset, `TURN_USERNAME` / `TURN_CREDENTIAL` are used if present.
+  - `ICE_SERVERS`: Optional raw JSON array of additional `RTCIceServer` entries.
+- **SDP & Media Optimization**:
+  - Client configures Opus (`minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000` or `256000` during screen share) and preserves RFC 4566 m-section line order.
+  - Screen sharing (`getDisplayMedia`) swaps or upgrades the video transceiver via `replaceTrack` / renegotiation, supports adaptive/manual quality presets (`auto`, `1080p`, `720p`, `480p`), and mixes system/tab audio with microphone audio via Web Audio (`AudioContext.createMediaStreamDestination`) when shared audio tracks are captured.
 
-### 1.2 Group Voice Chat
-- **Architecture**: Persistent, joinable audio rooms attached to group conversations.
-- **Backend Room Lifecycle**:
-  - `voice_chat_rooms` table tracks active rooms, creator, title, timestamps, and termination markers.
-  - `voice_chat_participants` table maintains joined participants, mute status, speaking activity, and departure timestamps.
-  - Endpoints: `POST /conversations/{id}/voice-chat` (start/join), `GET /conversations/{id}/voice-chat` (status), `POST /conversations/{id}/voice-chat/state` (mute/speaking update), `POST /conversations/{id}/voice-chat/leave`, `DELETE /conversations/{id}/voice-chat` (end room).
-- **Client Real-Time Audio & Web Audio API**:
-  - Client requests microphone access via `navigator.mediaDevices.getUserMedia({ audio: true })`.
-  - Web Audio `AudioContext` and `AnalyserNode` compute actual microphone volume levels in real time to display dynamic green speaking waveforms.
-  - Multi-peer WebSocket signaling (`voice_chat.signal`) synchronizes join/leave events, state changes, and bilaterally routes WebRTC offers/answers/ICE candidates among room participants.
-- **Production SFU Scale-Out (LiveKit / Janus)**:
-  - For larger rooms (>8 participants), the backend issues short-lived scoped JWT room tokens (`/api/v1/conversations/{id}/voice-chat/token`) to connect to an external SFU daemon, keeping API secrets exclusively on the server.
+### 1.2 Group Voice Chat (P2P Full-Mesh WebRTC)
+- **Architecture**: Persistent, joinable audio rooms scoped to group conversations (`voice_chat_rooms`, `voice_chat_participants`).
+- **REST Endpoints**:
+  - `POST /api/v1/conversations/{id}/voice-chat` — Create or join active room (broadcasts `voice_chat.participant_joined`).
+  - `GET /api/v1/conversations/{id}/voice-chat` — Fetch active room and participant list.
+  - `POST /api/v1/conversations/{id}/voice-chat/state` — Sync mute (`is_muted`) and speaking (`is_speaking`) state (`voice_chat.participant_updated`).
+  - `POST /api/v1/conversations/{id}/voice-chat/leave` — Leave room (`voice_chat.participant_left`).
+  - `DELETE /api/v1/conversations/{id}/voice-chat` — End room for all participants (creator/owner/admin only; broadcasts authoritative `voice_chat.ended`).
+- **Client Multi-Peer Mesh (`apps/web/src/features/calls/groupVoiceChatManager.ts`)**:
+  - Maintains per-peer `RTCPeerConnection` links across active participants (`MAX_MESH_PEERS = 8`), using deterministic lexical offerer election (`currentUserId > remoteUserId`) and Perfect Negotiation rollback.
+  - Renders per-peer `<audio autoplay playsInline data-vc-peer>` elements in DOM, applies preferred output sink (`setSinkId`), surfaces an explicit autoplay-unlock banner on `NotAllowedError`, and monitors real local/remote frequency levels via Web Audio `AnalyserNode`.
+  - **Scaling Boundary**: The built-in P2P mesh warns above 8 concurrent peers (`meshWarning`). Large broadcasts/rooms (>8 active speakers) require integrating an external SFU (e.g., LiveKit or Janus); no external SFU token endpoint is shipped in the current codebase.
 
 ---
 
-## 2. Signaling Protocol Specification
+## 2. Signaling Protocol & State Machine
 
-Call signaling messages are routed over the authenticated WebSocket connection using the envelope structure:
+All WebRTC signaling messages travel over the authenticated WebSocket gateway (`/api/v1/ws`, 256 KB per-frame read limit):
 ```json
 {
   "v": 1,
   "type": "call.signal",
   "payload": {
-    "call_id": "call_123456",
+    "call_id": "call_1760000000_abcde",
     "conversation_id": "cnv_abc",
     "caller_id": "usr_alice",
     "receiver_id": "usr_bob",
-    "call_type": "audio",
+    "call_type": "video",
     "signal_type": "invite",
-    "data": {}
+    "data": { ... }
   }
 }
 ```
 
-### Signal Types & State Machine:
-1. `invite`: Caller initiates a call. Server verifies caller and receiver share `conversation_id`, logs `call_logs` with status `initiating`, and sends `call.incoming` event to receiver.
-2. `ringing`: Receiver device alerts user and sends `ringing` status back to caller.
-3. `accept`: Receiver accepts call. Caller creates WebRTC Offer.
-4. `sdp_offer`: Caller sends Session Description Protocol offer; server forwards to receiver.
-5. `sdp_answer`: Receiver sets remote description and sends SDP answer back to caller.
-6. `ice_candidate`: Candidates exchanged bilaterally until connection state reaches `connected`.
-7. `hangup` / `reject`: Either party terminates call. Media streams are stopped, peer connection is closed, and call log duration is finalized.
+### 2.1 1-on-1 Call Signal Types (`allowedCallSignalTypes`)
+1. `invite`: Caller acquires mic (and optional camera) and initiates call (`outgoing_calling`). Server stamps `caller_id = c.userID`, enriches `caller_name`/`caller_avatar_url`, checks conversation membership & blocks, and forwards to receiver. If receiver has no active WS socket, server immediately sends `call.signal_status` (`status: "target_offline"`) to caller while still waiting up to timeout.
+2. `ringing`: Callee acknowledges incoming invite (`incoming_ringing` -> caller transitions to `outgoing_ringing`). If callee is already in an active call, callee auto-responds `reject` (`reason: "busy"`).
+3. `accept`: Callee acquires media, creates `RTCPeerConnection`, and notifies caller (`connecting` on both sides, 25s connection watchdog). Caller initiates primary `sdp_offer`.
+4. `sdp_offer` / `sdp_answer`: Bilateral SDP negotiation following Perfect Negotiation (lexical `currentUserId < peerId` politeness, `makingOffer` glare detection, `setLocalDescription({ type: 'rollback' })`, plus pre-answer `pendingRemoteOffers` buffering on callee).
+5. `ice_candidate`: Buffered in `iceCandidateQueue` whenever received before `remoteDescription` and drained immediately after `setRemoteDescription`.
+6. Mid-call controls: `video_state` (toggling camera on/off including audio->video transceiver upgrade + renegotiation), `screen_share_start`, `screen_share_stop`, `screen_quality_change`, `screen_quality_request`, `ice_restart`.
+7. **ICE Recovery & Termination**:
+   - `disconnected` starts a 3.5s grace timer before attempting up to 2 `iceRestart: true` renegotiations; `wsManager.onConnectionChange` also triggers ICE restart on WebSocket reconnect when ICE is `disconnected`/`failed`.
+   - Ringing times out after 35s (`timeout`/`missed`); connecting times out after 25s (`failed` with stage attribution `permissions`, `signaling`, `sdp`, `ice`, `turn_or_nat`, `playback`, or `blocked`).
+   - `cancel` (pre-answer), `reject`, `hangup`, `pagehide`, and user logout tear down all local `MediaStreamTrack`s, Web Audio contexts, and `RTCPeerConnection` instances.
+
+### 2.2 Group Voice Chat Signaling (`voice_chat.signal`)
+- Server validates conversation membership, active room existence (`room.IsActive && room.ID == vcSignal.RoomID`), and active participation in the room (except `peer_left`).
+- Server overwrites `SenderUserID = c.userID` and restricts `SignalType` to `peer_joined`, `peer_left`, `sdp_offer`, `sdp_answer`, `ice_candidate`. Forged `room_ended` frames are dropped.
 
 ---
 
-## 3. Security Boundaries & Authorization Rules
+## 3. Security Boundaries, E2EE & Call History
 
-1. **Conversation Membership Validation**: Before forwarding any signaling event, the backend validates that both the caller and receiver are active members of the associated conversation. Non-members cannot initiate or intercept call signals.
-2. **Device Media Permissions**: Camera and microphone access is explicitly checked via `navigator.mediaDevices.getUserMedia`. Denied permissions transition the call to `failed` with clear user feedback.
-3. **Resource Teardown**: On hangup, rejection, or connection drop, all audio and video tracks (`MediaStreamTrack.stop()`) are stopped, and `RTCPeerConnection.close()` is invoked to prevent background microphone or camera access.
+1. **Membership & Identity Enforcement**: Both sender and target user must belong to `conversation_id`. Caller/sender IDs cannot be spoofed across WebSocket frames.
+2. **Bidirectional Block Check**: `hub.go` enforces `IsUserBlocked` in both directions and sends `call.signal_status: "blocked"` to the caller on blocked invites.
+3. **Call Logs & Zero-Plaintext E2EE Invariant (`POST /api/v1/calls/logs`)**:
+   - Upserts into `call_logs` idempotently by `call_id` (`ON CONFLICT (id) DO UPDATE`) so dual submissions from caller and callee produce one record.
+   - In standard chats (`security_mode != "e2ee_active"`), writes at most one in-chat `call_event` system bubble deduplicated per `(conversation_id, "call_event_" + call_id)`.
+   - In **`e2ee_active`** chats, server strictly records structured `call_logs` metadata only and writes **zero** plaintext `call_event` messages.
+4. **Reverse-Proxy WSS Origin Security**: WebSocket `CheckOrigin` honors `ALLOWED_ORIGINS` and verifies HTTPS origins behind TLS-terminating Nginx/Caddy proxies via `X-Forwarded-Proto` **only** when `r.RemoteAddr` matches a trusted proxy (`TRUSTED_PROXIES` or `TRUST_PROXY=true` loopback).

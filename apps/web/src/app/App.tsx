@@ -13,6 +13,7 @@ import { loadSettings, saveSettings, applySettingsToDOM, syncSettingsFromBackend
 import { PasscodeLockScreen } from '../features/settings/PasscodeLockScreen';
 import { soundManager } from '../features/calls/soundManager';
 import { webrtcManager, CallSession } from '../features/calls/webrtcManager';
+import { groupVoiceChatManager } from '../features/calls/groupVoiceChatManager';
 import { CallModal } from '../features/calls/CallModal';
 import { buildNotificationData } from '../features/messages/notificationHelper';
 import { MessageNotificationGate } from '../features/messages/notificationGate';
@@ -180,6 +181,8 @@ const AppContent: React.FC<{ lang: Language; setLang: (language: Language) => vo
           wsManager.connect(token);
           webrtcManager.init();
           webrtcManager.setUserId(user.id);
+          groupVoiceChatManager.init();
+          groupVoiceChatManager.setUserId(user.id);
           const deviceId = localStorage.getItem('senora_device_id') || 'dev_' + Date.now();
           localStorage.setItem('senora_device_id', deviceId);
 
@@ -373,6 +376,8 @@ const AppContent: React.FC<{ lang: Language; setLang: (language: Language) => vo
     }
     webrtcManager.init();
     webrtcManager.setUserId(session.user.id);
+    groupVoiceChatManager.init();
+    groupVoiceChatManager.setUserId(session.user.id);
 
     const syncedSettings = await syncSettingsFromBackend();
     setAppSettings(syncedSettings);
@@ -391,6 +396,11 @@ const AppContent: React.FC<{ lang: Language; setLang: (language: Language) => vo
   };
 
   const handleLogout = async () => {
+    webrtcManager.hangupCall();
+    webrtcManager.dispose();
+    await groupVoiceChatManager.leaveRoom().catch(() => {});
+    groupVoiceChatManager.dispose();
+    groupVoiceChatManager.setUserId('');
     await api.logout();
     wsManager.disconnect();
     webrtcManager.setUserId('');

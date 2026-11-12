@@ -515,9 +515,10 @@ class ApiClient {
   async createCallLog(params: {
     id?: string;
     conversation_id: string;
+    caller_id?: string;
     receiver_id: string;
     call_type: 'audio' | 'video';
-    status: 'completed' | 'missed' | 'rejected' | 'failed';
+    status: 'completed' | 'missed' | 'rejected' | 'declined' | 'cancelled' | 'failed';
     duration_seconds: number;
   }): Promise<CallLog> {
     return this.request<CallLog>('/api/v1/calls/logs', {

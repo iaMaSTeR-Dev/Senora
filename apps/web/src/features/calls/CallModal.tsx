@@ -137,13 +137,31 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
   }, []);
 
   // Stable ref attachment callbacks to immediately bind MediaStream when DOM elements mount
+  const tryPlayMedia = (el: HTMLMediaElement | null, isAudioCritical: boolean) => {
+    if (!el) return;
+    const p = el.play();
+    if (p && typeof p.then === 'function') {
+      p.then(() => {
+        if (isAudioCritical) {
+          webrtcManager.setPlaybackBlocked(false);
+        }
+      }).catch((err) => {
+        if (err?.name === 'NotAllowedError') {
+          webrtcManager.setPlaybackBlocked(true);
+        } else if (err?.name !== 'AbortError') {
+          console.warn('[CallModal] media.play error:', err);
+        }
+      });
+    }
+  };
+
   const attachRemoteVideo = (el: HTMLVideoElement | null) => {
     (remoteVideoRef as any).current = el;
     if (el && session.remoteStream) {
       if (el.srcObject !== session.remoteStream) {
         el.srcObject = session.remoteStream;
       }
-      el.play().catch((err) => console.warn('[CallModal] remoteVideo.play error:', err));
+      tryPlayMedia(el, false);
     }
   };
 
@@ -153,7 +171,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (el.srcObject !== session.screenStream) {
         el.srcObject = session.screenStream;
       }
-      el.play().catch((err) => console.warn('[CallModal] screenVideo.play error:', err));
+      tryPlayMedia(el, false);
     }
   };
 
@@ -163,7 +181,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (el.srcObject !== session.localStream) {
         el.srcObject = session.localStream;
       }
-      el.play().catch((err) => console.warn('[CallModal] localVideo.play error:', err));
+      tryPlayMedia(el, false);
     }
   };
 
@@ -173,9 +191,9 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (localVideoRef.current.srcObject !== session.localStream) {
         localVideoRef.current.srcObject = session.localStream;
       }
-      localVideoRef.current.play().catch(() => {});
+      tryPlayMedia(localVideoRef.current, false);
     }
-  }, [session.localStream, session.state, session.callType, session.isVideoOff]);
+  }, [session.localStream, session.localStreamRevision, session.state, session.callType, session.isVideoOff]);
 
   // Attach screen stream
   useEffect(() => {
@@ -183,7 +201,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (screenVideoRef.current.srcObject !== session.screenStream) {
         screenVideoRef.current.srcObject = session.screenStream;
       }
-      screenVideoRef.current.play().catch((err) => console.warn('[CallModal] screenVideo.play error:', err));
+      tryPlayMedia(screenVideoRef.current, false);
     }
   }, [session.screenStream, session.isScreenSharing, session.peerScreenSharing, session.hasRemoteVideo, session.state]);
 
@@ -193,16 +211,16 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (remoteVideoRef.current.srcObject !== session.remoteStream) {
         remoteVideoRef.current.srcObject = session.remoteStream;
       }
-      remoteVideoRef.current.play().catch((err) => console.warn('[CallModal] remoteVideo.play error:', err));
+      tryPlayMedia(remoteVideoRef.current, false);
     }
     if (remoteAudioRef.current && session.remoteStream) {
       if (remoteAudioRef.current.srcObject !== session.remoteStream) {
         remoteAudioRef.current.srcObject = session.remoteStream;
       }
-      remoteAudioRef.current.play().catch((err) => console.warn('[CallModal] remoteAudio.play error:', err));
+      tryPlayMedia(remoteAudioRef.current, true);
       mediaDeviceManager.applyAudioOutput(remoteAudioRef.current);
     }
-  }, [session.remoteStream, session.state, session.hasRemoteVideo, session.peerScreenSharing]);
+  }, [session.remoteStream, session.remoteStreamRevision, session.state, session.hasRemoteVideo, session.peerScreenSharing]);
 
   const formatDuration = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -230,6 +248,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
         return lang === 'fa' ? 'بی‌پاسخ' : 'No Answer';
       case 'cancelled':
         return lang === 'fa' ? 'تماس لغو شد' : 'Call Cancelled';
+      case 'failed':
+        return session.failureReason || (lang === 'fa' ? 'برقراری تماس ناموفق بود' : 'Call Failed');
       default:
         return '';
     }
@@ -246,7 +266,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
   ) => {
     if (kind === 'audioinput') {
       setSelectedAudioIn(deviceId);
-      mediaDeviceManager.setSelectedAudioInputId(deviceId);
+      await webrtcManager.switchAudioInput(deviceId).catch((e) => console.warn('[CallModal] switchAudioInput:', e));
     } else if (kind === 'audiooutput') {
       setSelectedAudioOut(deviceId);
       mediaDeviceManager.setSelectedAudioOutputId(deviceId);
@@ -254,34 +274,60 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
       if (remoteAudioRef.current) mediaDeviceManager.applyAudioOutput(remoteAudioRef.current);
     } else if (kind === 'videoinput') {
       setSelectedVideoIn(deviceId);
-      mediaDeviceManager.setSelectedVideoInputId(deviceId);
+      await webrtcManager.switchVideoInput(deviceId).catch((e) => console.warn('[CallModal] switchVideoInput:', e));
     }
   };
 
+  const hasLiveLocalVideo =
+    !session.isVideoOff &&
+    !!session.localStream?.getVideoTracks().some((t) => t.readyState === 'live');
+  const showVideoStage =
+    session.state === 'connected' &&
+    (hasLiveLocalVideo || session.isScreenSharing || session.peerScreenSharing || session.hasRemoteVideo);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-xl p-4 animate-fadeIn select-none">
-      {/* Hidden audio element for audio calls to guarantee playback through selected sink */}
+      {/* Hidden audio element for remote call audio routed cleanly through selected sink */}
       <audio ref={remoteAudioRef} autoPlay playsInline className="hidden" />
 
       <div className={`relative transition-all duration-300 w-full ${isTheaterMode ? 'max-w-6xl w-[96vw]' : 'max-w-xl'} bg-[#17212b]/95 border border-[#242f3d] rounded-3xl overflow-hidden shadow-2xl flex flex-col items-center`}>
         {/* Top Header Banner */}
         <div className="w-full flex items-center justify-between px-6 pt-5 pb-2 text-xs text-slate-400">
-          <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
-            <ShieldCheck size={15} />
-            <span>{uiText("End-to-End Encrypted Call", uiLang)}</span>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 text-emerald-400 font-medium">
+              <ShieldCheck size={15} />
+              <span>{uiText("End-to-End Encrypted Call", uiLang)}</span>
+            </div>
+            {session.iceCandidateType && session.state === 'connected' && (
+              <span className="px-2 py-0.5 rounded-full bg-white/5 text-[10px] font-mono text-slate-400">
+                {session.iceCandidateType === 'relay' ? 'TURN' : session.iceCandidateType.toUpperCase()}
+              </span>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => setShowDeviceSettings(!showDeviceSettings)}
-            className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
-            title={uiText("Call Settings (Microphone, Camera, Audio)", uiLang)}
-          >
-            <Settings size={16} />
-          </button>
+          <div className="flex items-center gap-1">
+            {session.state === 'failed' && (
+              <button
+                type="button"
+                onClick={() => webrtcManager.resetSession()}
+                className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
+                title={uiText("Close", uiLang)}
+              >
+                <X size={16} />
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setShowDeviceSettings(!showDeviceSettings)}
+              className="p-1.5 rounded-xl hover:bg-white/10 hover:text-white transition cursor-pointer"
+              title={uiText("Call Settings (Microphone, Camera, Audio)", uiLang)}
+            >
+              <Settings size={16} />
+            </button>
+          </div>
         </div>
 
-        {/* Video / Screen Share Area (When Connected) */}
-        {((session.callType === 'video' || session.isScreenSharing || session.peerScreenSharing || session.hasRemoteVideo) && session.state === 'connected') ? (
+        {/* Video / Screen Share Area (When Connected with Local Camera, Remote Video, or Screen Share) */}
+        {showVideoStage ? (
           <div
             ref={videoStageRef}
             className={`relative w-full ${
@@ -315,8 +361,8 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 muted
                 className={`w-full h-full ${fitMode === 'contain' ? 'object-contain' : 'object-cover'} bg-slate-950`}
               />
-            ) : session.callType === 'video' ? (
-              /* Video call waiting for remote camera, show remote avatar */
+            ) : (session.callType === 'video' || hasLiveLocalVideo) ? (
+              /* Video or camera-upgraded call waiting for remote camera, show remote avatar */
               <div className="flex flex-col items-center justify-center space-y-3">
                 <div className="w-24 h-24 rounded-full bg-slate-800 flex items-center justify-center text-white text-3xl font-bold border border-white/10">
                   {session.peerName ? session.peerName.charAt(0) : <User size={48} />}
@@ -342,7 +388,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   {lang === "fa" ? 'صفحه شما' : 'Your Screen'}
                 </div>
               </div>
-            ) : (session.callType === 'video' && !session.isVideoOff && session.localStream) ? (
+            ) : (hasLiveLocalVideo && session.localStream) ? (
               /* Local Camera PiP */
               <div className="absolute bottom-4 right-4 w-28 h-36 sm:w-36 sm:h-48 bg-slate-900 rounded-2xl overflow-hidden border-2 border-[#24A1DE] shadow-2xl z-20">
                 <video
@@ -354,6 +400,23 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 />
               </div>
             ) : null}
+
+            {(session.autoplayBlocked || session.mediaPlaybackBlocked) && (
+              <button
+                type="button"
+                onClick={() => webrtcManager.unlockAudio()}
+                className="absolute bottom-4 left-4 z-30 px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg animate-bounce transition cursor-pointer"
+              >
+                <span>🔊</span>
+                <span>{lang === 'fa' ? 'برای فعال‌سازی صدای تماس کلیک کنید' : 'Tap to Enable Audio'}</span>
+              </button>
+            )}
+
+            {session.isReconnectingIce && (
+              <div className="absolute bottom-14 left-4 z-30 px-3 py-1 rounded-full bg-amber-500/90 text-slate-950 text-[11px] font-semibold shadow">
+                {lang === 'fa' ? 'در حال اتصال مجدد رسانه...' : 'Reconnecting media...'}
+              </div>
+            )}
 
             {/* Top Left Status & Indicators Overlay */}
             <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
@@ -568,17 +631,31 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                   : (lang === "fa" ? 'تماس صوتی SENORA' : 'SENORA Voice Call')}
               </p>
               <p className="text-base font-mono text-slate-300 pt-1 font-semibold">{getStatusText()}</p>
+              {session.targetOffline && (
+                <p className="text-xs text-amber-400 font-medium pt-1">
+                  {lang === 'fa' ? 'کاربر در حال حاضر آفلاین است (در انتظار اتصال...)' : 'User appears offline (waiting for connection...)'}
+                </p>
+              )}
+              {session.isReconnectingIce && (
+                <p className="text-xs text-amber-400 font-medium pt-1 animate-pulse">
+                  {lang === 'fa' ? 'در حال اتصال مجدد رسانه...' : 'Reconnecting media...'}
+                </p>
+              )}
             </div>
 
-            {/* Autoplay blocked sound unlock button */}
-            {session.state === 'incoming_ringing' && session.autoplayBlocked && (
+            {/* Autoplay blocked sound/media unlock button */}
+            {(session.autoplayBlocked || session.mediaPlaybackBlocked) && (
               <button
                 type="button"
                 onClick={() => webrtcManager.unlockAudio()}
                 className="px-4 py-2 rounded-full bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center gap-2 shadow-lg animate-bounce transition cursor-pointer"
               >
                 <span>🔊</span>
-                <span>{lang === "fa" ? 'برای پخش صدای زنگ کلیک کنید' : 'Tap to Unmute Ringtone'}</span>
+                <span>
+                  {session.state === 'incoming_ringing'
+                    ? (lang === "fa" ? 'برای پخش صدای زنگ کلیک کنید' : 'Tap to Unmute Ringtone')
+                    : (lang === "fa" ? 'برای فعال‌سازی صدای تماس کلیک کنید' : 'Tap to Enable Call Audio')}
+                </span>
               </button>
             )}
           </div>
@@ -635,7 +712,7 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
             )}
 
             {/* Camera Selection */}
-            {session.callType === 'video' && (
+            {(session.callType === 'video' || !session.isVideoOff || audioDevices.videoInputs.length > 0) && (
               <div>
                 <label className="block text-[11px] text-slate-400 mb-1">{uiText("Camera", uiLang)}</label>
                 <select
@@ -716,13 +793,13 @@ export const CallModal: React.FC<CallModalProps> = ({ session, lang = 'en' }) =>
                 type="button"
                 onClick={() => webrtcManager.toggleVideo()}
                 className={`p-3.5 sm:p-4 rounded-full transition-all shadow-md cursor-pointer ${
-                  session.isVideoOff || session.callType !== 'video'
+                  session.isVideoOff
                     ? 'bg-[#242f3d] text-slate-400 hover:bg-[#2c3949] border border-white/5'
                     : 'bg-[#24A1DE] text-white shadow-[#24A1DE]/30'
                 }`}
                 title={session.isVideoOff ? uiText("Enable Camera", uiLang) : uiText("Disable Camera", uiLang)}
               >
-                {session.isVideoOff || session.callType !== 'video' ? <VideoOff size={20} /> : <Video size={20} />}
+                {session.isVideoOff ? <VideoOff size={20} /> : <Video size={20} />}
               </button>
 
               {/* Screen Sharing */}

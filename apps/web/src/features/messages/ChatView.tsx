@@ -4102,6 +4102,26 @@ export const ChatView: React.FC<ChatViewProps> = ({
                   <span>{isForum ? (lang === "fa" ? 'غیرفعال‌سازی تاپیک‌های انجمن' : 'Disable Forum Topics') : (lang === "fa" ? 'فعال‌سازی تاپیک‌های انجمن (سوپرگروه)' : 'Enable Forum Topics')}</span>
                 </button>
               )}
+              {!isChannel && peerUser && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    webrtcManager.startCall(
+                      conversation.id,
+                      peerUser.id,
+                      peerUser.display_name || peerUser.username,
+                      'video',
+                      peerUser.avatar_url,
+                      currentUser.avatar_url,
+                      currentUser.display_name || currentUser.username
+                    )
+                  }
+                  className="w-full px-3 py-2 text-left text-xs text-[#24A1DE] hover:bg-[#202b36] flex items-center gap-2 cursor-pointer"
+                >
+                  <Video className="h-4 w-4" />
+                  <span>{uiText("Video Call", uiLang)}</span>
+                </button>
+              )}
               {isGroup && (
                 <button
                   type="button"
@@ -4678,6 +4698,9 @@ export const ChatView: React.FC<ChatViewProps> = ({
               callText = lang === 'fa' ? 'تماس رد شد' : 'Declined Call';
             } else if (outcome === 'cancelled') {
               callText = lang === 'fa' ? 'تماس لغو شد' : 'Cancelled Call';
+            } else if (outcome === 'failed') {
+              isDeclined = true;
+              callText = lang === 'fa' ? 'تماس ناموفق' : 'Call Failed';
             } else {
               callText = lang === 'fa' ? (isVideo ? 'تماس تصویری' : 'تماس صوتی') : (isVideo ? 'Video Call' : 'Voice Call');
             }

@@ -1,6 +1,6 @@
 import { uiText, useUILanguage } from "../../app/language";
 import React, { useState, useEffect, useRef } from 'react';
-import { Conversation, User, VoiceChatParticipant, VoiceChatRoom } from '../../app/types';
+import { Conversation, User } from '../../app/types';
 import { api } from '../../protocol/api';
 import { wsManager } from '../../protocol/ws';
 import {
@@ -10,9 +10,12 @@ import {
   Users,
   X,
   Radio,
-  AlertCircle
+  AlertCircle,
+  Settings,
+  Volume2,
 } from 'lucide-react';
-import { STUDIO_AUDIO_CONSTRAINTS } from './mediaDeviceManager';
+import { mediaDeviceManager } from './mediaDeviceManager';
+import { groupVoiceChatManager, GroupVoiceChatState } from './groupVoiceChatManager';
 
 interface GroupVoiceChatModalProps {
   conversation: Conversation;
@@ -28,61 +31,80 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
   onRoomEnded,
 }) => {
   const uiLang = useUILanguage();
-  const [room, setRoom] = useState<VoiceChatRoom | null>(null);
-  const [participants, setParticipants] = useState<VoiceChatParticipant[]>([]);
-  const [isJoined, setIsJoined] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [speakingLevel, setSpeakingLevel] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [vcState, setVcState] = useState<GroupVoiceChatState | null>(null);
   const [durationSeconds, setDurationSeconds] = useState(0);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const [showDeviceSettings, setShowDeviceSettings] = useState(false);
+  const [audioDevices, setAudioDevices] = useState<{
+    audioInputs: MediaDeviceInfo[];
+    audioOutputs: MediaDeviceInfo[];
+  }>({ audioInputs: [], audioOutputs: [] });
+  const [selectedAudioIn, setSelectedAudioIn] = useState('');
+  const [selectedAudioOut, setSelectedAudioOut] = useState('');
 
-  // Audio stream and analysis refs
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animFrameRef = useRef<number | null>(null);
   const durationTimerRef = useRef<any>(null);
+  const onCloseRef = useRef(onClose);
+  const onRoomEndedRef = useRef(onRoomEnded);
+  onCloseRef.current = onClose;
+  onRoomEndedRef.current = onRoomEnded;
 
-  // WebRTC peer connections mapped by user_id
-  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-
-
-
-  // 1. Fetch initial Voice Chat state
-  const fetchRoomState = async () => {
-    try {
-      const res = await api.getActiveVoiceChat(conversation.id);
-      setRoom(res.room);
-      setParticipants(res.participants);
-      const myPart = res.participants.find((p) => p.user_id === currentUser.id);
-      if (myPart) {
-        setIsJoined(true);
-        setIsMuted(myPart.is_muted);
-      }
-    } catch (err: any) {
-      // No active room or not found
-      setRoom(null);
-      setParticipants([]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
+  // Subscribe to singleton GroupVoiceChatManager & open room
   useEffect(() => {
-    fetchRoomState();
-    const interval = setInterval(fetchRoomState, 4000);
-    return () => clearInterval(interval);
+    groupVoiceChatManager.setUserId(currentUser.id);
+    const unsub = groupVoiceChatManager.subscribe((next) => {
+      setVcState(next);
+    });
+    void groupVoiceChatManager.openConversationRoom(conversation.id);
+
+    const pollInterval = setInterval(() => {
+      void groupVoiceChatManager.refreshRoomState(conversation.id);
+    }, 4000);
+
+    mediaDeviceManager.enumerateDevices().then((devs) => {
+      setAudioDevices({ audioInputs: devs.audioInputs, audioOutputs: devs.audioOutputs });
+      setSelectedAudioIn(mediaDeviceManager.getSelectedAudioInputId());
+      setSelectedAudioOut(mediaDeviceManager.getSelectedAudioOutputId());
+    });
+
+    return () => {
+      clearInterval(pollInterval);
+      unsub();
+      // Leave cleanly when modal unmounts so no ghost participant remains in DB or open mic tracks
+      void groupVoiceChatManager.leaveRoom();
+    };
+  }, [conversation.id, currentUser.id]);
+
+  // Listen specifically to authoritative server voice_chat.ended event
+  useEffect(() => {
+    const unsubEnded = wsManager.subscribe((event) => {
+      if (
+        event.type === 'voice_chat.ended' &&
+        event.payload?.conversation_id === conversation.id
+      ) {
+        onRoomEndedRef.current?.();
+        onCloseRef.current();
+      }
+    });
+    return () => unsubEnded();
   }, [conversation.id]);
+
+  const room = vcState?.room || null;
+  const participants = vcState?.participants || [];
+  const isJoined = !!vcState?.isJoined;
+  const isMuted = !!vcState?.isMuted;
+  const isSpeaking = !!vcState?.isSpeaking;
+  const speakingLevel = vcState?.speakingLevel || 0;
+  const remoteAudioLevels = vcState?.remoteAudioLevels || {};
+  const peerIceStates = vcState?.peerIceStates || {};
+  const loading = vcState ? vcState.loading : true;
+  const error = localError || vcState?.error || null;
 
   // Duration timer
   useEffect(() => {
-    if (room?.is_active) {
+    if (room?.is_active && room.created_at) {
       const startTime = new Date(room.created_at).getTime();
       const updateDuration = () => {
-        const now = Date.now();
-        setDurationSeconds(Math.max(0, Math.floor((now - startTime) / 1000)));
+        setDurationSeconds(Math.max(0, Math.floor((Date.now() - startTime) / 1000)));
       };
       updateDuration();
       durationTimerRef.current = setInterval(updateDuration, 1000);
@@ -90,184 +112,57 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
     }
   }, [room?.is_active, room?.created_at]);
 
-  // Cleanup WebRTC and audio on unmount
-  useEffect(() => {
-    return () => {
-      leaveLocalMedia();
-      peerConnectionsRef.current.forEach((pc) => pc.close());
-      peerConnectionsRef.current.clear();
-    };
-  }, []);
-
-  const leaveLocalMedia = () => {
-    if (animFrameRef.current) {
-      cancelAnimationFrame(animFrameRef.current);
-      animFrameRef.current = null;
-    }
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
-  };
-
-  // 2. Start or Join Voice Chat
   const handleJoinVoiceChat = async () => {
-    setError(null);
-    setLoading(true);
-    try {
-      // Get microphone access with studio-grade audio constraints
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: STUDIO_AUDIO_CONSTRAINTS });
-      } catch {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
-      localStreamRef.current = stream;
-
-      // Setup audio analysis for real speaking level
-      try {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        if (AudioCtx) {
-          const ctx = new AudioCtx();
-          audioContextRef.current = ctx;
-          const source = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 64;
-          source.connect(analyser);
-          analyserRef.current = analyser;
-
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          let prevSpeaking = false;
-
-          const checkSpeaking = () => {
-            if (!analyserRef.current) return;
-            analyserRef.current.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              sum += dataArray[i];
-            }
-            const avg = sum / dataArray.length;
-            setSpeakingLevel(Math.min(100, avg * 1.5));
-
-            const nowSpeaking = avg > 12 && !isMuted;
-            if (nowSpeaking !== prevSpeaking) {
-              prevSpeaking = nowSpeaking;
-              setIsSpeaking(nowSpeaking);
-              api.updateVoiceChatState(conversation.id, { is_speaking: nowSpeaking }).catch(() => {});
-            }
-            animFrameRef.current = requestAnimationFrame(checkSpeaking);
-          };
-          checkSpeaking();
-        }
-      } catch (audioErr) {
-        console.warn('Audio analysis warning:', audioErr);
-      }
-
-      // Backend join
-      const res = await api.startOrJoinVoiceChat(conversation.id);
-      setRoom(res.room);
-      setParticipants(res.participants);
-      setIsJoined(true);
-      setIsMuted(false);
-
-      // Signal join to room
-      wsManager.sendVoiceChatSignal({
-        conversation_id: conversation.id,
-        room_id: res.room.id,
-        signal_type: 'peer_joined',
-      });
-    } catch (err: any) {
-      setError(err.message || uiText("Microphone access denied or error joining voice chat", uiLang));
-    } finally {
-      setLoading(false);
-    }
+    setLocalError(null);
+    await groupVoiceChatManager.joinRoom(conversation.id);
   };
 
-  // 3. Toggle Mute
   const handleToggleMute = async () => {
-    if (!localStreamRef.current) return;
-    const nextMuted = !isMuted;
-    localStreamRef.current.getAudioTracks().forEach((track) => {
-      track.enabled = !nextMuted;
-    });
-    setIsMuted(nextMuted);
-    if (nextMuted) {
-      setIsSpeaking(false);
-      setSpeakingLevel(0);
-    }
-    try {
-      await api.updateVoiceChatState(conversation.id, { is_muted: nextMuted, is_speaking: false });
-    } catch (e) {
-      console.warn('Update mute state error:', e);
-    }
+    await groupVoiceChatManager.toggleMute();
   };
 
-  // 4. Leave Voice Chat
   const handleLeaveVoiceChat = async () => {
-    leaveLocalMedia();
-    setIsJoined(false);
-    setIsMuted(false);
-    setIsSpeaking(false);
-    setSpeakingLevel(0);
-
-    try {
-      await api.leaveVoiceChat(conversation.id);
-      wsManager.sendVoiceChatSignal({
-        conversation_id: conversation.id,
-        room_id: room?.id || '',
-        signal_type: 'peer_left',
-      });
-      await fetchRoomState();
-    } catch (e) {
-      console.warn('Leave error:', e);
-    }
+    await groupVoiceChatManager.leaveRoom();
   };
 
-  // 5. End Voice Chat (Host / Admin)
+  const handleCloseModal = async () => {
+    if (isJoined) {
+      await groupVoiceChatManager.leaveRoom();
+    }
+    onClose();
+  };
+
   const handleEndVoiceChat = async () => {
     if (!confirm(uiText("Are you sure you want to end this voice chat for all participants?", uiLang))) return;
-    leaveLocalMedia();
-    setIsJoined(false);
+    setLocalError(null);
     try {
-      await api.endVoiceChat(conversation.id);
-      wsManager.sendVoiceChatSignal({
-        conversation_id: conversation.id,
-        room_id: room?.id || '',
-        signal_type: 'room_ended',
-      });
-      setRoom(null);
-      setParticipants([]);
-      if (onRoomEnded) onRoomEnded();
+      await groupVoiceChatManager.endRoomForEveryone();
+      onRoomEnded?.();
       onClose();
     } catch (e: any) {
-      alert(`Failed to end voice chat: ${e.message}`);
+      setLocalError(e?.message || (uiLang === 'fa' ? 'پایان گفتگوی صوتی ناموفق بود' : 'Failed to end voice chat'));
     }
   };
 
-  // 6. Listen to WebSocket voice_chat events
-  useEffect(() => {
-    const unsub = wsManager.subscribe((event) => {
-      if (event.type === 'voice_chat.signal' && event.payload?.conversation_id === conversation.id) {
-        const payload = event.payload;
-        if (payload.signal_type === 'room_ended') {
-          leaveLocalMedia();
-          setIsJoined(false);
-          setRoom(null);
-          setParticipants([]);
-          onClose();
-        } else if (payload.signal_type === 'peer_joined' || payload.signal_type === 'peer_left') {
-          fetchRoomState();
-        }
-      }
-    });
-    return () => unsub();
-  }, [conversation.id]);
+  const handleDeviceChange = async (kind: 'audioinput' | 'audiooutput', deviceId: string) => {
+    if (kind === 'audioinput') {
+      setSelectedAudioIn(deviceId);
+      await groupVoiceChatManager.switchMicrophone(deviceId).catch((e) => {
+        setLocalError(e?.message || 'Failed to switch microphone');
+      });
+    } else {
+      setSelectedAudioOut(deviceId);
+      mediaDeviceManager.setSelectedAudioOutputId(deviceId);
+      await groupVoiceChatManager.refreshAudioOutput();
+    }
+  };
 
-  const isCreatorOrAdmin = room && (room.created_by === currentUser.id || conversation.type === 'group');
+  const isCreatorOrAdmin = Boolean(
+    room &&
+      (room.created_by === currentUser.id ||
+        vcState?.myRole === 'owner' ||
+        vcState?.myRole === 'admin')
+  );
 
   const formatDuration = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -289,20 +184,103 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                 <h3 className="text-sm font-bold text-white truncate max-w-[220px]">
                   {room?.title || conversation.title || uiText("Group Voice Chat", uiLang)}
                 </h3>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">{uiText("LIVE", uiLang)}</span>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                  {uiText("LIVE", uiLang)}
+                </span>
               </div>
               <p className="text-[11px] text-[#7f91a4]">
-                {participants.length}{uiText(" participant", uiLang)}{participants.length !== 1 ? 's' : ''} • {formatDuration(durationSeconds)}
+                {participants.length}
+                {uiText(" participant", uiLang)}
+                {participants.length !== 1 ? 's' : ''} • {formatDuration(durationSeconds)}
               </p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-xl text-[#7f91a4] hover:text-white hover:bg-[#242f3d] transition cursor-pointer"
-          >
-            <X className="h-5 w-5" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setShowDeviceSettings(!showDeviceSettings)}
+              className={`p-2 rounded-xl transition cursor-pointer ${
+                showDeviceSettings
+                  ? 'bg-[#24A1DE] text-white'
+                  : 'text-[#7f91a4] hover:text-white hover:bg-[#242f3d]'
+              }`}
+              title={uiText("Audio & Video Devices", uiLang)}
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={handleCloseModal}
+              className="p-2 rounded-xl text-[#7f91a4] hover:text-white hover:bg-[#242f3d] transition cursor-pointer"
+              title={uiText("Close", uiLang)}
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
         </div>
+
+        {/* Audio Device Selector */}
+        {showDeviceSettings && (
+          <div className="p-3 bg-[#1b2633] border-b border-[#242f3d] text-xs text-slate-300 space-y-2.5">
+            <div>
+              <label className="block text-[11px] text-slate-400 mb-1">{uiText("Microphone", uiLang)}</label>
+              <select
+                value={selectedAudioIn}
+                onChange={(e) => handleDeviceChange('audioinput', e.target.value)}
+                className="w-full bg-[#242f3d] text-white px-2.5 py-1.5 rounded-lg border border-white/10 focus:outline-none"
+              >
+                <option value="">{uiText("Default Microphone", uiLang)}</option>
+                {audioDevices.audioInputs.map((d, i) => (
+                  <option key={d.deviceId || i} value={d.deviceId}>
+                    {d.label || `${uiText('Microphone', uiLang)} ${i + 1}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {mediaDeviceManager.isSinkIdSupported() && (
+              <div>
+                <label className="block text-[11px] text-slate-400 mb-1">{uiText("Audio Output / Speaker", uiLang)}</label>
+                <select
+                  value={selectedAudioOut}
+                  onChange={(e) => handleDeviceChange('audiooutput', e.target.value)}
+                  className="w-full bg-[#242f3d] text-white px-2.5 py-1.5 rounded-lg border border-white/10 focus:outline-none"
+                >
+                  <option value="">{uiText("Default Speaker", uiLang)}</option>
+                  {audioDevices.audioOutputs.map((d, i) => (
+                    <option key={d.deviceId || i} value={d.deviceId}>
+                      {d.label || `${uiText('Speaker', uiLang)} ${i + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Autoplay blocked unlock banner */}
+        {vcState?.playbackBlocked && (
+          <div className="px-4 pt-3">
+            <button
+              type="button"
+              onClick={() => groupVoiceChatManager.unlockPlayback()}
+              className="w-full py-2 px-3 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer shadow"
+            >
+              <Volume2 className="h-4 w-4" />
+              <span>
+                {uiLang === 'fa' ? 'برای شنیدن صدای شرکت‌کنندگان کلیک کنید' : 'Tap to Enable Voice Audio Playback'}
+              </span>
+            </button>
+          </div>
+        )}
+
+        {/* Mesh scaling notice */}
+        {vcState?.meshWarning && (
+          <div className="mx-4 mt-3 p-2.5 rounded-xl bg-amber-950/60 border border-amber-700/60 text-amber-200 text-[11px]">
+            {uiLang === 'fa'
+              ? 'حالت فعلی P2P Mesh تا ۸ شرکت‌کننده را پشتیبانی می‌کند؛ برای اتاق‌های بزرگ‌تر به SFU خارجی نیاز است.'
+              : 'P2P Mesh supports up to 8 concurrent peers; larger rooms require an external SFU.'}
+          </div>
+        )}
 
         {/* Error Alert */}
         {error && (
@@ -328,8 +306,10 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
           ) : (
             participants.map((p) => {
               const isMe = p.user_id === currentUser.id;
-              const currentlySpeaking = isMe ? isSpeaking : p.is_speaking;
+              const remoteEnergy = isMe ? speakingLevel : (remoteAudioLevels[p.user_id] || 0);
+              const currentlySpeaking = isMe ? isSpeaking : (p.is_speaking || remoteEnergy > 12);
               const currentlyMuted = isMe ? isMuted : p.is_muted;
+              const iceState = isMe ? undefined : peerIceStates[p.user_id];
 
               return (
                 <div
@@ -368,22 +348,25 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
                       </div>
                       <span className="text-[10px] text-[#7f91a4] block">
                         @{p.username}
+                        {!isMe && isJoined && iceState && (
+                          <span className="ml-1.5 font-mono text-[9px] text-slate-400">
+                            • {iceState === 'connected' || iceState === 'completed' ? 'WebRTC' : iceState}
+                          </span>
+                        )}
                       </span>
                     </div>
                   </div>
 
-                  {/* Audio Status & Speaking Wave */}
+                  {/* Audio Status & Real Measured Speaking Wave */}
                   <div className="flex items-center gap-2.5">
                     {currentlySpeaking && (
                       <div className="flex items-center gap-0.5 h-4 px-1">
-                        {[1, 2, 3, 4].map((bar) => (
+                        {[0.55, 0.9, 1.0, 0.7].map((scale, idx) => (
                           <span
-                            key={bar}
-                            className="w-1 bg-emerald-400 rounded-full animate-pulse"
+                            key={idx}
+                            className="w-1 bg-emerald-400 rounded-full transition-all duration-150"
                             style={{
-                              height: isMe
-                                ? `${Math.max(4, (speakingLevel / 100) * 16)}px`
-                                : `${Math.floor(Math.random() * 12) + 4}px`,
+                              height: `${Math.max(4, Math.min(16, (Math.max(remoteEnergy, 25) / 100) * 16 * scale))}px`,
                             }}
                           />
                         ))}
@@ -451,8 +434,10 @@ export const GroupVoiceChatModal: React.FC<GroupVoiceChatModalProps> = ({
             <button
               type="button"
               onClick={handleEndVoiceChat}
-              className="text-[11px] text-red-400 hover:text-red-300 transition py-1 text-center"
-            >{uiText("End Voice Chat for Everyone", uiLang)}</button>
+              className="text-[11px] text-red-400 hover:text-red-300 transition py-1 text-center cursor-pointer"
+            >
+              {uiText("End Voice Chat for Everyone", uiLang)}
+            </button>
           )}
         </div>
       </div>

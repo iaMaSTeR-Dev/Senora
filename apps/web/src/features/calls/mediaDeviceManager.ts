@@ -120,13 +120,13 @@ class MediaDeviceManager {
     }
   }
 
-  // Request real audio stream using selected microphone with studio-grade constraints
-  async getAudioStream(extraConstraints?: MediaTrackConstraints): Promise<MediaStream> {
+  // Request real audio stream using selected (or override) microphone with studio-grade constraints
+  async getAudioStream(extraConstraints?: MediaTrackConstraints, deviceIdOverride?: string): Promise<MediaStream> {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('MediaDevices API is not supported in this environment');
     }
 
-    const selectedId = this.getSelectedAudioInputId();
+    const selectedId = deviceIdOverride !== undefined ? deviceIdOverride : this.getSelectedAudioInputId();
     const audioConstraint: MediaTrackConstraints = {
       ...STUDIO_AUDIO_CONSTRAINTS,
       ...extraConstraints,
@@ -139,6 +139,9 @@ class MediaDeviceManager {
     try {
       return await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
     } catch (err: any) {
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        throw err;
+      }
       // If exact deviceId or studio constraints fail, fallback gracefully
       console.warn(`[MediaDeviceManager] HD audio stream attempt failed, attempting fallback`, err);
       try {
@@ -147,22 +150,28 @@ class MediaDeviceManager {
           noiseSuppression: true,
           autoGainControl: true,
         };
-        if (selectedId) fallbackConstraint.deviceId = { exact: selectedId };
+        if (selectedId) fallbackConstraint.deviceId = { ideal: selectedId };
         return await navigator.mediaDevices.getUserMedia({ audio: fallbackConstraint });
-      } catch {
+      } catch (err2: any) {
+        if (err2?.name === 'NotAllowedError' || err2?.name === 'PermissionDeniedError') {
+          throw err2;
+        }
         return await navigator.mediaDevices.getUserMedia({ audio: true });
       }
     }
   }
 
-  // Request real video stream using selected camera
-  async getVideoStream(extraConstraints?: MediaTrackConstraints): Promise<MediaStream> {
+  // Request real video stream using selected (or override) camera
+  async getVideoStream(extraConstraints?: MediaTrackConstraints, deviceIdOverride?: string): Promise<MediaStream> {
     if (typeof window === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       throw new Error('MediaDevices API is not supported in this environment');
     }
 
-    const selectedId = this.getSelectedVideoInputId();
+    const selectedId = deviceIdOverride !== undefined ? deviceIdOverride : this.getSelectedVideoInputId();
     const videoConstraint: MediaTrackConstraints = {
+      width: { ideal: 1280 },
+      height: { ideal: 720 },
+      frameRate: { ideal: 30 },
       ...extraConstraints,
     };
 
@@ -173,11 +182,11 @@ class MediaDeviceManager {
     try {
       return await navigator.mediaDevices.getUserMedia({ video: videoConstraint });
     } catch (err: any) {
-      if (selectedId) {
-        console.warn(`[MediaDeviceManager] Failed to acquire specific camera ${selectedId}, falling back to default`, err);
-        return await navigator.mediaDevices.getUserMedia({ video: true });
+      if (err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError') {
+        throw err;
       }
-      throw err;
+      console.warn(`[MediaDeviceManager] HD/specific camera failed, falling back to standard video`, err);
+      return await navigator.mediaDevices.getUserMedia({ video: true });
     }
   }
 
